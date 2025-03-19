@@ -1,0 +1,4 @@
+.env
+node_modules
+run_watcher.sh
+kma_fetch/run_kmaWatcher_*.sh

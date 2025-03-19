@@ -1,0 +1,14 @@
+{
+  "name": "weather_api",
+  "version": "1.0.0",
+  "main": "index.js",
+  "license": "MIT",
+  "dependencies": {
+    "@fastify/compress": "^8.0.1",
+    "@fastify/cors": "^11.0.0",
+    "dotenv": "^16.4.7",
+    "fastify": "^5.2.1",
+    "ftp": "^0.3.10",
+    "pg": "^8.13.3"
+  }
+}
