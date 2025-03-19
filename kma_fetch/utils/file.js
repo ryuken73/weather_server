@@ -2,6 +2,7 @@ const fs = require('fs').promises;
 const path = require('path');
 const env = require('../config/env');
 const time = require('./time');
+const { DateTime } = require('luxon');
 
 // 기본 디렉토리 설정
 const BASE_DIR = env.BASE_DIR;
@@ -31,7 +32,10 @@ async function saveNcFile(data, originalFileName, utcDate, overwrite = false) {
 
   // 원본 파일명에서 확장자 분리
   const baseName = originalFileName.replace(/\.nc$/, ''); // "gk2a_ami_le2_ci_ela020ge_202210272350"
-  const kstStr = time.utcToKst(utcDate).toISOString().slice(0, 16).replace(/[-T:]/g, ''); // "202210280850"
+  // const kstStr = time.utcToKst(utcDate).toISOString().slice(0, 16).replace(/[-T:]/g, ''); // "202210280850"
+  const kstStr = DateTime.fromJSDate(utcDate, { zone: 'UTC' })
+    .setZone('Asia/Seoul')
+    .toFormat('yyyyMMddHHmm'); // 직접 변환 보장
   const newFileName = `${baseName}_${kstStr}.nc`; // "gk2a_ami_le2_ci_ela020ge_202210272350_202210280850.nc"
 
   const filePath = path.join(dirPath, newFileName);
