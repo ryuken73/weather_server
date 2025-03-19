@@ -4,7 +4,7 @@ const file = require('../utils/file');
 const { DateTime } = require('luxon');
 
 // 환경 변수
-const BASE_URL = 'https://apihub.kma.go.kr/api/typ05/api/GK2A';
+const BASE_URL = env.API_ENDPOINT;
 const API_KEY = env.API_KEY;
 
 /**

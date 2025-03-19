@@ -10,7 +10,7 @@ const env = {
   NODE_ENV: envMode,
   API_KEY: process.env.API_KEY,
   BASE_DIR: process.env.BASE_DIR || './data/weather',
-  API_ENDPOINT: process.env.API_ENDPOINT || 'https://apihub.kma.go.kr/api/typ05/api/GK2A',
+  API_ENDPOINT: process.env.API_ENDPOINT || 'https://apihub-pub.kma.go.kr/api/typ05/api/GK2A',
   TIMEZONE: process.env.TIMEZONE || 'Asia/Seoul',
   LOG_LEVEL: process.env.LOG_LEVEL || 'info',
 };
