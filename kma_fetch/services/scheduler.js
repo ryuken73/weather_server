@@ -2,7 +2,7 @@ const schedule = require('node-schedule');
 
 const intervals = {
   '1min': '* * * * *',        // 매분
-  '10min': '1-57/10 * * * *',    // 10분마다
+  '10min': '1-51/10 * * * *',    // 10분마다
   '1hour': '0 * * * *',       // 매시
   '1day': '0 0 * * *',        // 매일 00:00
 };
