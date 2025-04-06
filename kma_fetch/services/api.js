@@ -1,6 +1,7 @@
 const axios = require('axios');
 const env = require('../config/env');
 const file = require('../utils/file');
+const time = require('../utils/time');
 const { DateTime } = require('luxon');
 
 // 환경 변수
@@ -79,7 +80,8 @@ async function fetchFileList(outputLevel, dataType, dataCoverage, sDate, eDate) 
     return fileList.map(file => {
       const date = file.item; // "202210272300"
       const utcDate = DateTime.fromFormat(date, 'yyyyMMddHHmm', { zone: 'UTC' }).toJSDate();
-      return { date, utcDate };
+      const kstDate = DateTime.fromFormat(date, 'yyyyMMddHHmm', { zone: 'UTC' }).setZone(env.TIMEZONE).toFormat('yyyyMMddHHmm');
+      return { date, utcDate, kstDate };
     });
   } catch (error) {
     console.error(`Error fetching file list from ${url}: ${error.message}`);

@@ -1,6 +1,7 @@
 const fastify = require('fastify')({ logger: false });
 const path = require('path');
 const fs = require('fs/promises');
+const {addHours, format, parse} = require('date-fns');
 const { Pool } = require('pg');
 require('dotenv').config(); // .env 파일 로드
 
@@ -38,10 +39,37 @@ const pool = new Pool(dbConfig);
 //   console.log('Rows:', result.rows.length);
 // })();
 
+
+const convertGMTToKSTString = (dateString) => {
+  // 입력 문자열을 Date 객체로 파싱
+  // parse 함수는 형식 패턴을 사용해 문자열을 해석
+  const gmtDate = parse(dateString, 'yyyyMMddHHmm', new Date());
+  // KST는 UTC+9이므로 9시간 추가
+  const kstDate = addHours(gmtDate, 9);
+  // 변환된 시간을 yymmddHHmm 형식으로 포매팅
+  const kstString = format(kstDate, 'yyyyMMddHHmm');
+  return kstString;
+}
+
+const convertKSTToGMTString = (dateString) => {
+  // 입력 문자열을 Date 객체로 파싱
+  // parse 함수는 형식 패턴을 사용해 문자열을 해석
+  const kstDate = parse(dateString, 'yyyyMMddHHmm', new Date());
+  // KST는 UTC+9이므로 9시간 추가
+  const gmtDate = addHours(kstDate, -9);
+  // 변환된 시간을 yymmddHHmm 형식으로 포매팅
+  const gmtString = format(gmtDate, 'yyyyMMddHHmm');
+  return gmtString;
+}
+
 (async () => {
   await fastify.register(require('@fastify/compress'), { global: true}).after(() => {
     fastify.log.info('Compression plugin registered')
   });
+  fastify.register(require('@fastify/static'), {
+    root: 'D:/002.Code/002.node/weather_api/data/weather/gk2a',
+    prefix: '/weather/'
+  })
   // 엔드포인트 설정: /ir105/:area/:step?timestamp_kor=...
   fastify.get('/ir105/:area/:step', async (request, reply) => {
     const { area, step } = request.params; // URL 파라미터
@@ -127,6 +155,38 @@ const pool = new Pool(dbConfig);
 
       reply.header('Content-Type', 'application/json');
       reply.header('Content-Encoding', 'gzip');
+      return data;
+    } catch (err) {
+      fastify.log.error(err);
+      if (err.code === 'ENOENT') {
+          return reply.code(404).send({ error: 'File not found' });
+        }
+      throw err;
+    }
+  });
+
+  fastify.get('/:type/:area/:step/image', async (request, reply) => {
+    const { type, area, step } = request.params; // URL 파라미터
+    const { timestamp_kor } = request.query; // 쿼리 파라미터
+    // 필수 파라미터 검증
+    if (!timestamp_kor) {
+      return reply.code(400).send({ error: 'timestamp_kor query parameter is required' });
+    }
+    const [dataName, color] = type.split('-')
+    const timestamp_utc = convertKSTToGMTString(timestamp_kor);
+    const basedir = 'D:/002.Code/002.node/weather_api/data/weather/gk2a'
+    const subdir = `${timestamp_kor.slice(0,4)}-${timestamp_kor.slice(4,6)}-${timestamp_kor.slice(6,8)}`
+    const proj = area === 'ea' ? 'lc' : 'ge';
+    const fileName = `gk2a_ami_le1b_${dataName}_${area}020${proj}_${timestamp_utc}_${timestamp_kor}_step${step}_${color}.png`;
+    // const gzipFname = path.join(jsonFileDir, fileName);
+    const fullName = path.join(basedir, subdir, fileName);
+    console.log('read', fileName)
+
+    try {
+      const data = await fs.readFile(fullName);
+
+      reply.header('Content-Type', 'image/png');
+      // reply.header('Content-Encoding', 'gzip');
       return data;
     } catch (err) {
       fastify.log.error(err);

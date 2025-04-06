@@ -2,6 +2,7 @@ const api = require('./services/api');
 const file = require('./utils/file');
 const time = require('./utils/time');
 const schedule = require('./services/scheduler');
+const { TIMEZONE } = require('./config/env');
 
 // 다운로드할 파라미터 조합 정의
 const downloadConfigs = [
@@ -35,10 +36,25 @@ async function downloadLatestData(outputLevel, dataType, dataCoverage) {
     }
 
     // 다운로드되지 않은 파일만 필터링
+    // const filesToDownload = availableFiles.filter(availFile => {
+    //   const kstFolder = time.getKstFolderDate(availFile.utcDate);
+    //   // const expectedFileName = `gk2a_ami_${outputLevel.toLowerCase()}_${dataType.toLowerCase()}_${dataCoverage.toLowerCase()}020ge_${availFile.date}_${availFile.kstDate}.nc`;
+    //   const expectedFileNamePattern = new RegExp(`gk2a_ami_${outputLevel.toLowerCase()}_${dataType.toLowerCase()}_${dataCoverage.toLowerCase()}020(ge|lc)_${availFile.date}_${availFile.kstDate}.nc`);
+    //   console.log(expectedFileName)
+    //   // return !folderFiles[kstFolder].includes(expectedFileName);
+    //   return folderFiles[kstFolder].every(fname => {
+    //     return !expectedFileNamePattern.test(fname)
+    //   })
+    // });
+    // 공통 패턴을 밖에서 정의 (outputLevel 등이 고정값일 경우)
+    const patternBase = `gk2a_ami_${outputLevel.toLowerCase()}_${dataType.toLowerCase()}_${dataCoverage.toLowerCase()}020(ge|lc)`;
+
     const filesToDownload = availableFiles.filter(availFile => {
       const kstFolder = time.getKstFolderDate(availFile.utcDate);
-      const expectedFileName = `gk2a_ami_${outputLevel.toLowerCase()}_${dataType.toLowerCase()}_${dataCoverage.toLowerCase()}020ge_${availFile.date}_${time.utcToKst(availFile.utcDate).toISOString().slice(0, 16).replace(/[-T:]/g, '')}.nc`;
-      return !folderFiles[kstFolder].includes(expectedFileName);
+      const fileNameRegex = new RegExp(`${patternBase}_${availFile.date}_${availFile.kstDate}.nc`);
+      
+      const existingFiles = folderFiles[kstFolder] || [];
+      return existingFiles.every(fileName => !fileNameRegex.test(fileName));
     });
 
     console.log(`Found ${filesToDownload.length} new files to download for ${outputLevel}/${dataType}/${dataCoverage}`);
