@@ -180,12 +180,11 @@ const convertKSTToGMTString = (dateString) => {
     }
     const [dataName, color] = type.split('-')
     const timestamp_utc = convertKSTToGMTString(timestamp_kor);
-    const basedir = 'D:/002.Code/002.node/weather_api/data/weather/gk2a'
     const subdir = `${timestamp_kor.slice(0,4)}-${timestamp_kor.slice(4,6)}-${timestamp_kor.slice(6,8)}`
     const proj = area === 'ea' ? 'lc' : 'ge';
     const fileName = `gk2a_ami_le1b_${dataName}_${area}020${proj}_${timestamp_utc}_${timestamp_kor}_step${step}_${color}.png`;
     // const gzipFname = path.join(jsonFileDir, fileName);
-    const fullName = path.join(basedir, subdir, fileName);
+    const fullName = path.join(dataDir, subdir, fileName);
     console.log('read', fileName)
 
     try {
