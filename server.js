@@ -17,6 +17,11 @@ fastify.register(require('@fastify/cors'), {
   origin: '*'
 })
 
+const mode = process.env.MODE || 'dev';
+const dataDir = mode === 'prod' ? process.env.ROOT_DIR_PROD : process.env.ROOT_DIR_DEV 
+console.log(`MODE: ${mode}`);
+console.log(`DATA DIR: ${dataDir}`);
+
 // 데이터베이스 연결 설정
 const dbConfig = {
   user: process.env.DB_USER,
@@ -25,6 +30,7 @@ const dbConfig = {
   password: process.env.DB_PASSWORD,
   port: process.env.DB_PORT,
 };
+
 
 // PostgreSQL 풀 생성
 const pool = new Pool(dbConfig);
@@ -67,7 +73,7 @@ const convertKSTToGMTString = (dateString) => {
     fastify.log.info('Compression plugin registered')
   });
   fastify.register(require('@fastify/static'), {
-    root: 'D:/002.Code/002.node/weather_api/data/weather/gk2a',
+    root: dataDir,
     prefix: '/weather/'
   })
   // 엔드포인트 설정: /ir105/:area/:step?timestamp_kor=...
