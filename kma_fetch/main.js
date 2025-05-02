@@ -8,6 +8,7 @@ const { TIMEZONE } = require('./config/env');
 const downloadConfigs = [
   { outputLevel: 'LE1B', dataType: 'IR105', dataCoverage: 'EA', interval: '10min' },
   { outputLevel: 'LE1B', dataType: 'IR105', dataCoverage: 'FD', interval: '10min' },
+  { outputLevel: 'LE1B', dataType: 'IR105', dataCoverage: 'KO', interval: '2min' },
 ];
 
 /**
@@ -20,7 +21,10 @@ const downloadConfigs = [
 async function downloadLatestData(outputLevel, dataType, dataCoverage) {
   try {
     const now = time.getUtcNow();
-    const sDate = new Date(now.getTime() - 60 * 60 * 1000); // 1시간 전
+    let sDate = new Date(now.getTime() - 60 * 60 * 1000); // 1시간 전
+    if(dataCoverage === 'KO'){
+      sDate = new Date(now.getTime() - 60 * 4 * 1000); // 4분전
+    }
     const eDate = now;
 
     console.log(`Fetching file list for ${outputLevel}/${dataType}/${dataCoverage} from ${sDate} to ${eDate}`);
@@ -59,9 +63,18 @@ async function downloadLatestData(outputLevel, dataType, dataCoverage) {
 
     console.log(`Found ${filesToDownload.length} new files to download for ${outputLevel}/${dataType}/${dataCoverage}`);
 
+    const sleep = (interval=1000) => {
+      return new Promise((resolve) => {
+        setTimeout(() => {
+          resolve();
+        }, interval)
+      })
+    }
+
     for (const fileToDownload of filesToDownload) {
       const savedPath = await api.fetchAndSaveNcFile(outputLevel, dataType, dataCoverage, fileToDownload.date);
       console.log(`Downloaded and saved: ${savedPath}`);
+      await sleep(1000)
     }
   } catch (error) {
     console.error(`Error processing ${outputLevel}/${dataType}/${dataCoverage}: ${error.message}`);
