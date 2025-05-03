@@ -181,7 +181,7 @@ const convertKSTToGMTString = (dateString) => {
     const [dataName, color] = type.split('-')
     const timestamp_utc = convertKSTToGMTString(timestamp_kor);
     const subdir = `${timestamp_kor.slice(0,4)}-${timestamp_kor.slice(4,6)}-${timestamp_kor.slice(6,8)}`
-    const proj = area === 'ea' ? 'lc' : 'ge';
+    const proj = area === 'fd' ? 'ge' : 'lc';
     const fileName = `gk2a_ami_le1b_${dataName}_${area}020${proj}_${timestamp_utc}_${timestamp_kor}_step${step}_${color}.png`;
     // const gzipFname = path.join(jsonFileDir, fileName);
     const fullName = path.join(dataDir, subdir, fileName);
