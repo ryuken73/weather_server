@@ -25,7 +25,7 @@ async function downloadLatestData(outputLevel, dataType, dataCoverage) {
     let sDate = new Date(now.getTime() - 60 * 60 * 6000); // 6시간 전
     if(dataCoverage === 'KO'){
       // sDate = new Date(now.getTime() - 60 * 4 * 1000); // 4분전
-      sDate = new Date(now.getTime() - 60 * 60 * 1000); // 1시간 전
+      sDate = new Date(now.getTime() - 60 * 60 * 6000); // 1시간 전
     }
     const eDate = now;
 
