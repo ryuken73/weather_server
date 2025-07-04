@@ -6,6 +6,7 @@ const { DateTime } = require('luxon');
 
 // 환경 변수
 const BASE_URL = env.API_ENDPOINT;
+const BASE_URL_RDR = env.API_ENDPOINT_RDR;
 const API_KEY = env.API_KEY;
 
 /**
@@ -18,6 +19,18 @@ function parseUtcDateFromFileName(fileName) {
   if (!match) throw new Error(`Invalid filename format: ${fileName}`);
   const utcStr = match[1]; // "202210272350"
   return DateTime.fromFormat(utcStr, 'yyyyMMddHHmm', { zone: 'UTC' }).toJSDate();
+}
+
+/**
+ * 파일명에서 KST 시간을 파싱하여 Date 객체로 반환
+ * @param {string} fileName - 원본 파일명 
+ * @returns {Date} - KST 시간의 Date 객체
+ */
+function parseKstDateFromFileName(fileName, fileExt) {
+  const match = fileName.match(/(\d{12})\.bin$/); // "202210272350" 추출
+  if (!match) throw new Error(`Invalid filename format: ${fileName}`);
+  const kstStr = match[1]; // "202210272350"
+  return DateTime.fromFormat(kstStr, 'yyyyMMddHHmm', { zone: 'KST' }).toJSDate();
 }
 
 /**
@@ -48,13 +61,40 @@ async function fetchAndSaveNcFile(outputLevel, dataType, dataCoverage, date) {
     const originalFileName = fileNameMatch[1]; // "gk2a_ami_le1b_nr016_fd020ge_202210272350.nc"
 
     // 파일명에서 UTC 시간 파싱
-    const utcDate = parseUtcDateFromFileName(originalFileName);
+    const kstDate = parseUtcDateFromFileName(originalFileName);
 
     // 파일 저장
-    const savedPath = await file.saveNcFile(response.data, originalFileName, utcDate);
+    const savedPath = await file.saveNcFile(response.data, originalFileName, kstDate);
     return savedPath;
   } catch (error) {
     console.error(`Error fetching or saving file from ${url}: ${error.message}`);
+    throw error;
+  }
+}
+
+async function fetchFile(fetchUrl) {
+  try {
+    const response = await axios.get(fetchUrl, {
+      responseType: 'stream', // 바이너리 데이터 처리
+      headers: {
+        'Accept-Encoding': 'gzip'
+      }
+    });
+
+    // Content-Disposition에서 파일명 추출
+    const contentDisposition = response.headers['content-disposition'];
+    if (!contentDisposition) {
+      throw new Error('Content-Disposition header not found');
+    }
+    const fileNameMatch = contentDisposition.match(/filename=(.*)/);
+    if (!fileNameMatch) {
+      throw new Error(`Invalid Content-Disposition: ${contentDisposition}`);
+    }
+    const originalFileName = fileNameMatch[1]; // "gk2a_ami_le1b_nr016_fd020ge_202210272350.nc"
+    return {response, originalFileName}
+
+  } catch (error) {
+    console.error(`Error fetching or saving file from ${fetchUrl}: ${error.message}`);
     throw error;
   }
 }
@@ -89,7 +129,54 @@ async function fetchFileList(outputLevel, dataType, dataCoverage, sDate, eDate) 
   }
 }
 
+const mkUrl = {
+  'RDR': (baseUrl, tm, params) => {
+    const {cmp} = params;
+    return `${baseUrl}/rdr_cmp_file.php?tm=${tm}&data=bin&cmp=${cmp}&authKey=${API_KEY}`;
+  }
+}
+
+const mkFetchCandidate = (everyMinute, count) => {
+  // 현재 시간을 기준으로 설정
+  const now = new Date();
+  
+  // 가장 최근의 everyMinute 간격 시간 계산
+  const minutes = now.getMinutes();
+  const remainder = minutes % everyMinute;
+  let baseMinutes;
+  
+  // 현재 시간이 everyMinute 간격이 아니면 직전 간격으로 조정
+  if (remainder === 0) {
+    baseMinutes = minutes;
+  } else {
+    baseMinutes = minutes - remainder;
+  }
+  
+  const baseDate = new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours(), baseMinutes);
+
+  const result = [];
+  
+  // count만큼 반복하며 시간 문자열 생성
+  for (let i = 0; i < count; i++) {
+    const currentTime = new Date(baseDate.getTime() - (i * everyMinute * 60 * 1000));
+    
+    // YYYYMMDDHHMM 형식으로 포맷
+    const timeString = currentTime.getFullYear().toString() +
+      String(currentTime.getMonth() + 1).padStart(2, '0') +
+      String(currentTime.getDate()).padStart(2, '0') +
+      String(currentTime.getHours()).padStart(2, '0') +
+      String(currentTime.getMinutes()).padStart(2, '0');
+    
+    result.push(timeString);
+  }
+  
+  return result;
+}
+
 module.exports = {
   fetchAndSaveNcFile,
   fetchFileList,
+  fetchFile,
+  mkFetchCandidate,
+  mkUrl,
 };

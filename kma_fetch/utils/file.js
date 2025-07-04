@@ -1,8 +1,11 @@
 const fs = require('fs').promises;
+const zlib = require('zlib');
+const fsRaw = require('fs');
 const path = require('path');
 const env = require('../config/env');
 const time = require('./time');
 const { DateTime } = require('luxon');
+const { pipeline } = require('stream/promises');
 
 // 기본 디렉토리 설정
 const BASE_DIR = env.BASE_DIR;
@@ -12,9 +15,9 @@ const BASE_DIR = env.BASE_DIR;
  * @param {Date} utcDate - UTC 시간의 Date 객체
  * @returns {string} - 생성된 디렉토리 경로
  */
-async function ensureDirectory(utcDate) {
-  const kstFolder = time.getKstFolderDate(utcDate); // "2022-10-28"
-  const dirPath = path.join(BASE_DIR, 'gk2a', kstFolder);
+async function ensureDirectory(date, timeZone, subDirName) {
+  const kstFolder = timeZone ? date : time.getKstFolderDate(date); // "2022-10-28"
+  const dirPath = path.join(BASE_DIR, subDirName || 'gk2a', kstFolder);
   await fs.mkdir(dirPath, { recursive: true });
   return dirPath;
 }
@@ -52,19 +55,51 @@ async function saveNcFile(data, originalFileName, utcDate, overwrite = false) {
   return filePath;
 }
 
+async function saveFile(data, saveFileName, dateStringForFolder, subDirName, compressed, overwrite=false){
+  console.log('saveFile', saveFileName)
+  const dirPath = await ensureDirectory(dateStringForFolder, env.TIMEZONE, subDirName);
+  const filePath = path.join(dirPath, saveFileName);
+  const fileExists = await fs.stat(filePath).catch(() => false);
+  if (fileExists && !overwrite) {
+    console.log(`File already exists: ${filePath}, skipping...`);
+    return filePath;
+  }
+  if(compressed){
+    const gunzip = zlib.createGunzip();
+    const fileStream = fsRaw.createWriteStream(filePath);
+    console.log('compressed. save uncompress file', filePath, typeof(data))
+    await pipeline(
+      data,
+      gunzip,
+      fileStream
+    )
+  } else {
+    console.log('not compressed. save original file', filePath)
+    await fs.writeFile(filePath, data);
+  }
+  console.log(`Saved file: ${filePath}`);
+  return filePath;
+}
+
 /**
  * 특정 KST 날짜 폴더의 파일 목록 반환
  * @param {Date} utcDate - UTC 시간의 Date 객체
  * @returns {string[]} - 해당 폴더 내 파일 목록
  */
-async function listFiles(utcDate) {
-  const dirPath = await ensureDirectory(utcDate);
+async function listFiles(date, timeZone, subDirName) {
+  const dirPath = await ensureDirectory(date, timeZone, subDirName);
   const files = await fs.readdir(dirPath);
   return files;
+}
+
+function uncompressedFname(originalFileName, compressExt){
+  return originalFileName.replace('.'+compressExt, '');
 }
 
 module.exports = {
   ensureDirectory,
   saveNcFile,
+  saveFile,
   listFiles,
+  uncompressedFname
 };

@@ -15,6 +15,13 @@ function getKstFolderDate(utcDate) {
     .toFormat('yyyy-MM-dd');
 }
 
+function getDateString(yyyyMMddHHmm) {
+  const year = yyyyMMddHHmm.slice(0, 4);
+  const month = yyyyMMddHHmm.slice(4, 6); 
+  const day = yyyyMMddHHmm.slice(6, 8);
+  return `${year}-${month}-${day}`
+}
+
 /**
  * UTC Date 객체를 받아 UTC와 KST를 포함한 파일명 생성
  * @param {Date} utcDate - UTC 시간의 Date 객체
@@ -34,6 +41,13 @@ function generateFileName(utcDate) {
  */
 function getUtcNow() {
   return new Date();
+}
+function getKstNow() {
+  const utcNow = getUtcNow();
+  return utcToKst(utcNow);
+}
+function jsDateToString(jsDate) {
+  return DateTime.fromJSDate(jsDate, { zone: TIMEZONE }).toFormat('yyyyMMddHHmm');
 }
 
 /**
@@ -60,8 +74,11 @@ function kstToUtc(kstDate) {
 
 module.exports = {
   getKstFolderDate,
+  getDateString,
   generateFileName,
   getUtcNow,
+  getKstNow,
+  jsDateToString,
   utcToKst,
   kstToUtc,
 };
