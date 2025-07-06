@@ -3,7 +3,11 @@ const path = require('path');
 const fs = require('fs/promises');
 const {addHours, format, parse} = require('date-fns');
 const { Pool } = require('pg');
+const server_util = require('./server_util');
+
 require('dotenv').config(); // .env 파일 로드
+
+const {findNearestRadarTimestamp} = server_util;
 
 // 데이터 압축 플러그인 등록
 // fastify.register(require('@fastify/compress'), { 
@@ -18,9 +22,9 @@ fastify.register(require('@fastify/cors'), {
 })
 
 const mode = process.env.MODE || 'dev';
-const dataDir = mode === 'prod' ? process.env.ROOT_DIR_PROD : process.env.ROOT_DIR_DEV 
+const rootDir = mode === 'prod' ? process.env.ROOT_DIR_PROD : process.env.ROOT_DIR_DEV 
 console.log(`MODE: ${mode}`);
-console.log(`DATA DIR: ${dataDir}`);
+console.log(`DATA DIR: ${rootDir}`);
 
 // 데이터베이스 연결 설정
 const dbConfig = {
@@ -73,7 +77,7 @@ const convertKSTToGMTString = (dateString) => {
     fastify.log.info('Compression plugin registered')
   });
   fastify.register(require('@fastify/static'), {
-    root: dataDir,
+    root: rootDir,
     prefix: '/weather/'
   })
   // 엔드포인트 설정: /ir105/:area/:step?timestamp_kor=...
@@ -179,13 +183,21 @@ const convertKSTToGMTString = (dateString) => {
       return reply.code(400).send({ error: 'timestamp_kor query parameter is required' });
     }
     const [dataName, color] = type.split('-')
-    const timestamp_utc = convertKSTToGMTString(timestamp_kor);
-    const subdir = `${timestamp_kor.slice(0,4)}-${timestamp_kor.slice(4,6)}-${timestamp_kor.slice(6,8)}`
+    const isRadarImageRequest = dataName === 'rdr';
+    const timestamp = isRadarImageRequest ? findNearestRadarTimestamp(timestamp_kor) : timestamp_kor;
+    const dataDir = isRadarImageRequest ? 'rdr':'gk2a';
+    const timestamp_utc = convertKSTToGMTString(timestamp);
+    const subdir = `${timestamp.slice(0,4)}-${timestamp.slice(4,6)}-${timestamp.slice(6,8)}`
     const proj = area === 'fd' ? 'ge' : 'lc';
-    const fileName = `gk2a_ami_le1b_${dataName}_${area}020${proj}_${timestamp_utc}_${timestamp_kor}_step${step}_${color}.png`;
+    let fileName;
+    if(type === 'rdr-hsp'){
+      fileName = `RDR_CMP_HSP_PUB_${timestamp}.png`;
+    } else {
+      fileName = `gk2a_ami_le1b_${dataName}_${area}020${proj}_${timestamp_utc}_${timestamp}_step${step}_${color}.png`;
+    }
     // const gzipFname = path.join(jsonFileDir, fileName);
-    const fullName = path.join(dataDir, subdir, fileName);
-    console.log('read', fileName)
+    const fullName = path.join(rootDir, dataDir, subdir, fileName);
+    console.log('read', fullName)
 
     try {
       const data = await fs.readFile(fullName);
@@ -206,7 +218,7 @@ const convertKSTToGMTString = (dateString) => {
   // 서버 시작
   const start = async () => {
     try {
-      await fastify.listen({ port: 3010, host: '0.0.0.0' });
+      await fastify.listen({ port: 5010, host: '0.0.0.0' });
       fastify.log.info('Server running on http://localhost:3010');
     } catch (err) {
       console.log(err)
