@@ -191,7 +191,7 @@ const convertKSTToGMTString = (dateString) => {
     const proj = area === 'fd' ? 'ge' : 'lc';
     let fileName;
     if(type === 'rdr-hsp'){
-      fileName = `RDR_CMP_HSP_PUB_${timestamp}.png`;
+      fileName = `RDR_CMP_HSP_PUB_${timestamp}_step${step}.png`;
     } else {
       fileName = `gk2a_ami_le1b_${dataName}_${area}020${proj}_${timestamp_utc}_${timestamp}_step${step}_${color}.png`;
     }

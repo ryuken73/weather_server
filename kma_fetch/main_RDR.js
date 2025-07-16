@@ -19,8 +19,8 @@ const downloadConfigs = [
     fileExt: 'bin',
     mkUrl: api.mkUrl, 
     getCandidate: api.mkFetchCandidate, 
-    candiateCount: 2, 
-    candidateMinute: 5, 
+    candiateCount: 2, // number of files which would be tried to fetch. default 2
+    candidateMinute: 5,  // file generating interval. should be 5 for radar hsp
     interval: '5min'},
 ];
 
