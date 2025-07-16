@@ -218,7 +218,7 @@ const convertKSTToGMTString = (dateString) => {
   // 서버 시작
   const start = async () => {
     try {
-      await fastify.listen({ port: 5010, host: '0.0.0.0' });
+      await fastify.listen({ port: 3010, host: '0.0.0.0' });
       fastify.log.info('Server running on http://localhost:3010');
     } catch (err) {
       console.log(err)
