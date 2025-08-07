@@ -175,6 +175,24 @@ const convertKSTToGMTString = (dateString) => {
     }
   });
 
+  const dataDirs = {
+    ir105: 'gk2a',
+    rdr: 'rdr',
+    aws: 'aws'
+  }
+  const getNearTimestampFunc = {
+    ir105: (timestamp) => timestamp,
+    rdr: findNearestRadarTimestamp,
+    aws: (timestamp) => timestamp
+  }
+
+  // type
+  // ir105-mono: ir105 흑백
+  // ir105-color: ir105 칼라
+  // rdr-hsp: Radar 강수
+  // aws-RN_15M: AWS 15분강수
+  // aws-RN_60M: AWS 60분강수
+
   fastify.get('/:type/:area/:step/image', async (request, reply) => {
     const { type, area, step } = request.params; // URL 파라미터
     const { timestamp_kor } = request.query; // 쿼리 파라미터
@@ -182,31 +200,36 @@ const convertKSTToGMTString = (dateString) => {
     if (!timestamp_kor) {
       return reply.code(400).send({ error: 'timestamp_kor query parameter is required' });
     }
-    const [dataName, color] = type.split('-')
-    const isRadarImageRequest = dataName === 'rdr';
-    const timestamp = isRadarImageRequest ? findNearestRadarTimestamp(timestamp_kor) : timestamp_kor;
-    const dataDir = isRadarImageRequest ? 'rdr':'gk2a';
+    const [dataName, dataKind] = type.split('-')
+    // const isRadarImageRequest = dataName === 'rdr';
+    // const timestamp = isRadarImageRequest ? findNearestRadarTimestamp(timestamp_kor) : timestamp_kor;
+    // const dataDir = isRadarImageRequest ? 'rdr':'gk2a';
+    const timestamp = getNearTimestampFunc[dataName](timestamp_kor);
+    const dataDir = dataDirs[dataName];
     const timestamp_utc = convertKSTToGMTString(timestamp);
     const subdir = `${timestamp.slice(0,4)}-${timestamp.slice(4,6)}-${timestamp.slice(6,8)}`
     const proj = area === 'fd' ? 'ge' : 'lc';
     let fileName;
     if(type === 'rdr-hsp'){
       fileName = `RDR_CMP_HSP_PUB_${timestamp}_step${step}.png`;
-    } else {
-      fileName = `gk2a_ami_le1b_${dataName}_${area}020${proj}_${timestamp_utc}_${timestamp}_step${step}_${color}.png`;
+    }  else if(dataName == 'aws'){
+      // provide only step1 image
+      fileName = `AWS_MIN_${timestamp}_${dataKind}_step1.png`;
+    }
+    else {
+      fileName = `gk2a_ami_le1b_${dataName}_${area}020${proj}_${timestamp_utc}_${timestamp}_step${step}_${dataKind}.png`;
     }
     // const gzipFname = path.join(jsonFileDir, fileName);
     const fullName = path.join(rootDir, dataDir, subdir, fileName);
-    console.log('read', fullName)
-
     try {
       const data = await fs.readFile(fullName);
-
+      console.log('return', fullName)
       reply.header('Content-Type', 'image/png');
       // reply.header('Content-Encoding', 'gzip');
       return data;
     } catch (err) {
       fastify.log.error(err);
+      console.log('not found', fullName)
       if (err.code === 'ENOENT') {
           return reply.code(404).send({ error: 'File not found' });
         }
