@@ -18,6 +18,7 @@ const BASE_DIR = env.BASE_DIR;
 async function ensureDirectory(date, timeZone, subDirName) {
   const kstFolder = timeZone ? date : time.getKstFolderDate(date); // "2022-10-28"
   const dirPath = path.join(BASE_DIR, subDirName || 'gk2a', kstFolder);
+  console.log(timeZone, date, dirPath, kstFolder)
   await fs.mkdir(dirPath, { recursive: true });
   return dirPath;
 }
@@ -55,11 +56,20 @@ async function saveNcFile(data, originalFileName, utcDate, overwrite = false) {
   return filePath;
 }
 
-async function saveFile(data, saveFileName, dateStringForFolder, subDirName, compressed, overwrite=false){
+async function isFileExists(saveFileName, dateStringForFolder, subDirName) {
   console.log('saveFile', saveFileName)
   const dirPath = await ensureDirectory(dateStringForFolder, env.TIMEZONE, subDirName);
   const filePath = path.join(dirPath, saveFileName);
   const fileExists = await fs.stat(filePath).catch(() => false);
+  return [fileExists, filePath];
+}
+
+async function saveFile(data, saveFileName, dateStringForFolder, subDirName, compressed, overwrite=false){
+  console.log('saveFile', saveFileName)
+  // const fileExists = await fs.stat(filePath).catch(() => false);
+  // const dirPath = await ensureDirectory(dateStringForFolder, env.TIMEZONE, subDirName);
+  // const filePath = path.join(dirPath, saveFileName);
+  const [fileExists, filePath] = await isFileExists(saveFileName, dateStringForFolder, subDirName);
   if (fileExists && !overwrite) {
     console.log(`File already exists: ${filePath}, skipping...`);
     return filePath;
@@ -99,6 +109,7 @@ function uncompressedFname(originalFileName, compressExt){
 module.exports = {
   ensureDirectory,
   saveNcFile,
+  isFileExists,
   saveFile,
   listFiles,
   uncompressedFname
