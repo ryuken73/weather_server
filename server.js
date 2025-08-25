@@ -7,7 +7,7 @@ const server_util = require('./server_util');
 
 require('dotenv').config(); // .env 파일 로드
 
-const {findNearestRadarTimestamp} = server_util;
+const {findNearestTimestamp} = server_util;
 
 // 데이터 압축 플러그인 등록
 // fastify.register(require('@fastify/compress'), { 
@@ -182,8 +182,8 @@ const convertKSTToGMTString = (dateString) => {
   }
   const getNearTimestampFunc = {
     ir105: (timestamp) => timestamp,
-    rdr: findNearestRadarTimestamp,
-    aws: (timestamp) => timestamp
+    rdr: findNearestTimestamp(5),
+    aws: findNearestTimestamp(2)
   }
 
   // type
