@@ -1,6 +1,7 @@
 const fastify = require('fastify')({ logger: false });
 const path = require('path');
 const fs = require('fs/promises');
+const sharp = require('sharp');
 const {addHours, format, parse} = require('date-fns');
 const { Pool } = require('pg');
 const server_util = require('./server_util');
@@ -223,10 +224,26 @@ const convertKSTToGMTString = (dateString) => {
     const fullName = path.join(rootDir, dataDir, subdir, fileName);
     try {
       const data = await fs.readFile(fullName);
+      let imageResized = data;
+      // if(dataName === 'aws' && parseInt(step) !== 1){
+      //   const ratio = 0.5;
+      //   console.log('resize aws image:', ratio)
+      //   imageResized = await sharp(data)
+      //     .resize({
+      //       width: Math.floor(ratio * (await sharp(data).metadata()).width),
+      //       height: Math.floor(ratio * (await sharp(data).metadata()).height),
+      //       fit: 'inside', // 비율 유지
+      //       withoutEnlargement: true // 확대 방지
+      //     })
+      //     .png() // PNG 포맷 유지
+      //     .toBuffer();
+      // } else {
+      //   imageResized = data;
+      // }
       console.log('return', fullName)
       reply.header('Content-Type', 'image/png');
       // reply.header('Content-Encoding', 'gzip');
-      return data;
+      return imageResized;
     } catch (err) {
       fastify.log.error(err);
       console.log('not found', fullName)
