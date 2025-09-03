@@ -193,6 +193,7 @@ const convertKSTToGMTString = (dateString) => {
   // rdr-hsp: Radar 강수
   // aws-RN_15M: AWS 15분강수
   // aws-RN_60M: AWS 60분강수
+  // gfs-wind_10m: GFS 10m 바람
 
   fastify.get('/:type/:area/:step/image', async (request, reply) => {
     const { type, area, step } = request.params; // URL 파라미터
@@ -202,9 +203,6 @@ const convertKSTToGMTString = (dateString) => {
       return reply.code(400).send({ error: 'timestamp_kor query parameter is required' });
     }
     const [dataName, dataKind] = type.split('-')
-    // const isRadarImageRequest = dataName === 'rdr';
-    // const timestamp = isRadarImageRequest ? findNearestRadarTimestamp(timestamp_kor) : timestamp_kor;
-    // const dataDir = isRadarImageRequest ? 'rdr':'gk2a';
     const timestamp = getNearTimestampFunc[dataName](timestamp_kor);
     const dataDir = dataDirs[dataName];
     const timestamp_utc = convertKSTToGMTString(timestamp);
@@ -216,8 +214,9 @@ const convertKSTToGMTString = (dateString) => {
     }  else if(dataName == 'aws'){
       // provide only step1 image
       fileName = `AWS_MIN_${timestamp}_${dataKind}_step1.png`;
-    }
-    else {
+    } else if(dataName === 'gfs'){
+      fileName = `gfs_${dataKind}_${timestamp_utc}_${timestamp}.json`;
+    } else {
       fileName = `gk2a_ami_le1b_${dataName}_${area}020${proj}_${timestamp_utc}_${timestamp}_step${step}_${dataKind}.png`;
     }
     // const gzipFname = path.join(jsonFileDir, fileName);
