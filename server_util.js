@@ -41,9 +41,73 @@ function findNearestTimestamp(interval) {
     );
   }
 }
+function findNearestWindTimestamp(inputDateStr){
+// 입력 문자열을 Date 객체로 파싱
+  const inputDate = new Date(
+    parseInt(inputDateStr.slice(0, 4)), // 연도
+    parseInt(inputDateStr.slice(4, 6)) - 1, // 월 (0-based)
+    parseInt(inputDateStr.slice(6, 8)), // 일
+    parseInt(inputDateStr.slice(8, 10)), // 시
+    parseInt(inputDateStr.slice(10, 12)) // 분
+  );
+
+  // 기준 시간들 (03, 09, 15, 21시)
+  const targetHours = [3, 9, 15, 21];
+
+  // 입력 날짜의 연, 월, 일, 시 추출
+  const year = inputDate.getFullYear();
+  const month = inputDate.getMonth();
+  const day = inputDate.getDate();
+  const hours = inputDate.getHours();
+  const minutes = inputDate.getMinutes();
+
+  // 입력 시간의 타임스탬프 (밀리초)
+  const inputTimestamp = inputDate.getTime();
+
+  // 가능한 시간들 생성 및 비교
+  let nearestPastTime = null;
+  let nearestDiff = Infinity;
+
+  // 현재 날짜와 이전 날짜를 모두 고려
+  for (let d = 0; d >= -1; d--) {
+    const checkDate = new Date(inputDate);
+    checkDate.setDate(day + d);
+
+    for (const targetHour of targetHours) {
+      // 해당 날짜의 targetHour 시 00분 설정
+      const candidate = new Date(
+        checkDate.getFullYear(),
+        checkDate.getMonth(),
+        checkDate.getDate(),
+        targetHour,
+        0
+      );
+
+      // 후보 시간이 입력 시간보다 이전인지 확인
+      const timeDiff = inputTimestamp - candidate.getTime();
+      if (timeDiff >= 0 && timeDiff < nearestDiff) {
+        nearestDiff = timeDiff;
+        nearestPastTime = candidate;
+      }
+    }
+  }
+
+  // nearestPastTime을 YYYYMMDDHH00 형식으로 변환
+  if (nearestPastTime) {
+    const yearStr = nearestPastTime.getFullYear().toString();
+    const monthStr = (nearestPastTime.getMonth() + 1).toString().padStart(2, '0');
+    const dayStr = nearestPastTime.getDate().toString().padStart(2, '0');
+    const hourStr = nearestPastTime.getHours().toString().padStart(2, '0');
+    return `${yearStr}${monthStr}${dayStr}${hourStr}00`;
+  }
+
+  // 예외 처리: 적합한 시간이 없는 경우 (실제로는 발생하지 않음)
+  throw new Error("No valid past time found");
+}
 
 module.exports = {
-  findNearestTimestamp
+  findNearestTimestamp,
+  findNearestWindTimestamp
 }
 
 // 테스트 예시
@@ -67,3 +131,11 @@ module.exports = {
 // } catch (error) {
 //   console.error(error.message);
 // }
+
+// 테스트 예제
+// console.log(findNearestWindTimestamp("202509040412")); // "202509040300"
+// console.log(findNearestWindTimestamp("202509040258")); // "202509032100"
+// console.log(findNearestWindTimestamp("202509040859")); // "202509040300"
+// console.log(findNearestWindTimestamp("202509040900")); // "202509040900"
+// console.log(findNearestWindTimestamp("202509040901")); // "202509040900"
+// console.log(findNearestWindTimestamp("202509042359")); // "202509042100"
