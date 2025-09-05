@@ -41,68 +41,71 @@ function findNearestTimestamp(interval) {
     );
   }
 }
-function findNearestWindTimestamp(inputDateStr){
+function findNearestWindTimestamp(){
 // 입력 문자열을 Date 객체로 파싱
-  const inputDate = new Date(
-    parseInt(inputDateStr.slice(0, 4)), // 연도
-    parseInt(inputDateStr.slice(4, 6)) - 1, // 월 (0-based)
-    parseInt(inputDateStr.slice(6, 8)), // 일
-    parseInt(inputDateStr.slice(8, 10)), // 시
-    parseInt(inputDateStr.slice(10, 12)) // 분
-  );
+  return (inputDateStr) => {
+    const inputDate = new Date(
+      parseInt(inputDateStr.slice(0, 4)), // 연도
+      parseInt(inputDateStr.slice(4, 6)) - 1, // 월 (0-based)
+      parseInt(inputDateStr.slice(6, 8)), // 일
+      parseInt(inputDateStr.slice(8, 10)), // 시
+      parseInt(inputDateStr.slice(10, 12)) // 분
+    );
 
-  // 기준 시간들 (03, 09, 15, 21시)
-  const targetHours = [3, 9, 15, 21];
+    // 기준 시간들 (03, 09, 15, 21시)
+    // const targetHours = [3, 9, 15, 21];
+    const targetHours = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23];
 
-  // 입력 날짜의 연, 월, 일, 시 추출
-  const year = inputDate.getFullYear();
-  const month = inputDate.getMonth();
-  const day = inputDate.getDate();
-  const hours = inputDate.getHours();
-  const minutes = inputDate.getMinutes();
+    // 입력 날짜의 연, 월, 일, 시 추출
+    const year = inputDate.getFullYear();
+    const month = inputDate.getMonth();
+    const day = inputDate.getDate();
+    const hours = inputDate.getHours();
+    const minutes = inputDate.getMinutes();
 
-  // 입력 시간의 타임스탬프 (밀리초)
-  const inputTimestamp = inputDate.getTime();
+    // 입력 시간의 타임스탬프 (밀리초)
+    const inputTimestamp = inputDate.getTime();
 
-  // 가능한 시간들 생성 및 비교
-  let nearestPastTime = null;
-  let nearestDiff = Infinity;
+    // 가능한 시간들 생성 및 비교
+    let nearestPastTime = null;
+    let nearestDiff = Infinity;
 
-  // 현재 날짜와 이전 날짜를 모두 고려
-  for (let d = 0; d >= -1; d--) {
-    const checkDate = new Date(inputDate);
-    checkDate.setDate(day + d);
+    // 현재 날짜와 이전 날짜를 모두 고려
+    for (let d = 0; d >= -1; d--) {
+      const checkDate = new Date(inputDate);
+      checkDate.setDate(day + d);
 
-    for (const targetHour of targetHours) {
-      // 해당 날짜의 targetHour 시 00분 설정
-      const candidate = new Date(
-        checkDate.getFullYear(),
-        checkDate.getMonth(),
-        checkDate.getDate(),
-        targetHour,
-        0
-      );
+      for (const targetHour of targetHours) {
+        // 해당 날짜의 targetHour 시 00분 설정
+        const candidate = new Date(
+          checkDate.getFullYear(),
+          checkDate.getMonth(),
+          checkDate.getDate(),
+          targetHour,
+          0
+        );
 
-      // 후보 시간이 입력 시간보다 이전인지 확인
-      const timeDiff = inputTimestamp - candidate.getTime();
-      if (timeDiff >= 0 && timeDiff < nearestDiff) {
-        nearestDiff = timeDiff;
-        nearestPastTime = candidate;
+        // 후보 시간이 입력 시간보다 이전인지 확인
+        const timeDiff = inputTimestamp - candidate.getTime();
+        if (timeDiff >= 0 && timeDiff < nearestDiff) {
+          nearestDiff = timeDiff;
+          nearestPastTime = candidate;
+        }
       }
     }
-  }
 
-  // nearestPastTime을 YYYYMMDDHH00 형식으로 변환
-  if (nearestPastTime) {
-    const yearStr = nearestPastTime.getFullYear().toString();
-    const monthStr = (nearestPastTime.getMonth() + 1).toString().padStart(2, '0');
-    const dayStr = nearestPastTime.getDate().toString().padStart(2, '0');
-    const hourStr = nearestPastTime.getHours().toString().padStart(2, '0');
-    return `${yearStr}${monthStr}${dayStr}${hourStr}00`;
-  }
+    // nearestPastTime을 YYYYMMDDHH00 형식으로 변환
+    if (nearestPastTime) {
+      const yearStr = nearestPastTime.getFullYear().toString();
+      const monthStr = (nearestPastTime.getMonth() + 1).toString().padStart(2, '0');
+      const dayStr = nearestPastTime.getDate().toString().padStart(2, '0');
+      const hourStr = nearestPastTime.getHours().toString().padStart(2, '0');
+      return `${yearStr}${monthStr}${dayStr}${hourStr}00`;
+    }
 
-  // 예외 처리: 적합한 시간이 없는 경우 (실제로는 발생하지 않음)
-  throw new Error("No valid past time found");
+    // 예외 처리: 적합한 시간이 없는 경우 (실제로는 발생하지 않음)
+    throw new Error("No valid past time found");
+  }
 }
 
 module.exports = {

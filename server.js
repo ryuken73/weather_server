@@ -8,7 +8,7 @@ const server_util = require('./server_util');
 
 require('dotenv').config(); // .env 파일 로드
 
-const {findNearestTimestamp} = server_util;
+const {findNearestTimestamp, findNearestWindTimestamp} = server_util;
 
 // 데이터 압축 플러그인 등록
 // fastify.register(require('@fastify/compress'), { 
@@ -179,12 +179,14 @@ const convertKSTToGMTString = (dateString) => {
   const dataDirs = {
     ir105: 'gk2a',
     rdr: 'rdr',
-    aws: 'aws'
+    aws: 'aws',
+    gfs: 'gfs'
   }
   const getNearTimestampFunc = {
     ir105: (timestamp) => timestamp,
     rdr: findNearestTimestamp(5),
-    aws: findNearestTimestamp(2)
+    aws: findNearestTimestamp(2),
+    gfs: findNearestWindTimestamp()
   }
 
   // type
@@ -203,6 +205,7 @@ const convertKSTToGMTString = (dateString) => {
       return reply.code(400).send({ error: 'timestamp_kor query parameter is required' });
     }
     const [dataName, dataKind] = type.split('-')
+    console.log(type, dataName, dataKind)
     const timestamp = getNearTimestampFunc[dataName](timestamp_kor);
     const dataDir = dataDirs[dataName];
     const timestamp_utc = convertKSTToGMTString(timestamp);
@@ -220,7 +223,9 @@ const convertKSTToGMTString = (dateString) => {
       fileName = `gk2a_ami_le1b_${dataName}_${area}020${proj}_${timestamp_utc}_${timestamp}_step${step}_${dataKind}.png`;
     }
     // const gzipFname = path.join(jsonFileDir, fileName);
+    console.log('rootDir, dataDir, subdir, fileName', rootDir, dataDir, subdir, fileName)
     const fullName = path.join(rootDir, dataDir, subdir, fileName);
+    console.log('fullName', fullName)
     try {
       const data = await fs.readFile(fullName);
       let imageResized = data;
@@ -240,7 +245,8 @@ const convertKSTToGMTString = (dateString) => {
       //   imageResized = data;
       // }
       console.log('return', fullName)
-      reply.header('Content-Type', 'image/png');
+      const contentType = dataName === 'gfs' ? 'application/json':'image/png'
+      reply.header('Content-Type', contentType);
       // reply.header('Content-Encoding', 'gzip');
       return imageResized;
     } catch (err) {
