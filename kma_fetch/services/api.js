@@ -8,6 +8,7 @@ const { DateTime } = require('luxon');
 const BASE_URL = env.API_ENDPOINT;
 const BASE_URL_RDR = env.API_ENDPOINT_RDR;
 const API_KEY = env.API_KEY;
+const LOG_LEVEL = env.LOG_LEVEL || 'info';
 
 /**
  * 파일명에서 UTC 시간을 파싱하여 Date 객체로 반환
@@ -50,6 +51,9 @@ async function fetchAndSaveNcFile(outputLevel, dataType, dataCoverage, date) {
     });
 
     // Content-Disposition에서 파일명 추출
+    if(LOG_LEVEL==='debug'){
+      console.log('response.status=',response.status)
+    }
     const contentDisposition = response.headers['content-disposition'];
     if (!contentDisposition) {
       throw new Error('Content-Disposition header not found');

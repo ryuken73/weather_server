@@ -1,6 +1,6 @@
 echo "copy "$1 $0
-targets="gk2a rdr aws"
-#targets="aws"
+#targets="gk2a rdr aws"
+targets="gfs"
 for target in $targets
 do
 	echo "get flist remote..."
