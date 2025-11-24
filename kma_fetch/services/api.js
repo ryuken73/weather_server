@@ -53,6 +53,7 @@ async function fetchAndSaveNcFile(outputLevel, dataType, dataCoverage, date) {
     // Content-Disposition에서 파일명 추출
     if(LOG_LEVEL==='debug'){
       console.log('response.status=',response.status)
+      console.log('response.headers=',response.headers)
     }
     const contentDisposition = response.headers['content-disposition'];
     if (!contentDisposition) {
