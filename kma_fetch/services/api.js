@@ -58,7 +58,7 @@ async function fetchAndSaveNcFile(outputLevel, dataType, dataCoverage, date) {
     const contentDisposition = response.headers['content-disposition'];
     if (!contentDisposition) {
       if(LOG_LEVEL==='debug'){
-        console.log('response.data=',response.data)
+        console.log('response.data=',response.data.toString('utf-8'))
       }
       throw new Error('Content-Disposition header not found');
     }
