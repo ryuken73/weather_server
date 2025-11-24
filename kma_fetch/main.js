@@ -74,9 +74,14 @@ async function downloadLatestData(outputLevel, dataType, dataCoverage) {
     }
 
     for (const fileToDownload of filesToDownload) {
-      const savedPath = await api.fetchAndSaveNcFile(outputLevel, dataType, dataCoverage, fileToDownload.date);
-      console.log(`Downloaded and saved: ${savedPath}`);
-      await sleep(1000)
+      try {
+        const savedPath = await api.fetchAndSaveNcFile(outputLevel, dataType, dataCoverage, fileToDownload.date);
+        console.log(`Downloaded and saved: ${savedPath}`);
+        await sleep(1000)
+      } catch (error) {
+        console.error(`Failed to download ${fileToDownload.date}: ${error.message}`);
+        continue; 
+      }
     }
   } catch (error) {
     console.error(`Error processing ${outputLevel}/${dataType}/${dataCoverage}: ${error.message}`);

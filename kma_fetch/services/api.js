@@ -57,6 +57,9 @@ async function fetchAndSaveNcFile(outputLevel, dataType, dataCoverage, date) {
     }
     const contentDisposition = response.headers['content-disposition'];
     if (!contentDisposition) {
+      if(LOG_LEVEL==='debug'){
+        console.log('response.data=',response.data)
+      }
       throw new Error('Content-Disposition header not found');
     }
     const fileNameMatch = contentDisposition.match(/filename="(.+?)"/);
