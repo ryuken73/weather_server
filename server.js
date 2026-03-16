@@ -196,6 +196,9 @@ const convertKSTToGMTString = (dateString) => {
   // aws-RN_15M: AWS 15분강수
   // aws-RN_60M: AWS 60분강수
   // gfs-wind_10m: GFS 10m 바람
+  // gfs-0p25_tmp_10m: GFS 10m 온도 (이미지)
+  // gfs-0p25_tmp_500mb: GFS 500mb 온도 (이미지)
+  // gfs-0p25_tmp_850mb: GFS 850mb 온도 (이미지)
 
   fastify.get('/:type/:area/:step/image', async (request, reply) => {
     const { type, area, step } = request.params; // URL 파라미터
@@ -218,7 +221,11 @@ const convertKSTToGMTString = (dateString) => {
       // provide only step1 image
       fileName = `AWS_MIN_${timestamp}_${dataKind}_step1.png`;
     } else if(dataName === 'gfs'){
-      fileName = `gfs_${dataKind}_${timestamp_utc}_${timestamp}.json`;
+      if(dataKind === 'wind_10m'){
+        fileName = `gfs_${dataKind}_${timestamp_utc}_${timestamp}.json`;
+      } else {
+        fileName = `gfs_${dataKind}_${timestamp_utc}_${timestamp}_merc.png`;
+      }
     } else {
       fileName = `gk2a_ami_le1b_${dataName}_${area}020${proj}_${timestamp_utc}_${timestamp}_step${step}_${dataKind}.png`;
     }
