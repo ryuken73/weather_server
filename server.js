@@ -221,7 +221,7 @@ const convertKSTToGMTString = (dateString) => {
       // provide only step1 image
       fileName = `AWS_MIN_${timestamp}_${dataKind}_step1.png`;
     } else if(dataName === 'gfs'){
-      if(dataKind === 'wind_10m'){
+      if(dataKind === 'wind_10m' || dataKind === 'wind_850mb' || dataKind === 'wind_500mb'){
         fileName = `gfs_${dataKind}_${timestamp_utc}_${timestamp}.json`;
       } else {
         fileName = `gfs_${dataKind}_${timestamp_utc}_${timestamp}_merc.png`;
