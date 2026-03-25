@@ -180,13 +180,15 @@ const convertKSTToGMTString = (dateString) => {
     ir105: 'gk2a',
     rdr: 'rdr',
     aws: 'aws',
-    gfs: 'gfs'
+    gfs: 'gfs',
+    gfs_equi: 'gfs'
   }
   const getNearTimestampFunc = {
     ir105: (timestamp) => timestamp,
     rdr: findNearestTimestamp(5),
     aws: findNearestTimestamp(2),
-    gfs: findNearestWindTimestamp()
+    gfs: findNearestWindTimestamp(),
+    gfs_equ: findNearestWindTimestamp()
   }
 
   // type
