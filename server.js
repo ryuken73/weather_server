@@ -199,6 +199,9 @@ const convertKSTToGMTString = (dateString) => {
   // gfs-0p25_tmp_10m: GFS 10m 온도 (이미지)
   // gfs-0p25_tmp_500mb: GFS 500mb 온도 (이미지)
   // gfs-0p25_tmp_850mb: GFS 850mb 온도 (이미지)
+  // gfs_equ-0p25_tmp_10m: GFS 10m 온도 (등압면)
+  // gfs_equ-0p25_tmp_500m: GFS 500m 온도 (등압면)
+  // gfs_equ-0p25_tmp_850m: GFS 850m 온도 (등압면)
 
   fastify.get('/:type/:area/:step/image', async (request, reply) => {
     const { type, area, step } = request.params; // URL 파라미터
@@ -226,6 +229,8 @@ const convertKSTToGMTString = (dateString) => {
       } else {
         fileName = `gfs_${dataKind}_${timestamp_utc}_${timestamp}_merc.png`;
       }
+    } else if(dataName === 'gfs_equ'){
+        fileName = `gfs_${dataKind}_${timestamp_utc}_${timestamp}.png`;
     } else {
       fileName = `gk2a_ami_le1b_${dataName}_${area}020${proj}_${timestamp_utc}_${timestamp}_step${step}_${dataKind}.png`;
     }
