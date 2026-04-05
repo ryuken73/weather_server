@@ -143,7 +143,7 @@ const mkUrl = {
     return `${baseUrl}/rdr_cmp_file.php?tm=${tm}&data=bin&cmp=${cmp}&authKey=${API_KEY}`;
   },
   // KIM 데이터 URL 생성 (ef는 정수로 넘겨서 URL 구성)
-  'g576': (baseUrl, tmfc, params) => {
+  'kim': (baseUrl, tmfc, params) => {
     const { sub, ef } = params;
     const efNum = parseInt(ef, 10); // URL 파라미터에는 보통 숫자(예: 24)로 들어감
     return `${baseUrl}/nwp_file_down.php?nwp=kimgr&sub=${sub}&tmfc=${tmfc}&ef=${efNum}&authKey=${API_KEY}`;

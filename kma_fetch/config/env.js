@@ -4,7 +4,7 @@ const path = require('path');
 // NODE_ENV에 따라 적절한 .env 파일 로드
 const envMode = process.env.NODE_ENV || 'development'; // 기본값은 development
 const envFile = `.env.${envMode}`; // 예: .env.development, .env.production
-dotenv.config({ path: path.resolve(__dirname, '../../', envFile) });
+dotenv.config({ path: path.resolve(__dirname, '../', envFile) });
 
 const env = {
   NODE_ENV: envMode,
@@ -13,6 +13,9 @@ const env = {
   BASE_DIR: process.env.BASE_DIR || './data/weather',
   API_ENDPOINT: process.env.API_ENDPOINT || 'https://apihub-pub.kma.go.kr/api/typ05/api/GK2A',
   API_ENDPOINT_RDR: process.env.API_ENDPOINT_RDR || 'https://apihub-pub.kma.go.kr/api/typ04/url',
+  API_ENDPOINT_KIM: process.env.API_ENDPOINT_KIM || 'https://apihub-pub.kma.go.kr/api/typ06/url',
+  OUT_PATH_KIM: process.env.OUT_PATH_KIM, 
+  KIM_PSL_PNG_GENERATOR: process.env.KIM_PSL_PNG_GENERATOR || 'python/kim_png_generator.py',
   TIMEZONE: process.env.TIMEZONE || 'Asia/Seoul',
   LOG_LEVEL: process.env.LOG_LEVEL || 'info',
   MSSQL_HOST: process.env.MSSQL_HOST,
