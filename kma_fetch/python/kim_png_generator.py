@@ -87,7 +87,7 @@ def process_kim_data(in_dir, tmfc, max_hours, interval, workers):
                 os.makedirs(out_dir, exist_ok=True)
                 
                 # 파일명: g576_v091_easia_etc.2byte_psl_202604030010.png
-                filename = f"{PREFIX}_{current_dt.strftime('%Y%m%d%H%M')}.png"
+                filename = f"{PREFIX}_psl_{current_dt.strftime('%Y%m%d%H%M')}.png"
                 output_path = os.path.join(out_dir, filename)
                 
                 executor.submit(save_image_task, interp_norm[step_idx], output_path)

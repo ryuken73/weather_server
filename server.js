@@ -181,14 +181,16 @@ const convertKSTToGMTString = (dateString) => {
     rdr: 'rdr',
     aws: 'aws',
     gfs: 'gfs',
-    gfs_equ: 'gfs'
+    gfs_equ: 'gfs',
+    kim: 'kim'
   }
   const getNearTimestampFunc = {
     ir105: (timestamp) => timestamp,
     rdr: findNearestTimestamp(5),
     aws: findNearestTimestamp(2),
     gfs: findNearestWindTimestamp(),
-    gfs_equ: findNearestWindTimestamp()
+    gfs_equ: findNearestWindTimestamp(),
+    kim: (timestamp) => timestamp
   }
 
   // type
@@ -197,13 +199,19 @@ const convertKSTToGMTString = (dateString) => {
   // rdr-hsp: Radar 강수
   // aws-RN_15M: AWS 15분강수
   // aws-RN_60M: AWS 60분강수
-  // gfs-wind_10m: GFS 10m 바람
+  // gfs-wind_10m: GFS 10m 바람 (json)
+  // gfs-wind_850mb: GFS 850mb 바람 (json)
+  // gfs-wind_500mb: GFS 500mb 바람 (json)
   // gfs-0p25_tmp_10m: GFS 10m 온도 (이미지)
   // gfs-0p25_tmp_500mb: GFS 500mb 온도 (이미지)
   // gfs-0p25_tmp_850mb: GFS 850mb 온도 (이미지)
+  // gfs-0p25_rh_10m: GFS 10m 습도 (이미지)
+  // gfs-0p25_rh_500mb: GFS 500mb 습도 (이미지)
+  // gfs-0p25_rh_850mb: GFS 850mb 습도 (이미지)
   // gfs_equ-0p25_tmp_10m: GFS 10m 온도 (등압면)
   // gfs_equ-0p25_tmp_500m: GFS 500m 온도 (등압면)
   // gfs_equ-0p25_tmp_850m: GFS 850m 온도 (등압면)
+  // kim-psl: KIM PSL (해수면기압)
 
   fastify.get('/:type/:area/:step/image', async (request, reply) => {
     const { type, area, step } = request.params; // URL 파라미터
@@ -232,7 +240,10 @@ const convertKSTToGMTString = (dateString) => {
         fileName = `gfs_${dataKind}_${timestamp_utc}_${timestamp}_merc.png`;
       }
     } else if(dataName === 'gfs_equ'){
-        fileName = `gfs_${dataKind}_${timestamp_utc}_${timestamp}.png`;
+      fileName = `gfs_${dataKind}_${timestamp_utc}_${timestamp}.png`;
+    } else if(dataName === 'kim'){
+      // get /kim-psl/easia/1/image?timestamp_kor=202604050000
+      fileName = `g576_v091_${area}_etc.2byte_${dataKind}_${timestamp}.png`;
     } else {
       fileName = `gk2a_ami_le1b_${dataName}_${area}020${proj}_${timestamp_utc}_${timestamp}_step${step}_${dataKind}.png`;
     }
