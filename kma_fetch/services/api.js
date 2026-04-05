@@ -141,6 +141,12 @@ const mkUrl = {
   'RDR': (baseUrl, tm, params) => {
     const {cmp} = params;
     return `${baseUrl}/rdr_cmp_file.php?tm=${tm}&data=bin&cmp=${cmp}&authKey=${API_KEY}`;
+  },
+  // KIM 데이터 URL 생성 (ef는 정수로 넘겨서 URL 구성)
+  'g576': (baseUrl, tmfc, params) => {
+    const { sub, ef } = params;
+    const efNum = parseInt(ef, 10); // URL 파라미터에는 보통 숫자(예: 24)로 들어감
+    return `${baseUrl}/nwp_file_down.php?nwp=kimgr&sub=${sub}&tmfc=${tmfc}&ef=${efNum}&authKey=${API_KEY}`;
   }
 }
 
@@ -181,10 +187,42 @@ const mkFetchCandidate = (everyMinute, count) => {
   return result;
 }
 
+/**
+ * KIM 데이터를 위한 분석시간(tmfc) 후보 생성기
+ * @param {number} delayHours - 지연 시간 (기본 12시간)
+ * @param {number} count - 가져올 후보 개수
+ * @returns {string[]} - ['2026040212', '2026040206', ...]
+ */
+const mkKimFetchCandidate = (delayHours = 12, count = 2) => {
+  const now = new Date();
+  // 12시간 전 시간 계산
+  const baseTime = new Date(now.getTime() - (delayHours * 60 * 60 * 1000));
+  
+  // 기준 시간을 가장 가까운 과거의 00, 06, 12, 18시로 내림
+  let hour = baseTime.getHours();
+  hour = Math.floor(hour / 6) * 6;
+  baseTime.setHours(hour, 0, 0, 0);
+
+  const result = [];
+  for (let i = 0; i < count; i++) {
+    const candidateTime = new Date(baseTime.getTime() - (i * 6 * 60 * 60 * 1000));
+    
+    // YYYYMMDDHH 포맷 (tmfc)
+    const timeString = candidateTime.getFullYear().toString() +
+      String(candidateTime.getMonth() + 1).padStart(2, '0') +
+      String(candidateTime.getDate()).padStart(2, '0') +
+      String(candidateTime.getHours()).padStart(2, '0');
+    
+    result.push(timeString);
+  }
+  return result;
+}
+
 module.exports = {
   fetchAndSaveNcFile,
   fetchFileList,
   fetchFile,
   mkFetchCandidate,
+  mkKimFetchCandidate,
   mkUrl,
 };
