@@ -3,7 +3,7 @@ const file = require('./utils/file');
 const time = require('./utils/time');
 const { spawn } = require('child_process');
 const schedule = require('./services/scheduler');
-const path = require('path'); // 경로 조합을 위해 필수 추가
+const path = require('path');
 const { 
     NODE_ENV, 
     TIMEZONE, 
@@ -11,33 +11,41 @@ const {
     KIM_PSL_PNG_GENERATOR, 
     BASE_DIR, 
     OUT_PATH_KIM 
-} = require('./config/env'); // BASE_DIR 추가
+} = require('./config/env');
 
-// 예측 시간(ef) 목록 생성: 000부터 372까지 3시간 간격 (총 125개)
-const KIM_EF_LIST = Array.from({ length: 125 }, (_, i) => String(i * 3).padStart(3, '0'));
+// 🔥 [삭제] 기존의 고정된 KIM_EF_LIST 제거
 
-// 보간 image makes
-function generateKimPng(inDir, tmfc) {
+// 💡 [추가] tmfc(분석시간)에 따라 동적으로 예측시간(ef) 배열과 최대 시간을 반환하는 헬퍼 함수
+function getKimEfInfo(tmfc) {
+  const hour = tmfc.substring(8, 10); // YYYYMMDDHH에서 HH 추출
+  
+  // 00시, 12시는 372시간 / 06시, 18시(기타)는 87시간
+  const maxHours = (hour === '00' || hour === '12') ? 372 : 87;
+  const count = Math.floor(maxHours / 3) + 1; // 3시간 간격 개수 계산
+  
+  const efList = Array.from({ length: count }, (_, i) => String(i * 3).padStart(3, '0'));
+  
+  return { efList, maxHours };
+}
+
+// 보간 image makes (🔥 maxHours 파라미터 추가)
+function generateKimPng(inDir, tmfc, maxHours) {
   return new Promise((resolve, reject) => {
-    console.log(`[KIM-PNG] Starting PNG generation for tmfc: ${tmfc}`);
-    
-    // 파이썬 스크립트 경로
-    // const pythonScript = path.join(__dirname, KIM_PSL_PNG_GENERATOR);
+    console.log(`[KIM-PNG] Starting PNG generation for tmfc: ${tmfc} (Max: ${maxHours}h)`);
     
     const pythonProcess = spawn('python', [
-      '-u', // Python 출력 버퍼링 해제
+      '-u', 
       KIM_PSL_PNG_GENERATOR,
       '--in_dir', inDir,
       '--tmfc', tmfc,
-      '--max_hours', '372', // 필요 시 설정 변경
-      '--interval', '10',   // 10분 간격
-      '--workers', '8'      // 8개 워커
+      '--max_hours', String(maxHours), // 🔥 고정값 '372' 대신 동적으로 할당된 값 사용
+      '--interval', '10',   
+      '--workers', '8'      
     ], {
-      // 핵심: Node.js의 환경변수를 파이썬으로 직접 넘겨줍니다.
       env: {
-        ...process.env,               // 기존 시스템 환경변수 상속
-        ENV: NODE_ENV || 'dev',       // Python의 os.getenv("ENV") 에 대응
-        OUT_PATH_KIM: OUT_PATH_KIM    // 파이썬에서 os.getenv("OUT_PATH_KIM")으로 바로 읽힘
+        ...process.env,               
+        ENV: NODE_ENV || 'dev',       
+        OUT_PATH_KIM: OUT_PATH_KIM    
       }        
     });
 
@@ -66,16 +74,16 @@ const downloadConfigs = [
     baseUrl: API_ENDPOINT_KIM,
     dataType: 'kim', 
     subDirName: 'easia', 
-    compressed: false, // nc 파일은 압축 해제 불필요
+    compressed: false, 
     params: {
-      sub: 'etc' // 아시아 국지 데이터
+      sub: 'etc' 
     },
     fileExt: 'nc',
     mkUrl: api.mkUrl, 
     getCandidate: api.mkKimFetchCandidate, 
-    candiateCount: 2, // 최근 2개의 분석시간(tmfc) 확인
-    delayHours: 12,   // KIM 데이터 지연 시간
-    interval: '1min'  // 스케줄러 간격
+    candiateCount: 2, 
+    delayHours: 12,   
+    interval: '1min'  
   }
 ];
 
@@ -96,56 +104,47 @@ async function downloadLatestKimData(config) {
   } = config;
 
   try {
-    // 1. 후보 tmfc(분석시간) 가져오기 (예: ['2026040212', '2026040206'])
     const timeCandidates = getCandidate(delayHours, candiateCount);
     console.log(`[KIM] Fetching candidates:`, timeCandidates);
 
     const folderFiles = {};
     for (const tmfc of timeCandidates) {
-      // YYYYMMDDHH 포맷에서 YYYY-MM-DD 폴더명 추출
       const dateStringForFolder = `${tmfc.substring(0, 4)}-${tmfc.substring(4, 6)}-${tmfc.substring(6, 8)}`;
-      
       if (!folderFiles[dateStringForFolder]) {
-        // file.js 구조상 BASE_DIR 하위에 'g576' 폴더를 만들기 위해 dataType을 subDirName 인자로 넘김
         folderFiles[dateStringForFolder] = await file.listFiles(dateStringForFolder, TIMEZONE, dataType)
-                                            .catch(() => []); // 폴더가 없으면 빈 배열 반환
+                                            .catch(() => []); 
       }
     }
 
     const sleep = (interval = 1000) => new Promise(resolve => setTimeout(resolve, interval));
 
-    // 다운로드 정보를 모아둘 배열과 카운터 선언
     const updatedTmfcs = []; 
     let totalDownloadedCount = 0;
 
-    // 2. 분석시간(tmfc)별로 예측시간(ef) 루프
     for (const tmfc of timeCandidates) {
-      let currentTmfcNewFiles = 0; // 해당 tmfc의 신규 다운로드 카운터
+      let currentTmfcNewFiles = 0; 
       const dateStringForFolder = `${tmfc.substring(0, 4)}-${tmfc.substring(4, 6)}-${tmfc.substring(6, 8)}`;
       const existingFiles = folderFiles[dateStringForFolder] || [];
-      
-      // Python 스크립트에 넘겨줄 실제 nc 파일 폴더 경로 생성
       const targetDir = path.join(BASE_DIR, dataType, dateStringForFolder);
 
-      for (const ef of KIM_EF_LIST) {
-        // 다운로드 파일명 패턴: g576_v091_easia_etc.2byte.ft000.2026040212.nc
+      // 🔥 1. 현재 tmfc에 맞는 efList와 maxHours를 동적으로 가져옴
+      const { efList, maxHours } = getKimEfInfo(tmfc);
+      console.log(`[KIM] Target tmfc: ${tmfc} -> Will fetch ${efList.length} files up to ${maxHours}h`);
+
+      // 🔥 2. 동적으로 생성된 efList 사용
+      for (const ef of efList) {
         const expectedFileName = `g576_v091_${subDirName}_${params.sub}.2byte.ft${ef}.${tmfc}.${fileExt}`;
         
-        // 이미 폴더에 존재하는 파일이면 스킵
         if (existingFiles.includes(expectedFileName)) continue;
 
-        // URL 파라미터 조합
         const currentParams = { ...params, ef };
         const fetchUrl = api.mkUrl[dataType](baseUrl, tmfc, currentParams);
 
         try {
           const { response, originalFileName } = await api.fetchFile(fetchUrl);
-          
-          // API 헤더에 filename이 없을 경우 expectedFileName으로 대체
           const saveFilename = originalFileName || expectedFileName;
           console.log(`[KIM] Found file to save:`, saveFilename);
           
-          // 파일 저장
           const savedPath = await file.saveFile(
             response.data, 
             saveFilename, 
@@ -166,21 +165,20 @@ async function downloadLatestKimData(config) {
         await sleep(10000); 
       } // -- ef 루프 끝 --
 
-      // 현재 분석시간(tmfc)에 새로 받은 파일이 있다면 일괄 처리 목록에 추가
       if (currentTmfcNewFiles > 0) {
-        updatedTmfcs.push({ tmfc, targetDir, newFilesCount: currentTmfcNewFiles });
+        // 🔥 3. 파이썬 스크립트에 넘겨주기 위해 maxHours도 함께 보관
+        updatedTmfcs.push({ tmfc, targetDir, newFilesCount: currentTmfcNewFiles, maxHours });
       }
     } // -- tmfc 루프 끝 --
 
-    // 3. 다운로드가 모두 완료된 후 일괄 PNG 생성 실행
     if (updatedTmfcs.length > 0) {
       console.log(`[KIM] 모든 다운로드 완료 (총 ${totalDownloadedCount}개 파일). PNG 일괄 변환을 시작합니다.`);
       
       for (const target of updatedTmfcs) {
         console.log(`[KIM-PNG] ${target.tmfc} 변환 시작 (신규 파일: ${target.newFilesCount}개)`);
         try {
-          // 파이썬 스크립트 대기 (한 번에 하나씩 순차 처리하여 서버 부하 방지)
-          await generateKimPng(target.targetDir, target.tmfc);
+          // 🔥 4. Python 스크립트에 정확한 maxHours 전달
+          await generateKimPng(target.targetDir, target.tmfc, target.maxHours);
         } catch (err) {
           console.error(`[KIM-PNG] ${target.tmfc} 변환 중 오류 발생:`, err);
         }
@@ -195,17 +193,7 @@ async function downloadLatestKimData(config) {
   }
 }
 
-// 스케줄 등록
-// downloadConfigs.forEach(config => {
-//   const { dataType, interval } = config;
-//   schedule.scheduleTask(
-//     `${dataType}-${interval}`,
-//     interval,
-//     () => downloadLatestKimData(config)
-//   );
-// });
-
-// 테스트용 즉시 실행 (필요시 주석 해제)
+// 테스트용 즉시 실행
 downloadLatestKimData(downloadConfigs[0]);
 
 console.log('KIM Watcher started. Waiting for scheduled tasks...');
