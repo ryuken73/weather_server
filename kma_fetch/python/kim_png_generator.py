@@ -8,7 +8,7 @@ import numpy as np
 from PIL import Image
 from concurrent.futures import ThreadPoolExecutor
 
-# config.py 임포트
+# config.py 임포트 (필요시 활성화)
 
 # 설정
 MIN_P = 900.0
@@ -16,8 +16,8 @@ MAX_P = 1100.0
 PREFIX = "g576_v091_easia_etc.2byte"
 
 def save_image_task(img_array, output_path):
-    # Image.save는 기본적으로 파일이 존재하면 overwrite 합니다.
-    Image.fromarray(img_array, mode='L').save(output_path)
+    # 16-bit 그레이스케일 모드인 'I;16'을 사용하여 저장합니다.
+    Image.fromarray(img_array, mode='I;16').save(output_path)
 
 def process_kim_data(in_dir, tmfc, max_hours, interval, workers):
     out_base_path = os.getenv('OUT_PATH_KIM')
@@ -73,7 +73,8 @@ def process_kim_data(in_dir, tmfc, max_hours, interval, workers):
             interp_vals = val1 + (val2 - val1) * weights
             
             interp_clipped = np.clip(interp_vals, MIN_P, MAX_P)
-            interp_norm = ((interp_clipped - MIN_P) / (MAX_P - MIN_P) * 255).astype(np.uint8)
+            # [수정됨] 8-bit(255)에서 16-bit(65535)로 변환 및 uint16 적용
+            interp_norm = ((interp_clipped - MIN_P) / (MAX_P - MIN_P) * 65535.0).astype(np.uint16)
             
             # 프레임별 파일 저장
             base_frame_dt = tmfc_dt + timedelta(hours=ef1)
@@ -100,11 +101,12 @@ def process_kim_data(in_dir, tmfc, max_hours, interval, workers):
         with xr.open_dataset(last_file) as ds_last:
             val_last = np.squeeze(ds_last['psl'].values) / 100.0
             val_clipped = np.clip(val_last, MIN_P, MAX_P)
-            val_norm = ((val_clipped - MIN_P) / (MAX_P - MIN_P) * 255).astype(np.uint8)
+            # [수정됨] 8-bit(255)에서 16-bit(65535)로 변환 및 uint16 적용
+            val_norm = ((val_clipped - MIN_P) / (MAX_P - MIN_P) * 65535.0).astype(np.uint16)
             
             out_dir = os.path.join(out_base_path, last_dt.strftime('%Y-%m-%d'))
             os.makedirs(out_dir, exist_ok=True)
-            output_path = os.path.join(out_dir, f"{PREFIX}_{last_dt.strftime('%Y%m%d%H%M')}.png")
+            output_path = os.path.join(out_dir, f"{PREFIX}_psl_{last_dt.strftime('%Y%m%d%H%M')}.png")
             
             executor.submit(save_image_task, val_norm, output_path)
             global_frames += 1
