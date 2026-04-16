@@ -8,7 +8,7 @@ import numpy as np
 from PIL import Image
 from concurrent.futures import ThreadPoolExecutor
 
-# config.py 임포트 (필요시 활성화)
+# config.py 임포트
 
 # 설정
 MIN_P = 900.0
@@ -16,8 +16,8 @@ MAX_P = 1100.0
 PREFIX = "g576_v091_easia_etc.2byte"
 
 def save_image_task(img_array, output_path):
-    # 16-bit 그레이스케일 모드인 'I;16'을 사용하여 저장합니다.
-    Image.fromarray(img_array, mode='I;16').save(output_path)
+    # RGB 모드(8-bit x 3채널)로 저장합니다.
+    Image.fromarray(img_array, mode='RGB').save(output_path)
 
 def process_kim_data(in_dir, tmfc, max_hours, interval, workers):
     out_base_path = os.getenv('OUT_PATH_KIM')
@@ -25,7 +25,6 @@ def process_kim_data(in_dir, tmfc, max_hours, interval, workers):
     if not out_base_path:
         raise ValueError("OUT_PATH_KIM이 설정되지 않았습니다.")
 
-    # 기준 분석시간 파싱 (예: 2026040212)
     print(f"Processing KIM data for tmfc: {tmfc} with max_hours: {max_hours}, interval: {interval} minutes, workers: {workers}")
     print(f"Input directory: {in_dir}, Output base path: {out_base_path}")
     tmfc_dt = datetime.strptime(tmfc, '%Y%m%d%H')
@@ -34,7 +33,7 @@ def process_kim_data(in_dir, tmfc, max_hours, interval, workers):
     search_pattern = os.path.join(in_dir, f"*.{tmfc}.nc")
     files = sorted(glob.glob(search_pattern))
     
-    # max_hours 제한 필터링 (정규식으로 ftXXX 부분 추출)
+    # max_hours 제한 필터링
     valid_files = []
     for f in files:
         match = re.search(r'ft(\d{3})', f)
@@ -43,14 +42,13 @@ def process_kim_data(in_dir, tmfc, max_hours, interval, workers):
             if ef <= max_hours:
                 valid_files.append((ef, f))
     
-    valid_files.sort(key=lambda x: x[0]) # ef 기준으로 오름차순 정렬
+    valid_files.sort(key=lambda x: x[0])
     
     if len(valid_files) < 2:
         print(f"[{tmfc}] 보간을 수행하기 위한 파일이 부족합니다. (최소 2개)")
         return
     
     total_files = len(valid_files)
-
     print(f"[{tmfc}] total {total_files} files found for processing. (max_hours={max_hours})")
     
     global_frames = 0
@@ -60,7 +58,6 @@ def process_kim_data(in_dir, tmfc, max_hours, interval, workers):
             ef1, file1 = valid_files[i]
             ef2, file2 = valid_files[i+1]
             
-            # 두 파일 사이의 시간(분) 계산
             minutes_diff = (ef2 - ef1) * 60
             steps = minutes_diff // interval
             
@@ -73,26 +70,34 @@ def process_kim_data(in_dir, tmfc, max_hours, interval, workers):
             interp_vals = val1 + (val2 - val1) * weights
             
             interp_clipped = np.clip(interp_vals, MIN_P, MAX_P)
-            # [수정됨] 8-bit(255)에서 16-bit(65535)로 변환 및 uint16 적용
-            interp_norm = ((interp_clipped - MIN_P) / (MAX_P - MIN_P) * 65535.0).astype(np.uint16)
             
-            # 프레임별 파일 저장
+            # 1. 16-bit 정수(0~65535)로 변환
+            interp_norm16 = ((interp_clipped - MIN_P) / (MAX_P - MIN_P) * 65535.0).astype(np.uint16)
+            
             base_frame_dt = tmfc_dt + timedelta(hours=ef1)
             
             for step_idx in range(steps):
                 current_dt = base_frame_dt + timedelta(minutes=(step_idx * interval))
                 
-                # 출력 디렉토리: OUT_PATH_KIM / YYYY-MM-DD (해당 프레임의 날짜 기준)
                 date_folder = current_dt.strftime('%Y-%m-%d')
                 out_dir = os.path.join(out_base_path, date_folder)
                 os.makedirs(out_dir, exist_ok=True)
                 
-                # 파일명: g576_v091_easia_etc.2byte_psl_202604030010.png
                 filename = f"{PREFIX}_psl_{current_dt.strftime('%Y%m%d%H%M')}.png"
                 output_path = os.path.join(out_dir, filename)
                 
-                executor.submit(save_image_task, interp_norm[step_idx], output_path)
+                # 2. 16-bit 값을 분할하여 8-bit RGB 배열에 패킹 (R: 상위 8비트, G: 하위 8비트)
+                q = interp_norm16[step_idx]
+                h, w = q.shape
+                rgb_img = np.zeros((h, w, 3), dtype=np.uint8)
+                
+                rgb_img[..., 0] = (q >> 8) & 0xFF  # R 채널 (High Byte)
+                rgb_img[..., 1] = q & 0xFF         # G 채널 (Low Byte)
+                # B 채널(rgb_img[..., 2])은 np.zeros로 인해 0으로 유지됨
+                
+                executor.submit(save_image_task, rgb_img, output_path)
                 global_frames += 1
+                
             print(f"progress: {i+1}/{total_files-1} files processed (frames {global_frames} generated)")
 
         # 마지막 파일 정확히 1장 추가 저장
@@ -101,20 +106,26 @@ def process_kim_data(in_dir, tmfc, max_hours, interval, workers):
         with xr.open_dataset(last_file) as ds_last:
             val_last = np.squeeze(ds_last['psl'].values) / 100.0
             val_clipped = np.clip(val_last, MIN_P, MAX_P)
-            # [수정됨] 8-bit(255)에서 16-bit(65535)로 변환 및 uint16 적용
-            val_norm = ((val_clipped - MIN_P) / (MAX_P - MIN_P) * 65535.0).astype(np.uint16)
+            
+            val_norm16 = ((val_clipped - MIN_P) / (MAX_P - MIN_P) * 65535.0).astype(np.uint16)
+            
+            # 마지막 파일도 동일하게 RGB 패킹
+            h, w = val_norm16.shape
+            rgb_last = np.zeros((h, w, 3), dtype=np.uint8)
+            rgb_last[..., 0] = (val_norm16 >> 8) & 0xFF
+            rgb_last[..., 1] = val_norm16 & 0xFF
             
             out_dir = os.path.join(out_base_path, last_dt.strftime('%Y-%m-%d'))
             os.makedirs(out_dir, exist_ok=True)
             output_path = os.path.join(out_dir, f"{PREFIX}_psl_{last_dt.strftime('%Y%m%d%H%M')}.png")
             
-            executor.submit(save_image_task, val_norm, output_path)
+            executor.submit(save_image_task, rgb_last, output_path)
             global_frames += 1
 
     print(f"[{tmfc}] done! total {global_frames} images generated.")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="KIM NetCDF to PNG Interpolator")
+    parser = argparse.ArgumentParser(description="KIM NetCDF to RGB Packed PNG Interpolator")
     parser.add_argument('--in_dir', type=str, required=True, help="nc 파일이 있는 폴더 경로")
     parser.add_argument('--tmfc', type=str, required=True, help="분석 시간 (예: 2026040212)")
     parser.add_argument('--max_hours', type=int, default=372, help="최대 예측 시간 (기본: 372)")
@@ -122,5 +133,4 @@ if __name__ == "__main__":
     parser.add_argument('--workers', type=int, default=8, help="동시 변환 워커 수 (기본: 8)")
     
     args = parser.parse_args()
-    
     process_kim_data(args.in_dir, args.tmfc, args.max_hours, args.interval, args.workers)
