@@ -81,7 +81,7 @@ const downloadConfigs = [
     fileExt: 'nc',
     mkUrl: api.mkUrl, 
     getCandidate: api.mkKimFetchCandidate, 
-    candiateCount: 2, 
+    candiateCount: 1, 
     delayHours: 12,   
     interval: '1min'  
   }
