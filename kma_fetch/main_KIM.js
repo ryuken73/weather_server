@@ -199,7 +199,7 @@ downloadConfigs.forEach(config => {
   schedule.scheduleTask(
     `${dataType}-${interval}`,
     interval,
-    () => downloadLatestData(config)
+    () => downloadLatestKimData(config)
   );
 });
 
