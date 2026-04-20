@@ -195,28 +195,33 @@ const mkFetchCandidate = (everyMinute, count) => {
  */
 const mkKimFetchCandidate = (delayHours = 12, count = 2) => {
   const now = new Date();
-  // 12시간 전 시간 계산
+  
+  // 1. 현재 시간에서 delayHours(12시간)를 뺍니다.
   const baseTime = new Date(now.getTime() - (delayHours * 60 * 60 * 1000));
   
-  // // 기준 시간을 가장 가까운 과거의 00, 06, 12, 18시로 내림
-  // let hour = baseTime.getHours();
-  // hour = Math.floor(hour / 6) * 6;
-  // baseTime.setHours(hour, 0, 0, 0);
-
-  // 기준 시간을 가장 가까운 과거의 06, 18시로 내림
   let hour = baseTime.getHours();
-  // 6시 기준 12시간 간격으로 맞추는 로직
-  // (hour - 6)을 통해 6시를 0으로, 18시를 12로 변환 후 내림 계산
-  hour = Math.floor((hour - 6) / 12) * 12 + 6;
-  // 만약 결과값이 음수(-6)가 되면 전날 18시로 가도록 처리
-  if (hour < 0) hour = 18; 
-  baseTime.setHours(hour, 0, 0, 0);
+  let targetHour;
+
+  // 2. 뺀 시간의 '시(hour)'를 기준으로 06시 또는 18시로 고정합니다.
+  if (hour >= 18) {
+    // 18:00 ~ 23:59 사이라면 18시로 내림
+    targetHour = 18;
+  } else if (hour >= 6) {
+    // 06:00 ~ 17:59 사이라면 06시로 내림
+    targetHour = 6;
+  } else {
+    // 00:00 ~ 05:59 사이라면 '전날' 18시로 이동
+    targetHour = 18;
+    baseTime.setDate(baseTime.getDate() - 1);
+  }
+
+  baseTime.setHours(targetHour, 0, 0, 0);
 
   const result = [];
+  // 3. 고정된 baseTime으로부터 12시간 간격(06, 18시)으로 count만큼 추출
   for (let i = 0; i < count; i++) {
-    const candidateTime = new Date(baseTime.getTime() - (i * 6 * 60 * 60 * 1000));
+    const candidateTime = new Date(baseTime.getTime() - (i * 12 * 60 * 60 * 1000));
     
-    // YYYYMMDDHH 포맷 (tmfc)
     const timeString = candidateTime.getFullYear().toString() +
       String(candidateTime.getMonth() + 1).padStart(2, '0') +
       String(candidateTime.getDate()).padStart(2, '0') +
