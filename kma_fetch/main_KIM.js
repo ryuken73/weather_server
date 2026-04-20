@@ -83,7 +83,7 @@ const downloadConfigs = [
     getCandidate: api.mkKimFetchCandidate, 
     candiateCount: 1, 
     delayHours: 12,   
-    interval: '1min'  
+    interval: 'kim_custom'  
   }
 ];
 
@@ -193,7 +193,17 @@ async function downloadLatestKimData(config) {
   }
 }
 
+// 스케줄 등록
+downloadConfigs.forEach(config => {
+  const { dataType, interval } = config;
+  schedule.scheduleTask(
+    `${dataType}-${interval}`,
+    interval,
+    () => downloadLatestData(config)
+  );
+});
+
 // 테스트용 즉시 실행
-downloadLatestKimData(downloadConfigs[0]);
+// downloadLatestKimData(downloadConfigs[0]);
 
 console.log('KIM Watcher started. Waiting for scheduled tasks...');
