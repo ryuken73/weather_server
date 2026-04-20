@@ -198,9 +198,18 @@ const mkKimFetchCandidate = (delayHours = 12, count = 2) => {
   // 12시간 전 시간 계산
   const baseTime = new Date(now.getTime() - (delayHours * 60 * 60 * 1000));
   
-  // 기준 시간을 가장 가까운 과거의 00, 06, 12, 18시로 내림
+  // // 기준 시간을 가장 가까운 과거의 00, 06, 12, 18시로 내림
+  // let hour = baseTime.getHours();
+  // hour = Math.floor(hour / 6) * 6;
+  // baseTime.setHours(hour, 0, 0, 0);
+
+  // 기준 시간을 가장 가까운 과거의 06, 18시로 내림
   let hour = baseTime.getHours();
-  hour = Math.floor(hour / 6) * 6;
+  // 6시 기준 12시간 간격으로 맞추는 로직
+  // (hour - 6)을 통해 6시를 0으로, 18시를 12로 변환 후 내림 계산
+  hour = Math.floor((hour - 6) / 12) * 12 + 6;
+  // 만약 결과값이 음수(-6)가 되면 전날 18시로 가도록 처리
+  if (hour < 0) hour = 18; 
   baseTime.setHours(hour, 0, 0, 0);
 
   const result = [];
