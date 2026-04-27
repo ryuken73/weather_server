@@ -16,6 +16,7 @@ const env = {
   API_ENDPOINT_KIM: process.env.API_ENDPOINT_KIM || 'https://apihub-pub.kma.go.kr/api/typ06/url',
   OUT_PATH_KIM: process.env.OUT_PATH_KIM, 
   KIM_PSL_PNG_GENERATOR: process.env.KIM_PSL_PNG_GENERATOR || 'python/kim_png_generator.py',
+  KIM_HGH_PNG_GENERATOR: process.env.KIM_HGH_PNG_GENERATOR || 'python/kim_hgt_png_generator.py',
   TIMEZONE: process.env.TIMEZONE || 'Asia/Seoul',
   LOG_LEVEL: process.env.LOG_LEVEL || 'info',
   MSSQL_HOST: process.env.MSSQL_HOST,

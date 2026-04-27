@@ -9,6 +9,7 @@ const {
     TIMEZONE, 
     API_ENDPOINT_KIM, 
     KIM_PSL_PNG_GENERATOR, 
+    KIM_HGH_PNG_GENERATOR,
     BASE_DIR, 
     OUT_PATH_KIM 
 } = require('./config/env');
@@ -29,13 +30,13 @@ function getKimEfInfo(tmfc) {
 }
 
 // 보간 image makes (🔥 maxHours 파라미터 추가)
-function generateKimPng(inDir, tmfc, maxHours) {
+function generateKimPng(scriptPath, inDir, tmfc, maxHours) {
   return new Promise((resolve, reject) => {
     console.log(`[KIM-PNG] Starting PNG generation for tmfc: ${tmfc} (Max: ${maxHours}h)`);
     
     const pythonProcess = spawn('python', [
       '-u', 
-      KIM_PSL_PNG_GENERATOR,
+      scriptPath,
       '--in_dir', inDir,
       '--tmfc', tmfc,
       '--max_hours', String(maxHours), // 🔥 고정값 '372' 대신 동적으로 할당된 값 사용
@@ -83,7 +84,24 @@ const downloadConfigs = [
     getCandidate: api.mkKimFetchCandidate, 
     candiateCount: 1, 
     delayHours: 12,   
-    interval: 'kim_custom'  
+    interval: 'kim_custom',
+    pngGenerator: KIM_PSL_PNG_GENERATOR  
+  },
+  { 
+    baseUrl: API_ENDPOINT_KIM,
+    dataType: 'kim', 
+    subDirName: 'easia', 
+    compressed: false, 
+    params: {
+      sub: 'prs' 
+    },
+    fileExt: 'nc',
+    mkUrl: api.mkUrl, 
+    getCandidate: api.mkKimFetchCandidate, 
+    candiateCount: 1, 
+    delayHours: 12,   
+    interval: 'kim_prs_custom',
+    pngGenerator: KIM_HGH_PNG_GENERATOR  
   }
 ];
 
@@ -100,7 +118,8 @@ async function downloadLatestKimData(config) {
     fileExt,
     getCandidate, 
     candiateCount,
-    delayHours
+    delayHours,
+    pngGenerator
   } = config;
 
   try {
@@ -172,38 +191,39 @@ async function downloadLatestKimData(config) {
     } // -- tmfc 루프 끝 --
 
     if (updatedTmfcs.length > 0) {
-      console.log(`[KIM] 모든 다운로드 완료 (총 ${totalDownloadedCount}개 파일). PNG 일괄 변환을 시작합니다.`);
+      console.log(`[KIM - ${params.sub}] 모든 다운로드 완료 (총 ${totalDownloadedCount}개 파일). PNG 일괄 변환을 시작합니다.`);
       
       for (const target of updatedTmfcs) {
-        console.log(`[KIM-PNG] ${target.tmfc} 변환 시작 (신규 파일: ${target.newFilesCount}개)`);
+        console.log(`[KIM-PNG - ${params.sub}] ${target.tmfc} 변환 시작 (신규 파일: ${target.newFilesCount}개)`);
         try {
-          // 🔥 4. Python 스크립트에 정확한 maxHours 전달
-          await generateKimPng(target.targetDir, target.tmfc, target.maxHours);
+          // 🔥 5. 설정 객체에 연결된 정확한 Python 스크립트 실행
+          await generateKimPng(pngGenerator, target.targetDir, target.tmfc, target.maxHours);
         } catch (err) {
-          console.error(`[KIM-PNG] ${target.tmfc} 변환 중 오류 발생:`, err);
+          console.error(`[KIM-PNG - ${params.sub}] ${target.tmfc} 변환 중 오류 발생:`, err);
         }
       }
-      console.log(`[KIM] 모든 PNG 변환 작업이 완료되었습니다!`);
+      console.log(`[KIM - ${params.sub}] 모든 PNG 변환 작업이 완료되었습니다!`);
     } else {
-      console.log(`[KIM] No new files to download at this time.`);
+      console.log(`[KIM - ${params.sub}] No new files to download at this time.`);
     }
 
   } catch (error) {
-    console.error(`[KIM] Error in download task:`, error);
+    console.error(`[KIM - ${params.sub}] Error in download task:`, error);
   }
 }
 
 // 스케줄 등록
-downloadConfigs.forEach(config => {
-  const { dataType, interval } = config;
-  schedule.scheduleTask(
-    `${dataType}-${interval}`,
-    interval,
-    () => downloadLatestKimData(config)
-  );
-});
+// downloadConfigs.forEach(config => {
+//   const { dataType, interval } = config;
+//   schedule.scheduleTask(
+//     `${dataType}-${interval}`,
+//     interval,
+//     () => downloadLatestKimData(config)
+//   );
+// });
 
 // 테스트용 즉시 실행
-// downloadLatestKimData(downloadConfigs[0]);
+downloadLatestKimData(downloadConfigs[0]); // etc 다운로드 테스트
+// downloadLatestKimData(downloadConfigs[1]); // prs 다운로드 테스트
 
 console.log('KIM Watcher started. Waiting for scheduled tasks...');
