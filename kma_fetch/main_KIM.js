@@ -213,17 +213,17 @@ async function downloadLatestKimData(config) {
 }
 
 // 스케줄 등록
-// downloadConfigs.forEach(config => {
-//   const { dataType, interval } = config;
-//   schedule.scheduleTask(
-//     `${dataType}-${interval}`,
-//     interval,
-//     () => downloadLatestKimData(config)
-//   );
-// });
+downloadConfigs.forEach(config => {
+  const { dataType, interval } = config;
+  schedule.scheduleTask(
+    `${dataType}-${interval}`,
+    interval,
+    () => downloadLatestKimData(config)
+  );
+});
 
 // 테스트용 즉시 실행
-downloadLatestKimData(downloadConfigs[0]); // etc 다운로드 테스트
+// downloadLatestKimData(downloadConfigs[0]); // etc 다운로드 테스트
 // downloadLatestKimData(downloadConfigs[1]); // prs 다운로드 테스트
 
 console.log('KIM Watcher started. Waiting for scheduled tasks...');
