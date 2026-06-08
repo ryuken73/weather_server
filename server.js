@@ -197,6 +197,7 @@ const convertKSTToGMTString = (dateString) => {
   // ir105-mono: ir105 흑백
   // ir105-color: ir105 칼라
   // rdr-hsp: Radar 강수
+  // rdr-hsp-equi: Radar 강수 (등압면)
   // aws-RN_15M: AWS 15분강수
   // aws-RN_60M: AWS 60분강수
   // gfs-wind_10m: GFS 10m 바람 (json)
@@ -229,22 +230,32 @@ const convertKSTToGMTString = (dateString) => {
     const proj = area === 'fd' ? 'ge' : 'lc';
     let fileName;
     if(type === 'rdr-hsp'){
+      // /rdr-hsp/fd/1/image?timestamp_kor=202604050000
       fileName = `RDR_CMP_HSP_PUB_${timestamp}_step${step}.png`;
+    } else if(type === 'rdr-hsp-equi'){
+      // /rdr-hsp-equi/fd/1/image?timestamp_kor=202604050000
+      fileName = `RDR_CMP_HSP_PUB_${timestamp}_step${step}_equi.png`;
     }  else if(dataName == 'aws'){
+      // /aws-RN_15M/fd/1/image?timestamp_kor=202604050000
       // provide only step1 image
       fileName = `AWS_MIN_${timestamp}_${dataKind}_step1.png`;
     } else if(dataName === 'gfs'){
       if(dataKind === 'wind_10m' || dataKind === 'wind_850mb' || dataKind === 'wind_500mb'){
+        // /gfs-wind_10m/fd/1/image?timestamp_kor=202604050000
         fileName = `gfs_${dataKind}_${timestamp_utc}_${timestamp}.json`;
       } else {
+        // /gfs-0p25_tmp_10m/fd/1/image?timestamp_kor=202604050000
         fileName = `gfs_${dataKind}_${timestamp_utc}_${timestamp}_merc.png`;
       }
     } else if(dataName === 'gfs_equ'){
+      // /gfs_equ-0p25_tmp_10m/fd/1/image?timestamp_kor=202604050000
       fileName = `gfs_${dataKind}_${timestamp_utc}_${timestamp}.png`;
     } else if(dataName === 'kim'){
       // get /kim-psl/easia/1/image?timestamp_kor=202604050000
       fileName = `g576_v091_${area}_etc.2byte_${dataKind}_${timestamp}.png`;
     } else {
+      // /ir105-mono/fd/1/image?timestamp_kor=202604050000
+      // /ir105-color/fd/1/image?timestamp_kor=202604050000
       fileName = `gk2a_ami_le1b_${dataName}_${area}020${proj}_${timestamp_utc}_${timestamp}_step${step}_${dataKind}.png`;
     }
     // const gzipFname = path.join(jsonFileDir, fileName);
