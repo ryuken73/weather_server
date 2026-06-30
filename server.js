@@ -24,8 +24,13 @@ fastify.register(require('@fastify/cors'), {
 
 const mode = process.env.MODE || 'dev';
 const rootDir = mode === 'prod' ? process.env.ROOT_DIR_PROD : process.env.ROOT_DIR_DEV 
+const resolveLocalPath = (dir) => path.isAbsolute(dir) ? dir : path.resolve(__dirname, dir);
+const kimTextOutDir = resolveLocalPath(process.env.KIM_TEXT_OUT_DIR || './out_data/kim');
+const kimTextDatasetDir = path.join(kimTextOutDir, 'datasets');
+const kimTextLatestPath = path.join(kimTextOutDir, 'latest', 'hgt500.json');
 console.log(`MODE: ${mode}`);
 console.log(`DATA DIR: ${rootDir}`);
+console.log(`KIM TEXT DATASET DIR: ${kimTextDatasetDir}`);
 
 // 데이터베이스 연결 설정
 const dbConfig = {
@@ -81,6 +86,35 @@ const convertKSTToGMTString = (dateString) => {
     root: rootDir,
     prefix: '/weather/'
   })
+  await fs.mkdir(kimTextDatasetDir, { recursive: true });
+  fastify.register(require('@fastify/static'), {
+    root: kimTextDatasetDir,
+    prefix: '/datasets/',
+    decorateReply: false
+  })
+
+  fastify.get('/api/hgt500/latest', async (request, reply) => {
+    try {
+      const data = await fs.readFile(kimTextLatestPath, 'utf8');
+      reply.header('Content-Type', 'application/json');
+      return data;
+    } catch (err) {
+      if (err.code === 'ENOENT') {
+        return reply.code(404).send({ error: 'No KIM HGT500 dataset is available' });
+      }
+      fastify.log.error(err);
+      return reply.code(500).send({ error: 'Internal server error', details: err.message });
+    }
+  });
+
+  fastify.get('/api/hgt500/datasets/:datasetId/manifest', async (request, reply) => {
+    const { datasetId } = request.params;
+    if (!/^kim-glob-hgt500-\d{10}$/.test(datasetId)) {
+      return reply.code(400).send({ error: 'Invalid datasetId' });
+    }
+    return reply.redirect(`/datasets/${datasetId}/manifest.json`);
+  });
+
   // 엔드포인트 설정: /ir105/:area/:step?timestamp_kor=...
   fastify.get('/ir105/:area/:step', async (request, reply) => {
     const { area, step } = request.params; // URL 파라미터
@@ -192,6 +226,10 @@ const convertKSTToGMTString = (dateString) => {
     gfs_equ: findNearestWindTimestamp(),
     kim: (timestamp) => timestamp
   }
+  const kimTypeMap = {
+    psl: { sub: 'etc', suffix: 'psl' },
+    hgt500: { sub: 'prs', suffix: 'hgt500' }
+  }
 
   // type
   // ir105-mono: ir105 흑백
@@ -213,6 +251,7 @@ const convertKSTToGMTString = (dateString) => {
   // gfs_equ-0p25_tmp_500m: GFS 500m 온도 (등압면)
   // gfs_equ-0p25_tmp_850m: GFS 850m 온도 (등압면)
   // kim-psl: KIM PSL (해수면기압)
+  // kim-hgt500: KIM 500hPa 지위고도
 
   fastify.get('/:type/:area/:step/image', async (request, reply) => {
     const { type, area, step } = request.params; // URL 파라미터
@@ -252,7 +291,11 @@ const convertKSTToGMTString = (dateString) => {
       fileName = `gfs_${dataKind}_${timestamp_utc}_${timestamp}.png`;
     } else if(dataName === 'kim'){
       // get /kim-psl/easia/1/image?timestamp_kor=202604050000
-      fileName = `g576_v091_${area}_etc.2byte_${dataKind}_${timestamp}.png`;
+      const kimType = kimTypeMap[dataKind];
+      if(!kimType){
+        return reply.code(400).send({ error: `Unsupported KIM data kind: ${dataKind}` });
+      }
+      fileName = `g576_v091_${area}_${kimType.sub}.2byte_${kimType.suffix}_${timestamp}.png`;
     } else {
       // /ir105-mono/fd/1/image?timestamp_kor=202604050000
       // /ir105-color/fd/1/image?timestamp_kor=202604050000
