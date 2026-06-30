@@ -81,8 +81,9 @@ https://apihub-pub.kma.go.kr/api/typ01/cgi-bin/url/nph-kim_nc_xy_txt2
 추가할 설정:
 
 - `API_ENDPOINT_KIM_TXT`: 기본값 `https://apihub-pub.kma.go.kr/api/typ01/cgi-bin/url`
-- `KIM_TEXT_IN_DIR`: 기본값 `./in_data/kim`
-- `KIM_TEXT_OUT_DIR`: 기본값 `./out_data/kim`
+- `BASE_DIR`: KIM TXT raw/derived storage의 기준 경로
+  - `BASE_DIR`가 `in_data`이면 raw는 `{BASE_DIR}/kim`, derived는 sibling `out_data/kim`
+  - 그 외에는 raw를 `{BASE_DIR}/in_data/kim`, derived를 `{BASE_DIR}/out_data/kim`으로 계산
 - `KIM_TEXT_MAX_HOURS`: 기본값 `72`
 - `KIM_TEXT_INTERVAL_MINUTES`: 기본값 `10`
 - `KIM_TEXT_DOWNSAMPLE_FACTOR`: 기본값 `3`
@@ -227,7 +228,7 @@ latest pointer:
 
 ```text
 prefix: /datasets/
-root: {KIM_TEXT_OUT_DIR}/datasets
+root: {derived KIM TXT out dir}/datasets
 ```
 
 최소 API:

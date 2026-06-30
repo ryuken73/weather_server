@@ -5,6 +5,7 @@ const sharp = require('sharp');
 const {addHours, format, parse} = require('date-fns');
 const { Pool } = require('pg');
 const server_util = require('./server_util');
+const { deriveKimTextDirs } = require('./kma_fetch/utils/kim_text_paths');
 
 require('dotenv').config(); // .env 파일 로드
 
@@ -25,7 +26,8 @@ fastify.register(require('@fastify/cors'), {
 const mode = process.env.MODE || 'dev';
 const rootDir = mode === 'prod' ? process.env.ROOT_DIR_PROD : process.env.ROOT_DIR_DEV 
 const resolveLocalPath = (dir) => path.isAbsolute(dir) ? dir : path.resolve(__dirname, dir);
-const kimTextOutDir = resolveLocalPath(process.env.KIM_TEXT_OUT_DIR || './out_data/kim');
+const { outputDir: kimTextOutputDir } = deriveKimTextDirs(process.env.BASE_DIR || './data/weather');
+const kimTextOutDir = resolveLocalPath(kimTextOutputDir);
 const kimTextDatasetDir = path.join(kimTextOutDir, 'datasets');
 const kimTextLatestPath = path.join(kimTextOutDir, 'latest', 'hgt500.json');
 console.log(`MODE: ${mode}`);

@@ -18,8 +18,6 @@ const env = {
   OUT_PATH_KIM: process.env.OUT_PATH_KIM, 
   KIM_PSL_PNG_GENERATOR: process.env.KIM_PSL_PNG_GENERATOR || 'python/kim_png_generator.py',
   KIM_HGH_PNG_GENERATOR: process.env.KIM_HGH_PNG_GENERATOR || 'python/kim_hgt_png_generator.py',
-  KIM_TEXT_IN_DIR: process.env.KIM_TEXT_IN_DIR || './in_data/kim',
-  KIM_TEXT_OUT_DIR: process.env.KIM_TEXT_OUT_DIR || './out_data/kim',
   KIM_TEXT_PNG_GENERATOR: process.env.KIM_TEXT_PNG_GENERATOR || 'python/kim_hgt_text_sequence_generator.py',
   KIM_TEXT_MAX_HOURS: process.env.KIM_TEXT_MAX_HOURS || '72',
   KIM_TEXT_INTERVAL_MINUTES: process.env.KIM_TEXT_INTERVAL_MINUTES || '10',

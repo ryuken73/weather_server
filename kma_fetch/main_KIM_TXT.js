@@ -4,10 +4,10 @@ const { spawn } = require('child_process');
 const api = require('./services/api');
 const schedule = require('./services/scheduler');
 const { downloadStreamToFile, hasNonEmptyFile } = require('./utils/download');
+const { deriveKimTextDirs } = require('./utils/kim_text_paths');
 const {
   API_ENDPOINT_KIM_TXT,
-  KIM_TEXT_IN_DIR,
-  KIM_TEXT_OUT_DIR,
+  BASE_DIR,
   KIM_TEXT_PNG_GENERATOR,
   KIM_TEXT_MAX_HOURS,
   KIM_TEXT_INTERVAL_MINUTES,
@@ -17,6 +17,8 @@ const {
   KIM_TEXT_CANDIDATE_COUNT,
   KIM_TEXT_DELAY_HOURS
 } = require('./config/env');
+
+const { inputDir: kimTextInputDir, outputDir: kimTextOutputDir } = deriveKimTextDirs(BASE_DIR);
 
 function parseNumber(value, fallback) {
   const parsed = parseInt(value, 10);
@@ -175,9 +177,9 @@ async function downloadAndGenerateKimText() {
   console.log(`[KIM-TXT] Fetching candidates:`, timeCandidates);
 
   for (const tmfc of timeCandidates) {
-    const inputDir = path.join(KIM_TEXT_IN_DIR, 'hgt500_txt', tmfc);
+    const inputDir = path.join(kimTextInputDir, 'hgt500_txt', tmfc);
     const datasetId = datasetIdFor(tmfc);
-    const outputDir = path.join(KIM_TEXT_OUT_DIR, 'datasets', datasetId);
+    const outputDir = path.join(kimTextOutputDir, 'datasets', datasetId);
     const manifestPath = path.join(outputDir, 'manifest.json');
 
     let downloadedCount = 0;
@@ -219,7 +221,7 @@ async function downloadAndGenerateKimText() {
 
     if (await hasNonEmptyFile(manifestPath) && downloadedCount === 0 && failedCount === 0) {
       console.log(`[KIM-TXT] Dataset already exists for tmfc=${tmfc}`);
-      await updateLatestPointer(KIM_TEXT_OUT_DIR, tmfc);
+      await updateLatestPointer(kimTextOutputDir, tmfc);
       continue;
     }
 
@@ -231,7 +233,7 @@ async function downloadAndGenerateKimText() {
       intervalMinutes,
       downsampleFactor
     );
-    await updateLatestPointer(KIM_TEXT_OUT_DIR, tmfc);
+    await updateLatestPointer(kimTextOutputDir, tmfc);
     console.log(`[KIM-TXT] Dataset ready: ${datasetId}`);
   }
 }
