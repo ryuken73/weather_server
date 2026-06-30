@@ -13,6 +13,7 @@ const {
   KIM_TEXT_INTERVAL_MINUTES,
   KIM_TEXT_DOWNSAMPLE_FACTOR,
   KIM_TEXT_FORECAST_HOURS,
+  KIM_TEXT_CYCLE_HOURS,
   KIM_TEXT_CANDIDATE_COUNT,
   KIM_TEXT_DELAY_HOURS
 } = require('./config/env');
@@ -30,6 +31,15 @@ function parseForecastHours(value, maxHours) {
     .sort((a, b) => a - b);
 }
 
+function parseCycleHours(value) {
+  const hours = String(value)
+    .split(',')
+    .map(item => parseInt(item.trim(), 10))
+    .filter(item => Number.isFinite(item) && item >= 0 && item <= 23)
+    .sort((a, b) => a - b);
+  return hours.length > 0 ? hours : [0, 6, 12, 18];
+}
+
 function resolveFromKmaFetch(filePath) {
   return path.isAbsolute(filePath) ? filePath : path.join(__dirname, filePath);
 }
@@ -44,6 +54,42 @@ function tmfcToIso(tmfc) {
 
 function rawTextFileName(tmfc, forecastHour) {
   return `kim_glob_prs_hgt500_ft${String(forecastHour).padStart(3, '0')}_${tmfc}.txt`;
+}
+
+function formatTmfc(date) {
+  return date.getFullYear().toString() +
+    String(date.getMonth() + 1).padStart(2, '0') +
+    String(date.getDate()).padStart(2, '0') +
+    String(date.getHours()).padStart(2, '0');
+}
+
+function mkKimTextFetchCandidates(delayHours, count, cycleHours) {
+  const baseTime = new Date(Date.now() - (delayHours * 60 * 60 * 1000));
+  const candidates = [];
+
+  for (let dayOffset = 0; dayOffset > -14 && candidates.length < count; dayOffset--) {
+    const checkDate = new Date(baseTime);
+    checkDate.setDate(baseTime.getDate() + dayOffset);
+
+    for (const cycleHour of [...cycleHours].sort((a, b) => b - a)) {
+      const candidate = new Date(
+        checkDate.getFullYear(),
+        checkDate.getMonth(),
+        checkDate.getDate(),
+        cycleHour,
+        0,
+        0,
+        0
+      );
+
+      if (candidate.getTime() <= baseTime.getTime()) {
+        candidates.push(formatTmfc(candidate));
+        if (candidates.length >= count) break;
+      }
+    }
+  }
+
+  return candidates;
 }
 
 async function writeJsonAtomic(filePath, payload) {
@@ -123,7 +169,8 @@ async function downloadAndGenerateKimText() {
   const candidateCount = parseNumber(KIM_TEXT_CANDIDATE_COUNT, 1);
   const delayHours = parseNumber(KIM_TEXT_DELAY_HOURS, 12);
   const forecastHours = parseForecastHours(KIM_TEXT_FORECAST_HOURS, maxHours);
-  const timeCandidates = api.mkKimFetchCandidate(delayHours, candidateCount);
+  const cycleHours = parseCycleHours(KIM_TEXT_CYCLE_HOURS);
+  const timeCandidates = mkKimTextFetchCandidates(delayHours, candidateCount, cycleHours);
 
   console.log(`[KIM-TXT] Fetching candidates:`, timeCandidates);
 
