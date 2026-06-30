@@ -1,7 +1,11 @@
 .env
 .env.production
 data
+in_data
+out_data
 node_modules
+__pycache__/
+*.pyc
 run_watcher.sh
 kma_fetch/run_*.sh
 kma_fetch/nohup.out
