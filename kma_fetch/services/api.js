@@ -147,6 +147,33 @@ const mkUrl = {
     const { sub, ef } = params;
     const efNum = parseInt(ef, 10); // URL 파라미터에는 보통 숫자(예: 24)로 들어감
     return `${baseUrl}/nwp_file_down.php?nwp=kimgr&sub=${sub}&tmfc=${tmfc}&ef=${efNum}&authKey=${API_KEY}`;
+  },
+  'kimText': (baseUrl, tmfc, params) => {
+    const {
+      group = 'KIMG',
+      nwp = 'NE57',
+      data = 'P',
+      name = 'hgt',
+      map = 'F',
+      hf = 0,
+      disp = 'A',
+      help = 1,
+      level = 500
+    } = params;
+    const query = new URLSearchParams({
+      group,
+      nwp,
+      data,
+      name,
+      map,
+      tmfc,
+      hf: String(parseInt(hf, 10)),
+      disp,
+      help: String(help),
+      level: String(level),
+      authKey: API_KEY || ''
+    });
+    return `${baseUrl.replace(/\/$/, '')}/nph-kim_nc_xy_txt2?${query.toString()}`;
   }
 }
 
