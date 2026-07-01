@@ -15,7 +15,6 @@ const env = {
   API_ENDPOINT_RDR: process.env.API_ENDPOINT_RDR || 'https://apihub-pub.kma.go.kr/api/typ04/url',
   API_ENDPOINT_KIM: process.env.API_ENDPOINT_KIM || 'https://apihub-pub.kma.go.kr/api/typ06/url',
   API_ENDPOINT_KIM_TXT: process.env.API_ENDPOINT_KIM_TXT || 'https://apihub-pub.kma.go.kr/api/typ01/cgi-bin/url',
-  OUT_PATH_KIM: process.env.OUT_PATH_KIM, 
   KIM_PSL_PNG_GENERATOR: process.env.KIM_PSL_PNG_GENERATOR || 'python/kim_png_generator.py',
   KIM_HGH_PNG_GENERATOR: process.env.KIM_HGH_PNG_GENERATOR || 'python/kim_hgt_png_generator.py',
   KIM_TEXT_PNG_GENERATOR: process.env.KIM_TEXT_PNG_GENERATOR || 'python/kim_hgt_text_sequence_generator.py',
