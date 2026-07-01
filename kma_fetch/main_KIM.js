@@ -9,10 +9,13 @@ const {
     TIMEZONE, 
     API_ENDPOINT_KIM, 
     KIM_PSL_PNG_GENERATOR, 
-    KIM_HGH_PNG_GENERATOR,
-    BASE_DIR, 
-    OUT_PATH_KIM 
+    KIM_HGH_PNG_GENERATOR
 } = require('./config/env');
+
+const KIM_DATA_ROOT = 'in_data';
+const KIM_OUTPUT_ROOT = 'out_data';
+const KIM_FILE_OPTIONS = { dataRoot: KIM_DATA_ROOT };
+const KIM_OUTPUT_BASE_DIR = path.join(file.resolveBaseDir(KIM_OUTPUT_ROOT), 'kim');
 
 // 🔥 [삭제] 기존의 고정된 KIM_EF_LIST 제거
 
@@ -46,7 +49,7 @@ function generateKimPng(scriptPath, inDir, tmfc, maxHours) {
       env: {
         ...process.env,               
         ENV: NODE_ENV || 'dev',       
-        OUT_PATH_KIM: OUT_PATH_KIM    
+        OUT_PATH_KIM: KIM_OUTPUT_BASE_DIR
       }        
     });
 
@@ -130,8 +133,12 @@ async function downloadLatestKimData(config) {
     for (const tmfc of timeCandidates) {
       const dateStringForFolder = `${tmfc.substring(0, 4)}-${tmfc.substring(4, 6)}-${tmfc.substring(6, 8)}`;
       if (!folderFiles[dateStringForFolder]) {
-        folderFiles[dateStringForFolder] = await file.listFiles(dateStringForFolder, TIMEZONE, dataType)
-                                            .catch(() => []); 
+        folderFiles[dateStringForFolder] = await file.listFiles(
+          dateStringForFolder,
+          TIMEZONE,
+          dataType,
+          KIM_FILE_OPTIONS
+        ).catch(() => []);
       }
     }
 
@@ -144,7 +151,7 @@ async function downloadLatestKimData(config) {
       let currentTmfcNewFiles = 0; 
       const dateStringForFolder = `${tmfc.substring(0, 4)}-${tmfc.substring(4, 6)}-${tmfc.substring(6, 8)}`;
       const existingFiles = folderFiles[dateStringForFolder] || [];
-      const targetDir = path.join(BASE_DIR, dataType, dateStringForFolder);
+      const targetDir = path.join(file.resolveBaseDir(KIM_DATA_ROOT), dataType, dateStringForFolder);
 
       // 🔥 1. 현재 tmfc에 맞는 efList와 maxHours를 동적으로 가져옴
       const { efList, maxHours } = getKimEfInfo(tmfc);
@@ -169,7 +176,9 @@ async function downloadLatestKimData(config) {
             saveFilename, 
             dateStringForFolder, 
             dataType, 
-            compressed
+            compressed,
+            false,
+            KIM_FILE_OPTIONS
           );
           
           console.log(`[KIM] File saved!`, savedPath);
