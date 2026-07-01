@@ -4,6 +4,9 @@ const time = require('./utils/time');
 const schedule = require('./services/scheduler');
 const { TIMEZONE } = require('./config/env');
 
+const GK2A_DATA_ROOT = 'in_data';
+const GK2A_SUB_DIR = 'gk2a';
+
 // 다운로드할 파라미터 조합 정의
 const downloadConfigs = [
   { outputLevel: 'LE1B', dataType: 'IR105', dataCoverage: 'EA', interval: '10min' },
@@ -37,7 +40,12 @@ async function downloadLatestData(outputLevel, dataType, dataCoverage) {
     for (const availFile of availableFiles) {
       const kstFolder = time.getKstFolderDate(availFile.utcDate);
       if (!folderFiles[kstFolder]) {
-        folderFiles[kstFolder] = await file.listFiles(availFile.utcDate);
+        folderFiles[kstFolder] = await file.listFiles(
+          availFile.utcDate,
+          undefined,
+          GK2A_SUB_DIR,
+          { dataRoot: GK2A_DATA_ROOT }
+        );
       }
     }
 
@@ -75,7 +83,13 @@ async function downloadLatestData(outputLevel, dataType, dataCoverage) {
 
     for (const fileToDownload of filesToDownload) {
       try {
-        const savedPath = await api.fetchAndSaveNcFile(outputLevel, dataType, dataCoverage, fileToDownload.date);
+        const savedPath = await api.fetchAndSaveNcFile(
+          outputLevel,
+          dataType,
+          dataCoverage,
+          fileToDownload.date,
+          { dataRoot: GK2A_DATA_ROOT, subDirName: GK2A_SUB_DIR }
+        );
         console.log(`Downloaded and saved: ${savedPath}`);
         await sleep(1000)
       } catch (error) {
