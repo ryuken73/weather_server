@@ -6,6 +6,9 @@ const { TIMEZONE, API_ENDPOINT_RDR } = require('./config/env');
 
 console.log(TIMEZONE, API_ENDPOINT_RDR)
 
+const RDR_DATA_ROOT = 'in_data';
+const RDR_FILE_OPTIONS = { dataRoot: RDR_DATA_ROOT };
+
 // 다운로드할 파라미터 조합 정의
 const downloadConfigs = [
   { 
@@ -51,7 +54,12 @@ async function downloadLatestData(config) {
     for (const timeCandidate of timeCandidates) {
       const kstTimeString = time.getDateString(timeCandidate) 
       if (!folderFiles[kstTimeString]) {
-        folderFiles[kstTimeString] = await file.listFiles(kstTimeString, TIMEZONE, subDirName);
+        folderFiles[kstTimeString] = await file.listFiles(
+          kstTimeString,
+          TIMEZONE,
+          subDirName,
+          RDR_FILE_OPTIONS
+        );
       }
     }
 
@@ -83,7 +91,15 @@ async function downloadLatestData(config) {
         console.log('found file to save!', originalFileName)
         const saveFilename = compressed ? file.uncompressedFname(originalFileName, compressed):originalFileName;
         const dateStringForFolder = time.getDateString(timeToDownload)
-        const savedPath = await file.saveFile(response.data, saveFilename, dateStringForFolder, subDirName, compressed);
+        const savedPath = await file.saveFile(
+          response.data,
+          saveFilename,
+          dateStringForFolder,
+          subDirName,
+          compressed,
+          false,
+          RDR_FILE_OPTIONS
+        );
         console.log('File saved!', savedPath)
         
       } catch (err) {
