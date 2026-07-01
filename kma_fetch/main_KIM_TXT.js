@@ -1,5 +1,7 @@
 const fs = require('fs/promises');
+const fsRaw = require('fs');
 const path = require('path');
+const readline = require('readline');
 const { spawn } = require('child_process');
 const api = require('./services/api');
 const schedule = require('./services/scheduler');
@@ -19,6 +21,8 @@ const {
 } = require('./config/env');
 
 const { inputDir: kimTextInputDir, outputDir: kimTextOutputDir } = deriveKimTextDirs(BASE_DIR);
+const KIM_TEXT_GRID_HEADER_RE = /^#.*=\s*hgt\s*,\s*unit\s*=\s*m\s*,\s*level\s*=\s*[-+0-9.eE]+\s*,\s*i\s*=\s*\d+\s*,\s*j\s*=\s*\d+\s*,\s*map\s*=/i;
+const KIM_TEXT_ERROR_RE = /^#\s*ERROR\b|file is not exist/i;
 
 function parseNumber(value, fallback) {
   const parsed = parseInt(value, 10);
@@ -99,6 +103,52 @@ async function writeJsonAtomic(filePath, payload) {
   const partialPath = `${filePath}.partial`;
   await fs.writeFile(partialPath, JSON.stringify(payload, null, 2) + '\n', 'utf8');
   await fs.rename(partialPath, filePath);
+}
+
+async function validateKimTextFile(filePath) {
+  if (!await hasNonEmptyFile(filePath)) {
+    return { valid: false, reason: 'file is missing or empty' };
+  }
+
+  const stream = fsRaw.createReadStream(filePath, { encoding: 'utf8' });
+  const lines = readline.createInterface({ input: stream, crlfDelay: Infinity });
+  let lineCount = 0;
+
+  try {
+    for await (const line of lines) {
+      lineCount++;
+      const trimmed = line.trim();
+
+      if (KIM_TEXT_ERROR_RE.test(trimmed)) {
+        return { valid: false, reason: trimmed || 'KIM API error response' };
+      }
+
+      if (KIM_TEXT_GRID_HEADER_RE.test(trimmed)) {
+        return { valid: true };
+      }
+
+      if (lineCount >= 200) {
+        break;
+      }
+    }
+  } finally {
+    stream.destroy();
+  }
+
+  return { valid: false, reason: 'KIM hgt grid header not found' };
+}
+
+async function hasValidKimTextFile(filePath) {
+  const validation = await validateKimTextFile(filePath).catch(err => ({
+    valid: false,
+    reason: err.message
+  }));
+  return validation.valid;
+}
+
+async function removeInvalidKimTextFile(filePath, reason) {
+  console.warn(`[KIM-TXT] Removing invalid TXT file: ${filePath}. reason=${reason}`);
+  await fs.rm(filePath, { force: true }).catch(() => {});
 }
 
 function generateKimTextPng(inputDir, outputDir, tmfc, maxHours, intervalMinutes, downsampleFactor) {
@@ -188,7 +238,11 @@ async function downloadAndGenerateKimText() {
     for (const forecastHour of forecastHours) {
       const outputPath = path.join(inputDir, rawTextFileName(tmfc, forecastHour));
       if (await hasNonEmptyFile(outputPath)) {
-        continue;
+        const validation = await validateKimTextFile(outputPath);
+        if (validation.valid) {
+          continue;
+        }
+        await removeInvalidKimTextFile(outputPath, validation.reason);
       }
 
       const fetchUrl = api.mkUrl.kimText(API_ENDPOINT_KIM_TXT, tmfc, { hf: forecastHour });
@@ -200,6 +254,11 @@ async function downloadAndGenerateKimText() {
         if (!result.skipped) {
           downloadedCount++;
         }
+        const validation = await validateKimTextFile(outputPath);
+        if (!validation.valid) {
+          await removeInvalidKimTextFile(outputPath, validation.reason);
+          throw new Error(`Invalid KIM TXT response: ${validation.reason}`);
+        }
       } catch (err) {
         failedCount++;
         console.error(`[KIM-TXT] Failed tmfc=${tmfc}, hf=${forecastHour}:`, err.message);
@@ -209,7 +268,7 @@ async function downloadAndGenerateKimText() {
     const missingFiles = [];
     for (const forecastHour of forecastHours) {
       const outputPath = path.join(inputDir, rawTextFileName(tmfc, forecastHour));
-      if (!await hasNonEmptyFile(outputPath)) {
+      if (!await hasValidKimTextFile(outputPath)) {
         missingFiles.push(forecastHour);
       }
     }
@@ -225,16 +284,20 @@ async function downloadAndGenerateKimText() {
       continue;
     }
 
-    await generateKimTextPng(
-      inputDir,
-      outputDir,
-      tmfc,
-      maxHours,
-      intervalMinutes,
-      downsampleFactor
-    );
-    await updateLatestPointer(kimTextOutputDir, tmfc);
-    console.log(`[KIM-TXT] Dataset ready: ${datasetId}`);
+    try {
+      await generateKimTextPng(
+        inputDir,
+        outputDir,
+        tmfc,
+        maxHours,
+        intervalMinutes,
+        downsampleFactor
+      );
+      await updateLatestPointer(kimTextOutputDir, tmfc);
+      console.log(`[KIM-TXT] Dataset ready: ${datasetId}`);
+    } catch (err) {
+      console.error(`[KIM-TXT] Generation failed for tmfc=${tmfc}:`, err.message);
+    }
   }
 }
 

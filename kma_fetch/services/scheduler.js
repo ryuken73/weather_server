@@ -25,7 +25,11 @@ function scheduleTask(taskName, interval, task) {
 
   schedule.scheduleJob(taskName, intervals[interval], () => {
     console.log(`Running task: ${taskName}`);
-    task();
+    Promise.resolve()
+      .then(task)
+      .catch(error => {
+        console.error(`Scheduled task failed: ${taskName}`, error);
+      });
   });
   console.log(`Scheduled task: ${taskName} with interval ${interval}`);
 }
