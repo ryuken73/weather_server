@@ -9,7 +9,7 @@ const intervals = {
   '1day': '0 0 * * *',        // 매일 00:00
   'kim_custom': '10,20 * * * *', // KIM 전용: 매일 00, 06, 12, 18시 10분
   'kim_prs_custom': '15,25 * * * *', // KIM 전용: 매일 00, 06, 12, 18시 10분
-  'kim_text_custom': '30 * * * *'
+  'kim_text_custom': '15,25 * * * *' // KIM_TXT 전용
 };
 
 /**
