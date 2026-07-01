@@ -6,6 +6,9 @@ const time = require('./utils/time');
 const schedule = require('./services/scheduler');
 const { TIMEZONE } = require('./config/env');
 
+const AWS_DATA_ROOT = 'in_data';
+const AWS_FILE_OPTIONS = { dataRoot: AWS_DATA_ROOT };
+
 // 다운로드할 파라미터 조합 정의
 const downloadConfigs = [
   { 
@@ -51,7 +54,12 @@ async function downloadLatestData(config) {
     for (const timeCandidate of timeCandidates) {
       const kstTimeString = time.getDateString(timeCandidate) 
       if (!folderFiles[kstTimeString]) {
-        folderFiles[kstTimeString] = await file.listFiles(kstTimeString, TIMEZONE, subDirName);
+        folderFiles[kstTimeString] = await file.listFiles(
+          kstTimeString,
+          TIMEZONE,
+          subDirName,
+          AWS_FILE_OPTIONS
+        );
       }
     }
 
@@ -82,7 +90,12 @@ async function downloadLatestData(config) {
         const originalFileName = `${patternBase}${timeToDownload}.json`
         const saveFilename = compressed ? file.uncompressedFname(originalFileName, compressed):originalFileName;
         const dateStringForFolder = time.getDateString(timeToDownload)
-        const [fileExists, filePath] = await file.isFileExists(saveFilename, dateStringForFolder, subDirName);
+        const [fileExists, filePath] = await file.isFileExists(
+          saveFilename,
+          dateStringForFolder,
+          subDirName,
+          AWS_FILE_OPTIONS
+        );
         if(fileExists){
           console.log('skip!! file alreay exists for tm', timeToDownload);
           continue;
@@ -98,7 +111,15 @@ async function downloadLatestData(config) {
           continue;
         }
         console.log('data to save. length =', jsonData.length)
-        const savedPath = await file.saveFile(JSON.stringify(jsonData), saveFilename, dateStringForFolder, subDirName, compressed);
+        const savedPath = await file.saveFile(
+          JSON.stringify(jsonData),
+          saveFilename,
+          dateStringForFolder,
+          subDirName,
+          compressed,
+          false,
+          AWS_FILE_OPTIONS
+        );
         console.log('File saved!', savedPath)
       } catch (err) {
         console.error(err)
