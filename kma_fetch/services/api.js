@@ -42,7 +42,7 @@ function parseKstDateFromFileName(fileName, fileExt) {
  * @param {string} date - "yyyymmddHHMM" 형식의 UTC 시간
  * @returns {string} - 저장된 파일 경로
  */
-async function fetchAndSaveNcFile(outputLevel, dataType, dataCoverage, date) {
+async function fetchAndSaveNcFile(outputLevel, dataType, dataCoverage, date, options = {}) {
   const url = `${BASE_URL}/${outputLevel}/${dataType}/${dataCoverage}/data?date=${date}&authKey=${API_KEY}`;
 
   try {
@@ -72,7 +72,7 @@ async function fetchAndSaveNcFile(outputLevel, dataType, dataCoverage, date) {
     const kstDate = parseUtcDateFromFileName(originalFileName);
 
     // 파일 저장
-    const savedPath = await file.saveNcFile(response.data, originalFileName, kstDate);
+    const savedPath = await file.saveNcFile(response.data, originalFileName, kstDate, false, options);
     return savedPath;
   } catch (error) {
     console.error(`Error fetching or saving file from ${url}: ${error.message}`);

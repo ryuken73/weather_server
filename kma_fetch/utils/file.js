@@ -9,15 +9,32 @@ const { pipeline } = require('stream/promises');
 
 // 기본 디렉토리 설정
 const BASE_DIR = env.BASE_DIR;
+const DATA_ROOT_NAMES = new Set(['in_data', 'out_data']);
+
+function resolveBaseDir(dataRoot) {
+  if (!dataRoot) {
+    return BASE_DIR;
+  }
+
+  const normalizedBaseDir = path.normalize(BASE_DIR);
+  const baseName = path.basename(normalizedBaseDir);
+
+  if (DATA_ROOT_NAMES.has(baseName)) {
+    return path.join(path.dirname(normalizedBaseDir), dataRoot);
+  }
+
+  return path.join(normalizedBaseDir, dataRoot);
+}
 
 /**
  * KST 날짜에 맞는 디렉토리를 생성하거나 확인
  * @param {Date} utcDate - UTC 시간의 Date 객체
  * @returns {string} - 생성된 디렉토리 경로
  */
-async function ensureDirectory(date, timeZone, subDirName) {
+async function ensureDirectory(date, timeZone, subDirName, options = {}) {
   const kstFolder = timeZone ? date : time.getKstFolderDate(date); // "2022-10-28"
-  const dirPath = path.join(BASE_DIR, subDirName || 'gk2a', kstFolder);
+  const baseDir = resolveBaseDir(options.dataRoot);
+  const dirPath = path.join(baseDir, subDirName || 'gk2a', kstFolder);
   console.log(timeZone, date, dirPath, kstFolder)
   await fs.mkdir(dirPath, { recursive: true });
   return dirPath;
@@ -31,8 +48,8 @@ async function ensureDirectory(date, timeZone, subDirName) {
  * @param {boolean} overwrite - 기존 파일 덮어쓰기 여부 (기본값: false)
  * @returns {string} - 저장된 파일의 전체 경로
  */
-async function saveNcFile(data, originalFileName, utcDate, overwrite = false) {
-  const dirPath = await ensureDirectory(utcDate);
+async function saveNcFile(data, originalFileName, utcDate, overwrite = false, options = {}) {
+  const dirPath = await ensureDirectory(utcDate, undefined, options.subDirName, options);
 
   // 원본 파일명에서 확장자 분리
   const baseName = originalFileName.replace(/\.nc$/, ''); // "gk2a_ami_le2_ci_ela020ge_202210272350"
@@ -56,20 +73,20 @@ async function saveNcFile(data, originalFileName, utcDate, overwrite = false) {
   return filePath;
 }
 
-async function isFileExists(saveFileName, dateStringForFolder, subDirName) {
+async function isFileExists(saveFileName, dateStringForFolder, subDirName, options = {}) {
   console.log('saveFile', saveFileName)
-  const dirPath = await ensureDirectory(dateStringForFolder, env.TIMEZONE, subDirName);
+  const dirPath = await ensureDirectory(dateStringForFolder, env.TIMEZONE, subDirName, options);
   const filePath = path.join(dirPath, saveFileName);
   const fileExists = await fs.stat(filePath).catch(() => false);
   return [fileExists, filePath];
 }
 
-async function saveFile(data, saveFileName, dateStringForFolder, subDirName, compressed, overwrite=false){
+async function saveFile(data, saveFileName, dateStringForFolder, subDirName, compressed, overwrite=false, options = {}){
   console.log('saveFile', saveFileName)
   // const fileExists = await fs.stat(filePath).catch(() => false);
   // const dirPath = await ensureDirectory(dateStringForFolder, env.TIMEZONE, subDirName);
   // const filePath = path.join(dirPath, saveFileName);
-  const [fileExists, filePath] = await isFileExists(saveFileName, dateStringForFolder, subDirName);
+  const [fileExists, filePath] = await isFileExists(saveFileName, dateStringForFolder, subDirName, options);
   if (fileExists && !overwrite) {
     console.log(`File already exists: ${filePath}, skipping...`);
     return filePath;
@@ -96,8 +113,8 @@ async function saveFile(data, saveFileName, dateStringForFolder, subDirName, com
  * @param {Date} utcDate - UTC 시간의 Date 객체
  * @returns {string[]} - 해당 폴더 내 파일 목록
  */
-async function listFiles(date, timeZone, subDirName) {
-  const dirPath = await ensureDirectory(date, timeZone, subDirName);
+async function listFiles(date, timeZone, subDirName, options = {}) {
+  const dirPath = await ensureDirectory(date, timeZone, subDirName, options);
   const files = await fs.readdir(dirPath);
   return files;
 }
@@ -112,5 +129,6 @@ module.exports = {
   isFileExists,
   saveFile,
   listFiles,
-  uncompressedFname
+  uncompressedFname,
+  resolveBaseDir
 };
