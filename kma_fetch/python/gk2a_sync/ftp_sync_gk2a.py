@@ -47,6 +47,12 @@ class SyncStats:
     failed: int = 0
 
 
+@dataclass
+class GK2AFileInfo:
+    final_name: str
+    kst_folder: str
+
+
 def env(name: str, default: Optional[str] = None) -> Optional[str]:
     value = os.environ.get(name)
     if value is None or value == "":
@@ -131,7 +137,7 @@ def build_remote_dir(remote_base: str, date_str: str) -> str:
     return f"{normalized.rstrip('/')}/{suffix}"
 
 
-def get_kst_filename(original_filename: str) -> Optional[str]:
+def get_kst_file_info(original_filename: str) -> Optional[GK2AFileInfo]:
     match = GK2A_FILE_PATTERN.match(original_filename)
     if not match:
         return None
@@ -144,8 +150,12 @@ def get_kst_filename(original_filename: str) -> Optional[str]:
     except ValueError:
         return None
 
-    kst_str = (utc_time + timedelta(hours=9)).strftime("%Y%m%d%H%M")
-    return f"{prefix}{utc_str}_{kst_str}.nc"
+    kst_time = utc_time + timedelta(hours=9)
+    kst_str = kst_time.strftime("%Y%m%d%H%M")
+    return GK2AFileInfo(
+        final_name=f"{prefix}{utc_str}_{kst_str}.nc",
+        kst_folder=kst_time.strftime("%Y-%m-%d"),
+    )
 
 
 def ensure_same_filesystem(staging_base_dir: Path, final_base_dir: Path) -> None:
@@ -281,25 +291,22 @@ def download_one(
 def process_date(ftp: FTP, config: SyncConfig, date_str: str) -> SyncStats:
     stats = SyncStats()
     remote_dir = build_remote_dir(config.remote_base_dir, date_str)
-    final_dir = config.final_base_dir / date_str
-    staging_dir = config.staging_base_dir / date_str
-
-    final_dir.mkdir(parents=True, exist_ok=True)
-    staging_dir.mkdir(parents=True, exist_ok=True)
-
     remote_files = list_remote_nc_files(ftp, remote_dir, config.sort_order)
 
     for remote_file in remote_files:
-        final_name = get_kst_filename(remote_file)
-        if not final_name:
+        file_info = get_kst_file_info(remote_file)
+        if not file_info:
             stats.skipped_unmatched += 1
             continue
 
         if config.max_files and stats.downloaded >= config.max_files:
             break
 
+        final_dir = config.final_base_dir / file_info.kst_folder
+        staging_dir = config.staging_base_dir / file_info.kst_folder
+
         try:
-            result = download_one(ftp, remote_file, final_name, staging_dir, final_dir, config)
+            result = download_one(ftp, remote_file, file_info.final_name, staging_dir, final_dir, config)
             if result == "downloaded":
                 stats.downloaded += 1
             else:

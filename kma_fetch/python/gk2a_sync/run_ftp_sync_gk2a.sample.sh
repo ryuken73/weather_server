@@ -15,8 +15,9 @@ export GK2A_FTP_REMOTE_BASE_DIR="${GK2A_FTP_REMOTE_BASE_DIR:-/}"
 export GK2A_FTP_FINAL_DIR="${GK2A_FTP_FINAL_DIR:-$BASE_DIR/in_data/gk2a}"
 export GK2A_FTP_STAGING_DIR="${GK2A_FTP_STAGING_DIR:-$BASE_DIR/.incoming/gk2a}"
 
-# 기본값은 오늘 KST 날짜 폴더입니다. 여러 날짜를 보정할 때는
-# GK2A_SYNC_DATES=2026-07-01,2026-07-02 형태로 override하세요.
+# 기본값은 오늘 KST 기준으로 조회할 FTP 원격 날짜 폴더입니다.
+# 실제 로컬 저장 폴더는 파일명 안의 UTC 시각을 KST로 변환해서 결정합니다.
+# 여러 원격 날짜를 보정할 때는 GK2A_SYNC_DATES=2026-07-01,2026-07-02 형태로 override하세요.
 export GK2A_SYNC_DATES="${GK2A_SYNC_DATES:-$(TZ=Asia/Seoul date +%F)}"
 
 # cron에서 downstream 이미지 생성 작업이 한꺼번에 몰리지 않도록 기본 cap을 둡니다.
