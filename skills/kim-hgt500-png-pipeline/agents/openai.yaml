@@ -1,0 +1,4 @@
+﻿interface:
+  display_name: "KIM HGT500 PNG Pipeline"
+  short_description: "KIM HGT500 packed PNG 변환/복호화"
+  default_prompt: "Use $kim-hgt500-png-pipeline to explain or modify KIM HGT500 packed PNG conversion and client decoding."
