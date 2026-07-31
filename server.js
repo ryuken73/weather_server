@@ -6,6 +6,7 @@ const {addHours, format, parse} = require('date-fns');
 const { Pool } = require('pg');
 const server_util = require('./server_util');
 const { deriveKimTextDirs } = require('./kma_fetch/utils/kim_text_paths');
+const { listHgt500Datasets } = require('./kma_fetch/utils/hgt500_dataset_list');
 
 require('dotenv').config(); // .env 파일 로드
 
@@ -103,6 +104,24 @@ const convertKSTToGMTString = (dateString) => {
     } catch (err) {
       if (err.code === 'ENOENT') {
         return reply.code(404).send({ error: 'No KIM HGT500 dataset is available' });
+      }
+      fastify.log.error(err);
+      return reply.code(500).send({ error: 'Internal server error', details: err.message });
+    }
+  });
+
+  /**
+   * List available KIM HGT500 datasets under /datasets (PRD 12.2).
+   * Query: tmfc, from, to, intervalMinutes, downsampleFactor, sourceFormat, status
+   */
+  fastify.get('/api/hgt500/datasets', async (request, reply) => {
+    try {
+      const result = await listHgt500Datasets(kimTextDatasetDir, request.query || {});
+      reply.header('Cache-Control', 'no-store');
+      return result;
+    } catch (err) {
+      if (err.code === 'BAD_QUERY') {
+        return reply.code(400).send({ error: err.message });
       }
       fastify.log.error(err);
       return reply.code(500).send({ error: 'Internal server error', details: err.message });

@@ -242,6 +242,18 @@ GET /api/hgt500/latest
 - `out_data/kim/latest/hgt500.json`을 읽어 반환한다.
 - 파일이 없으면 404를 반환한다.
 
+목록 API (추가 구현):
+
+```http
+GET /api/hgt500/datasets
+```
+
+동작:
+
+- `datasets/kim-glob-hgt500-{tmfc}/manifest.json`을 스캔해 `{ items }`를 반환한다.
+- query: `tmfc`, `from`, `to`, `intervalMinutes`, `downsampleFactor`, `sourceFormat`, `status`
+- 구현: `kma_fetch/utils/hgt500_dataset_list.js`
+
 선택 API:
 
 ```http

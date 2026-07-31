@@ -1,8 +1,9 @@
 # KIM HGT500 Frontend API Spec
 
-작성일: 2026-07-01
+작성일: 2026-07-01  
+갱신: 2026-07-31 — `GET /api/hgt500/datasets` 목록 API 반영
 
-이 문서는 KIM TXT 기반 500hPa 지위고도 데이터셋을 프론트엔드에서 조회하고 렌더링하기 위한 서버 연동 스펙이다. 실제 구현 기준 문서이며, PRD에 있던 job 생성 API나 dataset 목록 API는 현재 서버 범위에 포함하지 않는다.
+이 문서는 KIM TXT 기반 500hPa 지위고도 데이터셋을 프론트엔드에서 조회하고 렌더링하기 위한 서버 연동 스펙이다. 실제 구현 기준 문서이다. job 생성/폴링 API는 아직 서버 범위에 포함하지 않는다. dataset 목록 조회는 구현되어 있다.
 
 ## Scope
 
@@ -36,6 +37,7 @@ https://<weather-api-host>
 
 ```text
 GET https://<weather-api-host>/api/hgt500/latest
+GET https://<weather-api-host>/api/hgt500/datasets?from=...&to=...
 GET https://<weather-api-host>/datasets/kim-glob-hgt500-2026070100/manifest.json
 ```
 
@@ -43,12 +45,23 @@ GET https://<weather-api-host>/datasets/kim-glob-hgt500-2026070100/manifest.json
 
 ## Client Flow
 
+### A. 최신 단일 dataset (기본)
+
 1. `GET /api/hgt500/latest`로 최신 성공 dataset pointer를 조회한다.
 2. 응답의 `manifestUrl`을 fetch한다.
 3. manifest의 `frames` 배열을 `index` 순서로 사용한다.
 4. 각 frame의 `dataPng`, `metadataJson`, `previewPng`, `anomalyPng`를 `/datasets/{datasetId}/` 아래 상대 경로로 조합한다.
 5. 실제 수치 렌더링은 `dataPng`와 frame metadata의 `encoding`을 사용해 디코딩한다.
 6. anomaly 렌더링은 `anomalyPng`와 metadata의 `anomaly.encoding`을 사용한다.
+
+### B. 시간 구간 커버 (태풍 timeline 등)
+
+`latest` 한 건의 valid window 밖을 재생하려면 목록 API로 후보를 고른다.
+
+1. `GET /api/hgt500/datasets?from={ISO}&to={ISO}`로 valid-time이 구간과 겹치는 dataset을 조회한다.
+2. `items`는 `tmfc` 내림차순이다. 동일 시각에 여러 run이 겹치면 보통 최신 `tmfc`를 우선한다.
+3. 각 item의 `manifestUrl`을 fetch한 뒤, 클라이언트에서 playlist를 merge한다 (겹치는 validTime은 한 frame만 남김).
+4. 이후 asset 로딩·디코딩은 A와 동일하다.
 
 ## Endpoints
 
@@ -82,6 +95,62 @@ GET https://<weather-api-host>/datasets/kim-glob-hgt500-2026070100/manifest.json
 - `500`: 서버 내부 오류
 
 `latest`는 mutable pointer이므로 짧은 주기로 갱신될 수 있다. 프론트엔드에서는 cache를 짧게 두거나, 최신성이 중요하면 no-cache로 조회하는 편이 좋다.
+
+### GET `/api/hgt500/datasets`
+
+디스크에 존재하는 성공 dataset을 스캔해 목록으로 반환한다. 응답 항목 shape는 `/api/hgt500/latest`와 동일하다.
+
+Query (모두 optional):
+
+| 파라미터 | 설명 |
+| --- | --- |
+| `tmfc` | `YYYYMMDDHH` UTC. 해당 분석시각 dataset만 |
+| `from` | ISO-8601. dataset `validTimeStart..validTimeEnd`와 **구간 겹침(inclusive)** 필터 |
+| `to` | ISO-8601. 위와 동일 |
+| `intervalMinutes` | `outputFrameIntervalMinutes` 정확 일치 |
+| `downsampleFactor` | `downsampleFactor` 정확 일치 |
+| `sourceFormat` | 예: `kim-api-text` |
+| `status` | 기본 `succeeded`. `all`이면 status 필터 없음 |
+
+필터를 생략한 필드는 제한하지 않는다 (`intervalMinutes`/`sourceFormat`에 서버 기본값을 강제하지 않음).
+
+성공 응답 예:
+
+```json
+{
+  "items": [
+    {
+      "datasetId": "kim-glob-hgt500-2026073018",
+      "tmfc": "2026073018",
+      "status": "succeeded",
+      "sourceFormat": "kim-api-text",
+      "downsampleFactor": 3,
+      "analysisTime": "2026-07-30T18:00:00Z",
+      "validTimeStart": "2026-07-30T18:00:00Z",
+      "validTimeEnd": "2026-08-02T18:00:00Z",
+      "sourceForecastIntervalMinutes": 180,
+      "outputFrameIntervalMinutes": 10,
+      "frameCount": 433,
+      "manifestUrl": "/datasets/kim-glob-hgt500-2026073018/manifest.json"
+    }
+  ]
+}
+```
+
+상태 코드:
+
+- `200`: 목록 (empty `items` 가능)
+- `400`: query 형식 오류 (`tmfc` / `from` / `to`)
+- `500`: 서버 내부 오류
+
+응답은 `Cache-Control: no-store`이다. 목록은 `datasets/kim-glob-hgt500-{tmfc}/manifest.json`이 있고 `schemaVersion === 1`인 디렉터리만 포함한다. 정렬은 `tmfc` 내림차순.
+
+예:
+
+```text
+GET /api/hgt500/datasets?from=2026-07-28T00:00:00Z&to=2026-08-02T00:00:00Z
+GET /api/hgt500/datasets?tmfc=2026072800
+```
 
 ### GET `/datasets/{datasetId}/manifest.json`
 
@@ -386,18 +455,18 @@ UI 표시 시 KST가 필요하면 클라이언트에서 변환한다.
 권장 처리:
 
 - `/api/hgt500/latest`가 `404`면 아직 생성된 dataset이 없는 상태로 표시한다.
-- `manifestUrl` fetch가 `404`면 latest pointer와 static 파일 사이의 일시적 불일치로 보고 재시도한다.
-- asset fetch가 `404`면 해당 dataset을 실패 처리하고 latest를 다시 조회한다.
+- `/api/hgt500/datasets`가 `200`이지만 `items.length === 0`이면 해당 구간에 dataset이 없는 상태로 표시한다.
+- `manifestUrl` fetch가 `404`면 pointer/목록과 static 파일 사이의 일시적 불일치로 보고 재시도한다.
+- asset fetch가 `404`면 해당 dataset을 실패 처리하고 latest 또는 list를 다시 조회한다.
 - `manifest.sequenceStatistics.frameCount !== manifest.frames.length`면 manifest를 신뢰하지 말고 오류로 처리한다.
 - `schemaVersion !== 1`이면 클라이언트 호환성 검사를 수행한다.
 
 현재 제공하지 않는 API:
 
 - `POST /api/hgt500/datasets`
-- `GET /api/hgt500/datasets`
 - `GET /api/hgt500/jobs/{jobId}`
 
-프론트엔드는 위 job/list API를 호출하지 않아야 한다.
+프론트엔드는 위 job API를 호출하지 않아야 한다. 시간 구간이 필요하면 `GET /api/hgt500/datasets`를 사용한다.
 
 ## Minimal Integration Example
 
@@ -444,7 +513,9 @@ async function loadLatestKimHgt500(apiBaseUrl: string) {
 프론트엔드 연동 시 아래가 통과하면 기본 연동은 성공으로 본다.
 
 - `GET /api/hgt500/latest`가 `200`을 반환한다.
-- `latest.manifestUrl`이 `200`을 반환한다.
+- `GET /api/hgt500/datasets`가 `200`과 `{ items: [...] }`를 반환한다.
+- `from`/`to`로 필터하면 해당 valid window와 겹치는 item만 남는다.
+- `latest.manifestUrl` (또는 list item의 `manifestUrl`)이 `200`을 반환한다.
 - `manifest.datasetId`가 `kim-glob-hgt500-\d{10}` 형식이다.
 - `manifest.frames.length > 0`이다.
 - 첫 frame의 `metadataJson`, `dataPng`, `previewPng`, `anomalyPng`가 모두 `200`이다.

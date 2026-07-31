@@ -647,20 +647,29 @@ GET /api/hgt500/latest
 
 ### 12.2 dataset 검색
 
+**구현 상태: 완료** (`GET /api/hgt500/datasets`, `kma_fetch/utils/hgt500_dataset_list.js`)
+
+디스크의 `datasets/kim-glob-hgt500-{tmfc}/manifest.json`을 스캔한다. job store는 쓰지 않는다. 상세 클라이언트 계약은 `docs/kim_hgt500_frontend_api_spec.md`를 따른다.
+
 ```http
 GET /api/hgt500/datasets?tmfc=2026062800&from=2026-06-28T00:00:00Z&to=2026-06-29T00:00:00Z&intervalMinutes=10&sourceFormat=kim-api-text
 ```
 
 query:
 
-- `tmfc`: optional, forecast cycle id
-- `from`: optional, ISO valid time start
-- `to`: optional, ISO valid time end
-- `intervalMinutes`: optional, default `10`
-- `maxForecastHour`: optional
-- `downsampleFactor`: optional, default `3`
-- `sourceFormat`: optional, default `kim-api-text`
-- `status`: optional, default `succeeded`
+- `tmfc`: optional, forecast cycle id (`YYYYMMDDHH`)
+- `from`: optional, ISO valid time — dataset valid window와 **겹침(inclusive)**
+- `to`: optional, ISO valid time — 위와 동일
+- `intervalMinutes`: optional, 지정 시에만 `outputFrameIntervalMinutes` 정확 일치
+- `downsampleFactor`: optional, 지정 시에만 정확 일치
+- `sourceFormat`: optional, 지정 시에만 정확 일치
+- `status`: optional, default `succeeded` (`all`이면 미적용)
+
+미구현 query (요청해도 무시):
+
+- `maxForecastHour`
+
+응답 item은 `/api/hgt500/latest`와 동일 shape이며, 추가로 `sourceForecastIntervalMinutes`, `outputFrameIntervalMinutes`를 포함한다. 정렬은 `tmfc` 내림차순. `Cache-Control: no-store`.
 
 응답:
 
@@ -676,6 +685,8 @@ query:
       "analysisTime": "2026-06-28T00:00:00Z",
       "validTimeStart": "2026-06-28T00:00:00Z",
       "validTimeEnd": "2026-07-01T00:00:00Z",
+      "sourceForecastIntervalMinutes": 180,
+      "outputFrameIntervalMinutes": 10,
       "frameCount": 433,
       "manifestUrl": "/datasets/kim-glob-hgt500-2026062800/manifest.json"
     }
