@@ -6,6 +6,7 @@ const env = require('../config/env');
 const time = require('./time');
 const { DateTime } = require('luxon');
 const { pipeline } = require('stream/promises');
+const { destroyStream } = require('./download');
 
 // 기본 디렉토리 설정
 const BASE_DIR = env.BASE_DIR;
@@ -89,6 +90,8 @@ async function saveFile(data, saveFileName, dateStringForFolder, subDirName, com
   const [fileExists, filePath] = await isFileExists(saveFileName, dateStringForFolder, subDirName, options);
   if (fileExists && !overwrite) {
     console.log(`File already exists: ${filePath}, skipping...`);
+    // axios responseType:'stream' 경로에서 skip 시 소비하지 않으면 FD 누수
+    destroyStream(data);
     return filePath;
   }
   if(compressed){

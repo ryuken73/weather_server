@@ -4,6 +4,12 @@ const path = require('path');
 const axios = require('axios');
 const { pipeline } = require('stream/promises');
 
+function destroyStream(stream) {
+  if (!stream || typeof stream.destroy !== 'function') return;
+  if (stream.destroyed) return;
+  stream.destroy();
+}
+
 async function hasNonEmptyFile(filePath) {
   const stats = await fs.stat(filePath).catch(() => null);
   return Boolean(stats && stats.isFile() && stats.size > 0);
@@ -53,6 +59,7 @@ async function downloadStreamToFile(url, outputPath, options = {}) {
 }
 
 module.exports = {
+  destroyStream,
   downloadStreamToFile,
   hasNonEmptyFile
 };

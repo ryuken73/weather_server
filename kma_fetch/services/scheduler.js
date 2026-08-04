@@ -23,12 +23,23 @@ function scheduleTask(taskName, interval, task) {
     throw new Error(`Invalid interval: ${interval}`);
   }
 
+  // 이전 job이 끝나기 전에 다음 tick이 오면 중첩 실행되며 FD 누수를 가속할 수 있음
+  let running = false;
+
   schedule.scheduleJob(taskName, intervals[interval], () => {
+    if (running) {
+      console.log(`Skipping task (still running): ${taskName}`);
+      return;
+    }
+    running = true;
     console.log(`Running task: ${taskName}`);
     Promise.resolve()
       .then(task)
       .catch(error => {
         console.error(`Scheduled task failed: ${taskName}`, error);
+      })
+      .finally(() => {
+        running = false;
       });
   });
   console.log(`Scheduled task: ${taskName} with interval ${interval}`);

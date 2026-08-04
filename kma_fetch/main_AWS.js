@@ -64,10 +64,11 @@ async function downloadLatestData(config) {
     }
 
     const patternBase = `AWS_MIN_`;
+    // 파일명 매칭은 folder용 yyyy-MM-dd가 아니라 timeCandidate(yyyyMMddHHmm) 기준
+    // 예: AWS_MIN_202607230010.json
     const timesToDownload = timeCandidates.filter(timeCandidate => {
       const kstTimeString = time.getDateString(timeCandidate);
-      const fileNameRegex = new RegExp(`${patternBase}_${kstTimeString}.${fileExt}`);
-      
+      const fileNameRegex = new RegExp(`^${patternBase}${timeCandidate}\\.${fileExt}$`);
       const existingFiles = folderFiles[kstTimeString] || [];
       return existingFiles.every(fileName => !fileNameRegex.test(fileName));
     });

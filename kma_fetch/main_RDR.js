@@ -65,10 +65,11 @@ async function downloadLatestData(config) {
 
     const patternBase = `RDR_CMP_HSP_PUB_`;
 
+    // 파일명 매칭은 folder용 yyyy-MM-dd가 아니라 timeCandidate(yyyyMMddHHmm) 기준
+    // 예: RDR_CMP_HSP_PUB_202607230010.bin
     const timesToDownload = timeCandidates.filter(timeCandidate => {
       const kstTimeString = time.getDateString(timeCandidate);
-      const fileNameRegex = new RegExp(`${patternBase}_${kstTimeString}.${fileExt}`);
-      
+      const fileNameRegex = new RegExp(`^${patternBase}${timeCandidate}\\.${fileExt}$`);
       const existingFiles = folderFiles[kstTimeString] || [];
       return existingFiles.every(fileName => !fileNameRegex.test(fileName));
     });

@@ -2,6 +2,7 @@ const axios = require('axios');
 const env = require('../config/env');
 const file = require('../utils/file');
 const time = require('../utils/time');
+const { destroyStream } = require('../utils/download');
 const { DateTime } = require('luxon');
 
 // 환경 변수
@@ -81,14 +82,22 @@ async function fetchAndSaveNcFile(outputLevel, dataType, dataCoverage, date, opt
 }
 
 async function fetchFile(fetchUrl) {
+  let response;
   try {
-    const response = await axios.get(fetchUrl, {
+    response = await axios.get(fetchUrl, {
       responseType: 'stream', // 바이너리 데이터 처리
       headers: {
         'Accept-Encoding': 'gzip'
       }
     });
+  } catch (error) {
+    // HTTP 에러 응답도 stream이면 FD를 잡아먹음
+    destroyStream(error.response && error.response.data);
+    console.error(`Error fetching or saving file from ${fetchUrl}: ${error.message}`);
+    throw error;
+  }
 
+  try {
     // Content-Disposition에서 파일명 추출
     const contentDisposition = response.headers['content-disposition'];
     if (!contentDisposition) {
@@ -99,9 +108,9 @@ async function fetchFile(fetchUrl) {
       throw new Error(`Invalid Content-Disposition: ${contentDisposition}`);
     }
     const originalFileName = fileNameMatch[1]; // "gk2a_ami_le1b_nr016_fd020ge_202210272350.nc"
-    return {response, originalFileName}
-
+    return { response, originalFileName };
   } catch (error) {
+    destroyStream(response && response.data);
     console.error(`Error fetching or saving file from ${fetchUrl}: ${error.message}`);
     throw error;
   }
