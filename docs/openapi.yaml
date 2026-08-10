@@ -1,0 +1,814 @@
+openapi: 3.0.3
+info:
+  title: weather_api
+  description: |
+    SBS weather_api HTTP 계약 (실구현 기준).
+
+    - Producer 카탈로그: `skills/weather-api-catalog`
+    - HGT500 상세 클라이언트 플로우: `docs/kim_hgt500_frontend_api_spec.md`
+    - HGT500 packed PNG 변환/복호화: `skills/kim-hgt500-png-pipeline`
+    - 태풍/admin API는 이 서버에 없음 (별도 typhoon API 참고)
+
+    미구현(PRD only, 문서화하지 않음): `POST /api/hgt500/datasets`, `GET /api/hgt500/jobs/{jobId}`
+  version: 1.0.0
+  contact:
+    name: weather_api
+
+servers:
+  - url: http://localhost:3010
+    description: Local (listen 0.0.0.0:3010)
+  - url: https://weather-map.sbs.co.kr
+    description: Production
+
+tags:
+  - name: hgt500
+    description: KIM TXT 기반 500hPa 지위고도 dataset pointer / 목록 / manifest
+  - name: aws
+    description: AWS_MIN station JSON (`in_data/aws`, main_AWS 산출)
+  - name: ir105-json
+    description: GK2A IR105 JSON (DB 또는 filesystem)
+  - name: image
+    description: 레거시 이미지/바람 파일 (`/{type}/{area}/{step}/image`)
+  - name: static
+    description: Static file prefixes
+
+paths:
+  /api/hgt500/latest:
+    get:
+      tags: [hgt500]
+      summary: 최신 KIM HGT500 dataset pointer
+      description: |
+        최신 성공 dataset의 mutable pointer.
+        animation은 이 응답만으로 만들지 말고 `manifestUrl`의 frames를 사용한다.
+      operationId: getHgt500Latest
+      responses:
+        '200':
+          description: 최신 dataset pointer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Hgt500DatasetPointer'
+              example:
+                datasetId: kim-glob-hgt500-2026070100
+                tmfc: '2026070100'
+                status: succeeded
+                sourceFormat: kim-api-text
+                downsampleFactor: 3
+                analysisTime: '2026-07-01T00:00:00Z'
+                validTimeStart: '2026-07-01T00:00:00Z'
+                validTimeEnd: '2026-07-04T00:00:00Z'
+                sourceForecastIntervalMinutes: 180
+                outputFrameIntervalMinutes: 10
+                frameCount: 433
+                manifestUrl: /datasets/kim-glob-hgt500-2026070100/manifest.json
+        '404':
+          description: 생성된 dataset 없음
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: No KIM HGT500 dataset is available
+        '500':
+          description: 서버 내부 오류
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorWithDetails'
+
+  /api/hgt500/datasets:
+    get:
+      tags: [hgt500]
+      summary: KIM HGT500 dataset 목록
+      description: |
+        디스크의 성공 dataset을 스캔한다. `Cache-Control: no-store`.
+        정렬은 `tmfc` 내림차순. 항목 shape는 `/api/hgt500/latest`와 동일.
+      operationId: listHgt500Datasets
+      parameters:
+        - name: tmfc
+          in: query
+          schema:
+            type: string
+            pattern: '^\d{10}$'
+          description: YYYYMMDDHH UTC. 해당 분석시각만
+          example: '2026072800'
+        - name: from
+          in: query
+          schema:
+            type: string
+            format: date-time
+          description: ISO-8601. valid window와 구간 겹침(inclusive)
+          example: '2026-07-28T00:00:00Z'
+        - name: to
+          in: query
+          schema:
+            type: string
+            format: date-time
+          description: ISO-8601. valid window와 구간 겹침(inclusive)
+          example: '2026-08-02T00:00:00Z'
+        - name: intervalMinutes
+          in: query
+          schema:
+            type: integer
+          description: outputFrameIntervalMinutes 정확 일치
+        - name: downsampleFactor
+          in: query
+          schema:
+            type: integer
+          description: downsampleFactor 정확 일치
+        - name: sourceFormat
+          in: query
+          schema:
+            type: string
+          description: 예 kim-api-text
+        - name: status
+          in: query
+          schema:
+            type: string
+            default: succeeded
+          description: 기본 succeeded. `all`이면 status 필터 없음
+      responses:
+        '200':
+          description: 목록 (empty items 가능)
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                example: no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Hgt500DatasetList'
+        '400':
+          description: query 형식 오류
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: 서버 내부 오류
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorWithDetails'
+
+  /api/hgt500/datasets/{datasetId}/manifest:
+    get:
+      tags: [hgt500]
+      summary: manifest로 redirect
+      description: |
+        `302 Location: /datasets/{datasetId}/manifest.json`
+        클라이언트는 보통 latest/list의 `manifestUrl`을 직접 fetch하는 편이 단순하다.
+      operationId: redirectHgt500Manifest
+      parameters:
+        - $ref: '#/components/parameters/DatasetId'
+      responses:
+        '302':
+          description: static manifest URL로 redirect
+          headers:
+            Location:
+              schema:
+                type: string
+                example: /datasets/kim-glob-hgt500-2026070100/manifest.json
+        '400':
+          description: datasetId 형식 오류
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: Invalid datasetId
+
+  /datasets/{datasetId}/manifest.json:
+    get:
+      tags: [static, hgt500]
+      summary: Dataset manifest (static)
+      description: |
+        `@fastify/static` prefix `/datasets/`.
+        Frame asset 경로는 manifest 기준 상대 경로.
+        상세 schema는 `docs/kim_hgt500_frontend_api_spec.md` 참고.
+      operationId: getHgt500ManifestStatic
+      parameters:
+        - $ref: '#/components/parameters/DatasetId'
+      responses:
+        '200':
+          description: Manifest JSON
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Hgt500Manifest'
+        '404':
+          description: 파일 없음
+
+  /datasets/{datasetId}/{assetName}:
+    get:
+      tags: [static, hgt500]
+      summary: Dataset asset (static)
+      description: |
+        dataPng / metadataJson / previewPng / anomalyPng 등.
+        datasetId별 immutable 산출물로 취급해도 된다.
+      operationId: getHgt500DatasetAsset
+      parameters:
+        - $ref: '#/components/parameters/DatasetId'
+        - name: assetName
+          in: path
+          required: true
+          schema:
+            type: string
+          example: g576_v091_glob_prs_hgt500_202607010000.png
+      responses:
+        '200':
+          description: PNG 또는 JSON asset
+          content:
+            image/png:
+              schema:
+                type: string
+                format: binary
+            application/json:
+              schema:
+                type: object
+        '404':
+          description: 파일 없음
+
+  /api/aws/min:
+    get:
+      tags: [aws]
+      summary: AWS_MIN station JSON 단건
+      description: |
+        `in_data/aws/{yyyy-MM-dd}/AWS_MIN_{YYYYMMDDHHMM}.json`을 읽는다.
+        `timestamp_kor`는 2분 nearest로 snap한다 (`main_AWS` / image route와 동일).
+        경로 override: env `AWS_JSON_DIR`. 기본은 `BASE_DIR` 기준 `in_data/aws`.
+      operationId: getAwsMin
+      parameters:
+        - name: timestamp_kor
+          in: query
+          required: true
+          schema:
+            type: string
+            pattern: '^\d{12}$'
+          description: YYYYMMDDHHMM KST
+          example: '202604050000'
+      responses:
+        '200':
+          description: station 배열
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                example: no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AwsMinResponse'
+        '400':
+          description: timestamp_kor 누락/형식 오류
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: 해당 시각 파일 없음
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  timestamp_kor:
+                    type: string
+        '500':
+          description: 서버 내부 오류
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorWithDetails'
+
+  /api/aws/min/range:
+    get:
+      tags: [aws]
+      summary: AWS_MIN station JSON 시간 범위
+      description: |
+        `from`~`to` (inclusive)를 2분 간격으로 열거해 존재하는 파일만 `items`에 담는다.
+        없는 시각은 `missingTimestamps`에 모은다.
+        최대 frame 수 360 (약 12시간). `from`/`to`도 2분 nearest snap.
+      operationId: getAwsMinRange
+      parameters:
+        - name: from
+          in: query
+          required: true
+          schema:
+            type: string
+            pattern: '^\d{12}$'
+          description: YYYYMMDDHHMM KST (inclusive start)
+          example: '202604050000'
+        - name: to
+          in: query
+          required: true
+          schema:
+            type: string
+            pattern: '^\d{12}$'
+          description: YYYYMMDDHHMM KST (inclusive end)
+          example: '202604050100'
+      responses:
+        '200':
+          description: 범위 결과
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                example: no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AwsMinRangeResponse'
+        '400':
+          description: from/to 누락, 순서 오류, 범위 초과
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: 서버 내부 오류
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorWithDetails'
+
+  /ir105/{area}/{step}:
+    get:
+      tags: [ir105-json]
+      summary: IR105 JSON 단건 (PostgreSQL)
+      operationId: getIr105Json
+      parameters:
+        - $ref: '#/components/parameters/Ir105Area'
+        - $ref: '#/components/parameters/Ir105Step'
+        - name: timestamp_kor
+          in: query
+          required: true
+          schema:
+            type: string
+          description: DB `observation_time_kor`와 일치하는 값
+          example: '2025-03-01T00:00:00Z'
+      responses:
+        '200':
+          description: ir105_json row
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          description: timestamp_kor 누락
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: 데이터 없음
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: 서버 내부 오류
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorWithDetails'
+
+  /ir105/{area}/{step}/batch:
+    get:
+      tags: [ir105-json]
+      summary: IR105 JSON 배치 (PostgreSQL)
+      operationId: getIr105JsonBatch
+      parameters:
+        - $ref: '#/components/parameters/Ir105Area'
+        - $ref: '#/components/parameters/Ir105Step'
+        - name: timestamps
+          in: query
+          required: true
+          schema:
+            type: string
+          description: comma-separated observation_time_kor 목록
+          example: '2025-03-01T00:00:00Z,2025-03-01T00:10:00Z'
+      responses:
+        '200':
+          description: 행 배열 JSON
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    observation_time_kor:
+                      type: string
+                    data:
+                      description: JSON payload
+                  additionalProperties: true
+        '500':
+          description: 서버 내부 오류
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /ir105/{area}/{step}/fs:
+    get:
+      tags: [ir105-json]
+      summary: IR105 JSON gzip 파일 (filesystem)
+      description: |
+        로컬 gzip JSON 파일을 그대로 반환 (`Content-Encoding: gzip`).
+        query는 `timestamp_utc` (YYYYMMDDHHMM UTC).
+      operationId: getIr105JsonFs
+      parameters:
+        - $ref: '#/components/parameters/Ir105Area'
+        - $ref: '#/components/parameters/Ir105Step'
+        - name: timestamp_utc
+          in: query
+          required: true
+          schema:
+            type: string
+            pattern: '^\d{12}$'
+          description: YYYYMMDDHHMM UTC
+          example: '202604050000'
+      responses:
+        '200':
+          description: gzip-compressed JSON body
+          headers:
+            Content-Encoding:
+              schema:
+                type: string
+                example: gzip
+          content:
+            application/json:
+              schema:
+                type: string
+                format: binary
+        '400':
+          description: timestamp_utc 누락
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: 파일 없음
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /{type}/{area}/{step}/image:
+    get:
+      tags: [image]
+      summary: 레거시 이미지 또는 GFS wind JSON
+      description: |
+        `timestamp_kor` (YYYYMMDDHHMM KST) 필수.
+        서버는 product family별로 nearest timestamp로 내림/스냅한다.
+
+        - GFS wind (`gfs-wind_*`): `application/json`
+        - 그 외 대부분: `image/png`
+
+        새 KIM global TXT HGT500은 이 라우트가 아니라 `/api/hgt500/*` + `/datasets/*`를 사용한다.
+        `/kim-hgt500/.../image`는 레거시 NC 기반 이미지용이다.
+      operationId: getLegacyImage
+      parameters:
+        - name: type
+          in: path
+          required: true
+          schema:
+            $ref: '#/components/schemas/ImageType'
+          description: product type
+        - name: area
+          in: path
+          required: true
+          schema:
+            type: string
+          description: |
+            영역 코드. 예: `fd`(full disk), `easia` 등.
+            `fd`이면 projection `ge`, 그 외 `lc` (IR105 파일명).
+          example: fd
+        - name: step
+          in: path
+          required: true
+          schema:
+            type: string
+          description: 해상도/스텝 식별자 (예 1)
+          example: '1'
+        - name: timestamp_kor
+          in: query
+          required: true
+          schema:
+            type: string
+            pattern: '^\d{12}$'
+          description: YYYYMMDDHHMM KST
+          example: '202604050000'
+      responses:
+        '200':
+          description: PNG 이미지 또는 GFS wind JSON
+          content:
+            image/png:
+              schema:
+                type: string
+                format: binary
+            application/json:
+              schema:
+                type: object
+                description: GFS wind u/v grid JSON
+                additionalProperties: true
+        '400':
+          description: timestamp_kor 누락 또는 unsupported KIM kind
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: 파일 없음
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /weather/{path}:
+    get:
+      tags: [static]
+      summary: 원천 weather 파일 트리 (static)
+      description: |
+        `@fastify/static` prefix `/weather/` → MODE에 따른 ROOT_DIR.
+        하위 경로로 gk2a/rdr/aws/gfs/kim 원본 파일에 직접 접근 가능.
+      operationId: getWeatherStatic
+      parameters:
+        - name: path
+          in: path
+          required: true
+          schema:
+            type: string
+          description: ROOT_DIR 기준 상대 경로
+      responses:
+        '200':
+          description: 파일
+        '404':
+          description: 파일 없음
+
+components:
+  parameters:
+    DatasetId:
+      name: datasetId
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: '^kim-glob-hgt500-\d{10}$'
+      example: kim-glob-hgt500-2026070100
+    Ir105Area:
+      name: area
+      in: path
+      required: true
+      schema:
+        type: string
+      example: ea
+    Ir105Step:
+      name: step
+      in: path
+      required: true
+      schema:
+        type: string
+      example: '10'
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: string
+      required: [error]
+
+    ErrorWithDetails:
+      type: object
+      properties:
+        error:
+          type: string
+        details:
+          type: string
+      required: [error]
+
+    Hgt500DatasetPointer:
+      type: object
+      properties:
+        datasetId:
+          type: string
+          example: kim-glob-hgt500-2026070100
+        tmfc:
+          type: string
+          description: YYYYMMDDHH UTC
+        status:
+          type: string
+          example: succeeded
+        sourceFormat:
+          type: string
+          example: kim-api-text
+        downsampleFactor:
+          type: integer
+        analysisTime:
+          type: string
+          format: date-time
+        validTimeStart:
+          type: string
+          format: date-time
+        validTimeEnd:
+          type: string
+          format: date-time
+        sourceForecastIntervalMinutes:
+          type: integer
+        outputFrameIntervalMinutes:
+          type: integer
+        frameCount:
+          type: integer
+        manifestUrl:
+          type: string
+          description: 상대 또는 절대 path. 보통 `/datasets/{id}/manifest.json`
+
+    Hgt500DatasetList:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Hgt500DatasetPointer'
+      required: [items]
+
+    Hgt500Manifest:
+      type: object
+      description: 요약 schema. 상세는 kim_hgt500_frontend_api_spec.md
+      properties:
+        schemaVersion:
+          type: integer
+          example: 1
+        datasetId:
+          type: string
+        variable:
+          type: string
+          example: hgt
+        unit:
+          type: string
+          example: m
+        domain:
+          type: string
+          example: glob
+        frames:
+          type: array
+          items:
+            type: object
+            properties:
+              index:
+                type: integer
+              forecastHour:
+                type: number
+              validTime:
+                type: string
+                format: date-time
+              dataPng:
+                type: string
+              metadataJson:
+                type: string
+              previewPng:
+                type: string
+              anomalyPng:
+                type: string
+      additionalProperties: true
+
+    AwsStationRow:
+      type: object
+      description: wx_AWS_MIN join 결과 row (main_AWS가 저장한 형태)
+      properties:
+        STN_NAME:
+          type: string
+          nullable: true
+        STN_ID:
+          type: integer
+        TM:
+          type: string
+          description: YYYYMMDDHHMM
+        LAT:
+          type: number
+        LON:
+          type: number
+        HT:
+          type: number
+          nullable: true
+        WD:
+          type: number
+          nullable: true
+        WS:
+          type: number
+          nullable: true
+        TA:
+          type: number
+          nullable: true
+        HM:
+          type: number
+          nullable: true
+        PA:
+          type: number
+          nullable: true
+        PS:
+          type: number
+          nullable: true
+        RN_YN:
+          type: number
+          nullable: true
+        RN_1HR:
+          type: number
+          nullable: true
+        RN_15M:
+          type: number
+          nullable: true
+        RN_60M:
+          type: number
+          nullable: true
+        RN_24HR:
+          type: number
+          nullable: true
+        WD_INS:
+          type: number
+          nullable: true
+        WS_INS:
+          type: number
+          nullable: true
+      additionalProperties: true
+
+    AwsMinFrame:
+      type: object
+      properties:
+        timestamp_kor:
+          type: string
+        count:
+          type: integer
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/AwsStationRow'
+      required: [timestamp_kor, count, data]
+
+    AwsMinResponse:
+      allOf:
+        - $ref: '#/components/schemas/AwsMinFrame'
+        - type: object
+          properties:
+            requested_timestamp_kor:
+              type: string
+              description: snap 전 요청 값
+
+    AwsMinRangeResponse:
+      type: object
+      properties:
+        from:
+          type: string
+        to:
+          type: string
+        requested_from:
+          type: string
+        requested_to:
+          type: string
+        intervalMinutes:
+          type: integer
+          example: 2
+        requestedCount:
+          type: integer
+        itemCount:
+          type: integer
+        missingTimestamps:
+          type: array
+          items:
+            type: string
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AwsMinFrame'
+      required: [from, to, intervalMinutes, items, missingTimestamps]
+
+    ImageType:
+      type: string
+      description: 지원 type (server.js 주석 기준)
+      enum:
+        - ir105-mono
+        - ir105-color
+        - rdr-hsp
+        - rdr-hsp-equi
+        - aws-RN_15M
+        - aws-RN_60M
+        - gfs-wind_10m
+        - gfs-wind_850mb
+        - gfs-wind_500mb
+        - gfs-0p25_tmp_10m
+        - gfs-0p25_tmp_500mb
+        - gfs-0p25_tmp_850mb
+        - gfs-0p25_rh_10m
+        - gfs-0p25_rh_500mb
+        - gfs-0p25_rh_850mb
+        - gfs_equ-0p25_tmp_10m
+        - gfs_equ-0p25_tmp_500m
+        - gfs_equ-0p25_tmp_850m
+        - kim-psl
+        - kim-hgt500

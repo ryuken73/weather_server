@@ -1,0 +1,30 @@
+---
+description: HTTP API 변경 시 OpenAPI와 weather-api-catalog skill을 같은 작업에서 동기화한다.
+globs:
+  - server.js
+  - docs/openapi.yaml
+  - docs/kim_hgt500_frontend_api_spec.md
+  - skills/weather-api-catalog/**
+alwaysApply: false
+---
+
+# API docs sync
+
+`server.js`에 HTTP route를 추가·변경·삭제하거나 응답/query 계약을 바꾸면 **같은 작업에서** 아래를 갱신한다.
+
+1. [`docs/openapi.yaml`](docs/openapi.yaml) — path, parameters, responses, enum
+2. [`skills/weather-api-catalog/`](skills/weather-api-catalog/) — `SKILL.md` 요약 + `references/endpoints.md` / `timestamps.md` / `samples.md` 해당 부분
+3. HGT500 pointer·manifest·client flow가 바뀌면 [`docs/kim_hgt500_frontend_api_spec.md`](docs/kim_hgt500_frontend_api_spec.md)도 동기화
+
+## 검증
+
+- 서버 기동 후 `/docs`에서 스펙이 보이는지 확인
+- `/docs/json`이 갱신된 path를 포함하는지 확인
+- 미구현 PRD endpoint(`POST /api/hgt500/datasets`, job polling)를 실구현 OpenAPI에 넣지 말 것
+- 태풍/admin API는 이 서버 범위가 아님
+
+## 역할
+
+- Producer 문서: 이 repo의 OpenAPI + `weather-api-catalog`
+- Consumer(태풍+다중 소스): 시스템 skill `weather-external-resource-apis`
+- HGT500 변환/복호화: `skills/kim-hgt500-png-pipeline`

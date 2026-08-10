@@ -1,14 +1,25 @@
 const fastify = require('fastify')({ logger: false });
 const path = require('path');
 const fs = require('fs/promises');
+const fsSync = require('fs');
+const YAML = require('yaml');
 const sharp = require('sharp');
 const {addHours, format, parse} = require('date-fns');
 const { Pool } = require('pg');
 const server_util = require('./server_util');
 const { deriveKimTextDirs } = require('./kma_fetch/utils/kim_text_paths');
 const { listHgt500Datasets } = require('./kma_fetch/utils/hgt500_dataset_list');
+const {
+  AWS_INTERVAL_MINUTES,
+  deriveAwsJsonDir,
+  enumerateTimestamps,
+  readAwsMinFile
+} = require('./kma_fetch/utils/aws_min_json');
 
 require('dotenv').config(); // .env 파일 로드
+
+const openapiPath = path.join(__dirname, 'docs', 'openapi.yaml');
+const openapiDocument = YAML.parse(fsSync.readFileSync(openapiPath, 'utf8'));
 
 const {findNearestTimestamp, findNearestWindTimestamp} = server_util;
 
@@ -31,9 +42,12 @@ const { outputDir: kimTextOutputDir } = deriveKimTextDirs(process.env.BASE_DIR |
 const kimTextOutDir = resolveLocalPath(kimTextOutputDir);
 const kimTextDatasetDir = path.join(kimTextOutDir, 'datasets');
 const kimTextLatestPath = path.join(kimTextOutDir, 'latest', 'hgt500.json');
+const awsJsonDir = deriveAwsJsonDir(__dirname);
+const snapAwsTimestamp = findNearestTimestamp(AWS_INTERVAL_MINUTES);
 console.log(`MODE: ${mode}`);
 console.log(`DATA DIR: ${rootDir}`);
 console.log(`KIM TEXT DATASET DIR: ${kimTextDatasetDir}`);
+console.log(`AWS JSON DIR: ${awsJsonDir}`);
 
 // 데이터베이스 연결 설정
 const dbConfig = {
@@ -82,6 +96,21 @@ const convertKSTToGMTString = (dateString) => {
 }
 
 (async () => {
+  await fastify.register(require('@fastify/swagger'), {
+    mode: 'static',
+    specification: {
+      document: openapiDocument
+    }
+  });
+  await fastify.register(require('@fastify/swagger-ui'), {
+    routePrefix: '/docs',
+    uiConfig: {
+      docExpansion: 'list',
+      deepLinking: true
+    },
+    staticCSP: true
+  });
+
   await fastify.register(require('@fastify/compress'), { global: true}).after(() => {
     fastify.log.info('Compression plugin registered')
   });
@@ -134,6 +163,90 @@ const convertKSTToGMTString = (dateString) => {
       return reply.code(400).send({ error: 'Invalid datasetId' });
     }
     return reply.redirect(`/datasets/${datasetId}/manifest.json`);
+  });
+
+  /**
+   * AWS_MIN station JSON for a single KST timestamp.
+   * Reads in_data/aws/{yyyy-MM-dd}/AWS_MIN_{YYYYMMDDHHMM}.json (main_AWS output).
+   */
+  fastify.get('/api/aws/min', async (request, reply) => {
+    const { timestamp_kor } = request.query;
+    if (!timestamp_kor) {
+      return reply.code(400).send({ error: 'timestamp_kor query parameter is required' });
+    }
+    try {
+      const snapped = snapAwsTimestamp(timestamp_kor);
+      const result = await readAwsMinFile(awsJsonDir, snapped);
+      if (result.missing) {
+        return reply.code(404).send({
+          error: 'No AWS JSON found for the given timestamp',
+          timestamp_kor: snapped
+        });
+      }
+      reply.header('Cache-Control', 'no-store');
+      return {
+        timestamp_kor: result.timestamp_kor,
+        requested_timestamp_kor: timestamp_kor,
+        count: result.count,
+        data: result.data
+      };
+    } catch (err) {
+      if (err.message && err.message.startsWith('Invalid timestamp')) {
+        return reply.code(400).send({ error: err.message });
+      }
+      fastify.log.error(err);
+      return reply.code(500).send({ error: 'Internal server error', details: err.message });
+    }
+  });
+
+  /**
+   * AWS_MIN station JSON for a KST time range (inclusive, 2-minute steps).
+   * Query: from, to (YYYYMMDDHHMM). Missing frames are listed in missingTimestamps.
+   */
+  fastify.get('/api/aws/min/range', async (request, reply) => {
+    const { from, to } = request.query;
+    if (!from || !to) {
+      return reply.code(400).send({ error: 'from and to query parameters are required' });
+    }
+    try {
+      const fromSnap = snapAwsTimestamp(from);
+      const toSnap = snapAwsTimestamp(to);
+      const timestamps = enumerateTimestamps(fromSnap, toSnap, AWS_INTERVAL_MINUTES);
+      const items = [];
+      const missingTimestamps = [];
+
+      for (const tm of timestamps) {
+        const result = await readAwsMinFile(awsJsonDir, tm);
+        if (result.missing) {
+          missingTimestamps.push(tm);
+          continue;
+        }
+        items.push({
+          timestamp_kor: result.timestamp_kor,
+          count: result.count,
+          data: result.data
+        });
+      }
+
+      reply.header('Cache-Control', 'no-store');
+      return {
+        from: fromSnap,
+        to: toSnap,
+        requested_from: from,
+        requested_to: to,
+        intervalMinutes: AWS_INTERVAL_MINUTES,
+        requestedCount: timestamps.length,
+        itemCount: items.length,
+        missingTimestamps,
+        items
+      };
+    } catch (err) {
+      if (err.code === 'BAD_QUERY' || (err.message && err.message.startsWith('Invalid timestamp'))) {
+        return reply.code(400).send({ error: err.message });
+      }
+      fastify.log.error(err);
+      return reply.code(500).send({ error: 'Internal server error', details: err.message });
+    }
   });
 
   // 엔드포인트 설정: /ir105/:area/:step?timestamp_kor=...

@@ -1,0 +1,4 @@
+interface:
+  display_name: "weather_api Catalog"
+  short_description: "weather_api HTTP API producer 카탈로그"
+  default_prompt: "Use $weather-api-catalog to find weather_api endpoints, OpenAPI /docs, and call contracts."
