@@ -17,7 +17,7 @@ const downloadConfigs = [
     compressed: false,
     fileExt: 'json',
     getCandidate: api.mkFetchCandidate, 
-    candiateCount:5,
+    candiateCount:15,
     candidateMinute: 2,
     interval: '2min'
   },
