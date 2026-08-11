@@ -1,0 +1,4 @@
+interface:
+  display_name: "AWS_MIN JSON Pipeline"
+  short_description: "AWS_MIN 수집·누락 복구·API 허브 backfill"
+  default_prompt: "Use $aws-min-json-pipeline for AWS_MIN JSON paths, fetch gaps, backfill, or API Hub historical download."

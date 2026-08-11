@@ -13,6 +13,7 @@ description: weather_api 서버가 노출하는 HTTP API 카탈로그(producer).
 | --- | --- |
 | **weather-api-catalog** (이 skill) | Producer: 이 서버 endpoint·timestamp·응답·샘플 URL |
 | **weather-external-resource-apis** (시스템) | Consumer: 시각화 프로젝트가 태풍+바람+구름 등 여러 외부를 어떻게 쓰는지 |
+| **aws-min-json-pipeline** | AWS_MIN 수집·파일 포맷·누락 복구·API 허브 과거 backfill |
 | **kim-hgt500-png-pipeline** | HGT500 변환/보간/packed PNG 복호화 (HTTP 외) |
 
 바람/구름 URL이 겹치면 **이 catalog / OpenAPI를 권위 스펙으로** 따른다. 태풍·admin API는 이 서버에 없다.
@@ -46,6 +47,7 @@ description: weather_api 서버가 노출하는 HTTP API 카탈로그(producer).
 3. 샘플 URL / Postman·Apidog → `references/samples.md`
 4. HGT500 클라이언트 플로우·manifest frame schema → `docs/kim_hgt500_frontend_api_spec.md`
 5. packed PNG 복호화·렌더링 → `skills/kim-hgt500-png-pipeline`
+6. AWS_MIN 파일 채우기·과거 분 확보 → `skills/aws-min-json-pipeline`
 
 ## 핵심 규칙
 
