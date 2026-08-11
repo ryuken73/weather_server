@@ -14,7 +14,8 @@
  * 옵션:
  *   --from / --to   YYYYMMDD | YYYY-MM-DD | YYYYMMDDHHmm
  *   --sleep N       호출 간격 ms (기본 300)
- *   --even-only     짝수분만 저장 (기본 true, --all-minutes 로 해제)
+ *   --even-only     짝수분만 저장
+ *   --all-minutes   모든 분 저장 (기본)
  *   --save-raw      work/in/apihub/{date}/ 에 원문 저장
  *   --force         기존 JSON 있어도 덮어쓰기
  *   --dry-run       실제 HTTP 없이 창 목록만 출력
@@ -69,7 +70,7 @@ function parseArgs(argv) {
     from: null,
     to: null,
     sleepMs: 300,
-    evenOnly: true,
+    evenOnly: false,
     saveRaw: false,
     force: false,
     dryRun: false,

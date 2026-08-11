@@ -20,6 +20,11 @@ const {
   enrichAwsRowsForHttp,
   getStationsPayload
 } = require('./kma_fetch/utils/aws_stn_catalog');
+const {
+  deriveAwsPackDir,
+  getOrBuildAwsTaPack,
+  parseTimestampKorStrict
+} = require('./kma_fetch/utils/aws_min_pack');
 
 require('dotenv').config(); // .env 파일 로드
 
@@ -48,12 +53,14 @@ const kimTextOutDir = resolveLocalPath(kimTextOutputDir);
 const kimTextDatasetDir = path.join(kimTextOutDir, 'datasets');
 const kimTextLatestPath = path.join(kimTextOutDir, 'latest', 'hgt500.json');
 const awsJsonDir = deriveAwsJsonDir(__dirname);
+const awsPackDir = deriveAwsPackDir(__dirname);
 const snapAwsTimestamp = findNearestTimestamp(AWS_INTERVAL_MINUTES);
 const awsStnCatalog = loadStationCatalog();
 console.log(`MODE: ${mode}`);
 console.log(`DATA DIR: ${rootDir}`);
 console.log(`KIM TEXT DATASET DIR: ${kimTextDatasetDir}`);
 console.log(`AWS JSON DIR: ${awsJsonDir}`);
+console.log(`AWS PACK DIR: ${awsPackDir}`);
 console.log(`AWS STN CODE: ${awsStnCatalog.codeFile} (${awsStnCatalog.stationCount} stations)`);
 
 // 데이터베이스 연결 설정
@@ -126,11 +133,18 @@ const convertKSTToGMTString = (dateString) => {
     prefix: '/weather/'
   })
   await fs.mkdir(kimTextDatasetDir, { recursive: true });
+  await fs.mkdir(awsPackDir, { recursive: true });
+  // 더 구체적인 prefix를 먼저 등록
+  fastify.register(require('@fastify/static'), {
+    root: awsPackDir,
+    prefix: '/datasets/aws/',
+    decorateReply: false
+  });
   fastify.register(require('@fastify/static'), {
     root: kimTextDatasetDir,
     prefix: '/datasets/',
     decorateReply: false
-  })
+  });
 
   fastify.get('/api/hgt500/latest', async (request, reply) => {
     try {
@@ -188,17 +202,94 @@ const convertKSTToGMTString = (dateString) => {
   });
 
   /**
-   * AWS_MIN station JSON for a single KST timestamp.
-   * Reads in_data/aws/{yyyy-MM-dd}/AWS_MIN_{YYYYMMDDHHMM}.json (main_AWS output).
-   * Response rows are enriched: STN_NAME + LAW_ADDR_SIDO/GUGUN from station catalog.
+   * 1분 exact debug — 2분 snap 없이 해당 분 JSON을 읽는다.
    */
-  fastify.get('/api/aws/min', async (request, reply) => {
+  fastify.get('/api/aws/min/exact', async (request, reply) => {
     const { timestamp_kor } = request.query;
     if (!timestamp_kor) {
       return reply.code(400).send({ error: 'timestamp_kor query parameter is required' });
     }
     try {
-      const snapped = snapAwsTimestamp(timestamp_kor);
+      const tm = parseTimestampKorStrict(timestamp_kor);
+      const result = await readAwsMinFile(awsJsonDir, tm);
+      if (result.missing) {
+        return reply.code(404).send({
+          error: 'No AWS JSON found for the given timestamp',
+          timestamp_kor: tm
+        });
+      }
+      const data = enrichAwsRowsForHttp(result.data, awsStnCatalog);
+      reply.header('Cache-Control', 'no-store');
+      return {
+        timestamp_kor: tm,
+        intervalMinutes: 1,
+        count: data.length,
+        data
+      };
+    } catch (err) {
+      if (err.code === 'BAD_QUERY' || (err.message && err.message.startsWith('Invalid timestamp'))) {
+        return reply.code(400).send({ error: err.message });
+      }
+      fastify.log.error(err);
+      return reply.code(500).send({ error: 'Internal server error', details: err.message });
+    }
+  });
+
+  /**
+   * 1분 TA packed timeline manifest.
+   * Binary: GET manifest.data.url (static /datasets/aws/...)
+   */
+  fastify.get('/api/aws/min/pack', async (request, reply) => {
+    const { from, to, variable } = request.query;
+    if (!from || !to) {
+      return reply.code(400).send({ error: 'from and to query parameters are required' });
+    }
+    const variableNorm = (variable || 'TA').toUpperCase();
+    if (variableNorm !== 'TA') {
+      return reply.code(400).send({ error: 'Only variable=TA is supported in this version' });
+    }
+    try {
+      const result = await getOrBuildAwsTaPack(awsJsonDir, awsPackDir, from, to, {
+        catalog: awsStnCatalog,
+        force: request.query.force === '1' || request.query.force === 'true'
+      });
+      const { manifest } = result;
+      if (manifest.complete) {
+        reply.header('Cache-Control', 'public, max-age=31536000, immutable');
+      } else {
+        reply.header('Cache-Control', 'no-store');
+      }
+      reply.header('ETag', `"${manifest.datasetId}"`);
+      return manifest;
+    } catch (err) {
+      if (err.code === 'BAD_QUERY') {
+        return reply.code(400).send({ error: err.message });
+      }
+      if (err.code === 'NOT_FOUND') {
+        return reply.code(404).send({ error: err.message });
+      }
+      fastify.log.error(err);
+      return reply.code(500).send({ error: 'Internal server error', details: err.message });
+    }
+  });
+
+  /**
+   * AWS_MIN station JSON for a single KST timestamp.
+   * Reads in_data/aws/{yyyy-MM-dd}/AWS_MIN_{YYYYMMDDHHMM}.json (main_AWS output).
+   * Response rows are enriched: STN_NAME + LAW_ADDR_SIDO/GUGUN from station catalog.
+   * Default: 2분 nearest snap (호환). intervalMinutes=1 이면 exact.
+   */
+  fastify.get('/api/aws/min', async (request, reply) => {
+    const { timestamp_kor, intervalMinutes } = request.query;
+    if (!timestamp_kor) {
+      return reply.code(400).send({ error: 'timestamp_kor query parameter is required' });
+    }
+    try {
+      const interval = Number(intervalMinutes);
+      const useExact = interval === 1;
+      const snapped = useExact
+        ? parseTimestampKorStrict(timestamp_kor)
+        : snapAwsTimestamp(timestamp_kor);
       const result = await readAwsMinFile(awsJsonDir, snapped);
       if (result.missing) {
         return reply.code(404).send({
@@ -211,11 +302,12 @@ const convertKSTToGMTString = (dateString) => {
       return {
         timestamp_kor: result.timestamp_kor,
         requested_timestamp_kor: timestamp_kor,
+        intervalMinutes: useExact ? 1 : AWS_INTERVAL_MINUTES,
         count: data.length,
         data
       };
     } catch (err) {
-      if (err.message && err.message.startsWith('Invalid timestamp')) {
+      if (err.code === 'BAD_QUERY' || (err.message && err.message.startsWith('Invalid timestamp'))) {
         return reply.code(400).send({ error: err.message });
       }
       fastify.log.error(err);

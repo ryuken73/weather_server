@@ -1,5 +1,5 @@
 /**
- * AWS_MIN JSON 일 단위 backfill
+ * AWS_MIN JSON 일 단위 backfill (1분 슬롯 1,440개/일)
  *
  * main_AWS.js 와 동일한 경로 규칙:
  *   {resolveBaseDir('in_data')}/aws/{yyyy-MM-dd}/AWS_MIN_{yyyyMMddHHmm}.json
@@ -7,11 +7,13 @@
  * 사용 예:
  *   node kma_fetch/backfill_aws_min.js 20260810
  *   node kma_fetch/backfill_aws_min.js 2026-08-10 --dry-run
- *   NODE_ENV=production node kma_fetch/backfill_aws_min.js 20260810 --sleep 500
+ *   AWS_FETCH_SOURCE=auto NODE_ENV=production node kma_fetch/backfill_aws_min.js 20260810 --sleep 200
  *
  * 옵션:
- *   --dry-run   DB 조회/저장 없이 누락 목록만 출력
+ *   --dry-run   DB/Hub 조회/저장 없이 누락 목록만 출력
  *   --sleep N   저장 성공 후 대기 ms (기본 200)
+ *
+ * env AWS_FETCH_SOURCE=auto|db|hub (기본 auto: DB 후 Hub)
  */
 
 const path = require('path');
@@ -23,13 +25,32 @@ const time = require('./utils/time');
 const env = require('./config/env');
 const { TIMEZONE } = env;
 const { patchAwsRowsForSave, loadStationCatalog } = require('./utils/aws_stn_catalog');
+const { fetchAwsMinRowsFromHub } = require('./services/aws_apihub_min');
 
 const AWS_DATA_ROOT = 'in_data';
 const AWS_FILE_OPTIONS = { dataRoot: AWS_DATA_ROOT };
 const SUB_DIR = 'aws';
 const PATTERN_BASE = 'AWS_MIN_';
-const INTERVAL_MINUTES = 2;
-const SLOTS_PER_DAY = (24 * 60) / INTERVAL_MINUTES; // 720
+const INTERVAL_MINUTES = 1;
+const SLOTS_PER_DAY = (24 * 60) / INTERVAL_MINUTES; // 1440
+const AWS_FETCH_SOURCE = (process.env.AWS_FETCH_SOURCE || 'auto').toLowerCase();
+
+async function fetchRowsForTm(tm, pool, stnCatalog) {
+  if (AWS_FETCH_SOURCE === 'hub') {
+    return fetchAwsMinRowsFromHub(tm, { catalog: stnCatalog });
+  }
+  if (pool && (AWS_FETCH_SOURCE === 'db' || AWS_FETCH_SOURCE === 'auto')) {
+    const result = await pool.request().input('tm', sql.VarChar, tm).query(db.sqls.queryAwsMin);
+    if (result.recordset && result.recordset.length > 0) return result.recordset;
+    if (AWS_FETCH_SOURCE === 'db') return [];
+  }
+  try {
+    return await fetchAwsMinRowsFromHub(tm, { catalog: stnCatalog });
+  } catch (err) {
+    if (err.code === 'NO_API_KEY') return [];
+    throw err;
+  }
+}
 
 function usage() {
   console.log(`Usage: node kma_fetch/backfill_aws_min.js <YYYYMMDD|YYYY-MM-DD> [--dry-run] [--sleep ms]
@@ -190,7 +211,17 @@ async function main() {
     return;
   }
 
-  const pool = await db.connect();
+  console.log('AWS_FETCH_SOURCE:', AWS_FETCH_SOURCE);
+
+  let pool = null;
+  if (AWS_FETCH_SOURCE === 'db' || AWS_FETCH_SOURCE === 'auto') {
+    try {
+      pool = await db.connect();
+    } catch (err) {
+      if (AWS_FETCH_SOURCE === 'db') throw err;
+      console.warn('DB connect failed; Hub-only backfill:', err.message);
+    }
+  }
   const stnCatalog = loadStationCatalog();
   const summary = { saved: 0, noData: 0, skippedExists: 0, errors: 0 };
 
@@ -212,10 +243,8 @@ async function main() {
         }
 
         console.log('backfill try', tm, '->', filePath);
-        const result = await pool.request()
-          .input('tm', sql.VarChar, tm)
-          .query(db.sqls.queryAwsMin);
-        const jsonData = patchAwsRowsForSave(result.recordset, stnCatalog);
+        const rawRows = await fetchRowsForTm(tm, pool, stnCatalog);
+        const jsonData = patchAwsRowsForSave(rawRows, stnCatalog);
 
         if (!jsonData || jsonData.length === 0) {
           console.log('no data to save.', tm);
@@ -244,7 +273,7 @@ async function main() {
       }
     }
   } finally {
-    await pool.close();
+    if (pool) await pool.close();
   }
 
   console.log('=== summary ===');

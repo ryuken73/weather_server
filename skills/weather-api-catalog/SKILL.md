@@ -33,7 +33,7 @@ description: weather_api 서버가 노출하는 HTTP API 카탈로그(producer).
 상세는 `references/endpoints.md`.
 
 - **HGT500**: `GET /api/hgt500/latest`, `GET /api/hgt500/datasets`, `GET /api/hgt500/datasets/{id}/manifest` (302), static `/datasets/{id}/**`
-- **AWS_MIN JSON**: `GET /api/aws/min?timestamp_kor=`, `GET /api/aws/min/range?from=&to=`
+- **AWS**: `GET /api/aws/stations`, `/api/aws/min`, `/api/aws/min/range` (2분 호환), `/api/aws/min/pack` (1분 TA), `/api/aws/min/exact`
 - **IR105 JSON**: `GET /ir105/{area}/{step}`, `/batch`, `/fs`
 - **레거시 image/wind**: `GET /{type}/{area}/{step}/image?timestamp_kor=`
 - **Static**: `/weather/**`

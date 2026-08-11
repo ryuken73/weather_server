@@ -258,16 +258,128 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorWithDetails'
 
+  /api/aws/min/pack:
+    get:
+      tags: [aws]
+      summary: AWS 1분 TA packed timeline manifest
+      description: |
+        KST 1분 exact 범위의 TA Int16 LE pack manifest.
+        2분 snap 없음. 최대 1440 frame. variable은 현재 `TA`만.
+        Binary는 `data.url` (예: `/datasets/aws/ta/1m/{day}/ta.i16le`).
+        layout: FRAME_MAJOR_STATION_MINOR, scale 0.1℃, missing -32768.
+        과거 완결일(`complete:true`)은 immutable cache, today는 no-store.
+      operationId: getAwsMinPack
+      parameters:
+        - name: from
+          in: query
+          required: true
+          schema:
+            type: string
+            pattern: '^\d{12}$'
+          example: '202608120000'
+        - name: to
+          in: query
+          required: true
+          schema:
+            type: string
+            pattern: '^\d{12}$'
+          example: '202608122359'
+        - name: variable
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [TA]
+            default: TA
+        - name: force
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: ['0', '1', 'true', 'false']
+          description: cache 무시하고 재생성
+      responses:
+        '200':
+          description: pack manifest
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AwsMinPackManifest'
+        '400':
+          description: 범위/variable 오류
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: 요청 범위에 원자료 없음
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: 서버 내부 오류
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorWithDetails'
+
+  /api/aws/min/exact:
+    get:
+      tags: [aws]
+      summary: AWS_MIN 1분 exact 단건 (debug/parity)
+      description: |
+        2분 snap 없이 `timestamp_kor` 파일만 읽는다. pack parity 확인용.
+      operationId: getAwsMinExact
+      parameters:
+        - name: timestamp_kor
+          in: query
+          required: true
+          schema:
+            type: string
+            pattern: '^\d{12}$'
+          example: '202608121533'
+      responses:
+        '200':
+          description: station 배열 (enrich 포함)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  timestamp_kor:
+                    type: string
+                  intervalMinutes:
+                    type: integer
+                    example: 1
+                  count:
+                    type: integer
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AwsStationRow'
+        '400':
+          description: 형식 오류
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: 파일 없음
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
   /api/aws/min:
     get:
       tags: [aws]
       summary: AWS_MIN station JSON 단건
       description: |
         `in_data/aws/{yyyy-MM-dd}/AWS_MIN_{YYYYMMDDHHMM}.json`을 읽는다.
-        `timestamp_kor`는 2분 nearest로 snap한다 (`main_AWS` / image route와 동일).
-        경로 override: env `AWS_JSON_DIR`. 기본은 `BASE_DIR` 기준 `in_data/aws`.
-        응답 `data[]`는 코드표로 enrich: `STN_NAME` 최신화 + `LAW_ADDR_SIDO` / `LAW_ADDR_GUGUN` 부착
-        (디스크 파일에는 LAW를 쓰지 않음).
+        기본: `timestamp_kor` 2분 nearest snap (호환).
+        `intervalMinutes=1`이면 snap 없이 exact ( `/api/aws/min/exact` 와 동일).
+        응답 `data[]`는 코드표 enrich.
       operationId: getAwsMin
       parameters:
         - name: timestamp_kor
@@ -278,6 +390,13 @@ paths:
             pattern: '^\d{12}$'
           description: YYYYMMDDHHMM KST
           example: '202604050000'
+        - name: intervalMinutes
+          in: query
+          required: false
+          schema:
+            type: integer
+            enum: [1, 2]
+          description: 생략 또는 2 = 2분 snap, 1 = exact
       responses:
         '200':
           description: station 배열
@@ -323,6 +442,7 @@ paths:
         없는 시각은 `missingTimestamps`에 모은다.
         최대 frame 수 360 (약 12시간). `from`/`to`도 2분 nearest snap.
         각 `items[].data`는 `/api/aws/min`과 동일하게 코드표 enrich.
+        1분 packed timeline은 `/api/aws/min/pack`을 사용한다.
       operationId: getAwsMinRange
       parameters:
         - name: from
@@ -835,6 +955,102 @@ components:
                 type: string
                 nullable: true
       required: [stationCount, stations, codeFile]
+
+    AwsMinPackManifest:
+      type: object
+      description: 1분 TA pack manifest (binary는 data.url)
+      properties:
+        schemaVersion:
+          type: integer
+          example: 1
+        datasetId:
+          type: string
+          example: aws-ta-1m-20260812-v3a1b2c3d
+        source:
+          type: string
+          example: KMA_AWS_MIN
+        variable:
+          type: string
+          example: TA
+        unit:
+          type: string
+          example: degC
+        timezone:
+          type: string
+          example: Asia/Seoul
+        intervalMinutes:
+          type: integer
+          example: 1
+        from:
+          type: string
+        to:
+          type: string
+        frameCount:
+          type: integer
+        stationCount:
+          type: integer
+        complete:
+          type: boolean
+        generatedAt:
+          type: string
+          format: date-time
+        stationOrder:
+          type: string
+          example: STN_ID_ASC
+        stations:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        data:
+          type: object
+          properties:
+            url:
+              type: string
+              example: /datasets/aws/ta/1m/20260812/ta.i16le
+            dtype:
+              type: string
+              example: int16
+            endianness:
+              type: string
+              example: little
+            order:
+              type: string
+              example: FRAME_MAJOR_STATION_MINOR
+            scale:
+              type: number
+              example: 0.1
+            offset:
+              type: number
+              example: 0
+            missingValue:
+              type: integer
+              example: -32768
+            byteLength:
+              type: integer
+            sha256:
+              type: string
+        missingTimestamps:
+          type: array
+          items:
+            type: string
+        warnings:
+          type: array
+          items:
+            type: string
+      required:
+        - schemaVersion
+        - datasetId
+        - variable
+        - intervalMinutes
+        - from
+        - to
+        - frameCount
+        - stationCount
+        - stations
+        - data
+        - complete
+        - missingTimestamps
 
     AwsMinResponse:
       allOf:

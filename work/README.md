@@ -20,13 +20,15 @@ set API_KEY=발급키
 # 창 목록만 확인
 node work/fetch_aws_apihub.js --from 20260712 --to 20260803 --dry-run
 
-# 실행 (짝수분 JSON만 저장, 호출 간 300ms)
+# 실행 (기본: 모든 분 저장, 호출 간 300ms)
 node work/fetch_aws_apihub.js --from 20260712 --to 20260803 --sleep 300
+
+# 짝수분만
+node work/fetch_aws_apihub.js --from 20260712 --to 20260803 --even-only --sleep 300
 
 # 원문도 보관
 node work/fetch_aws_apihub.js --from 20260712 --to 20260803 --save-raw
 ```
-
 - 출력: `work/out/2026-07-12/AWS_MIN_202607120000.json` …
 - `STN_NAME` / `LAT` / `LON` / `HT`: `kma_fetch/config/aws_stn_*_20260811.json`
 - 값 스케일: API 물리단위 → 기존 MSSQL fetch JSON과 맞게 ×10 (TA, WD, WS, HM, PA, PS, 강수)

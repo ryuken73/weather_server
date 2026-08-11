@@ -2,58 +2,55 @@
 
 ## 실시간: `main_AWS.js`
 
-- 스케줄: `2min` (`*/2 * * * *`)
-- 후보: `mkFetchCandidate(2, candiateCount)` 후 **최신 2개 drop** → 실제 시도는 나머지
-- `candiateCount`가 작으면(과거 5) 관측 후 대략 +4~+8분만 재시도 → DB 지연 시 누락
-- 권장: `candiateCount: 15` (약 +4~+28분 lookback)
-- `jsonData.length === 0` → `no data to save` 후 continue. 창을 벗어나면 자동 복구 없음
-- 저장은 `file.saveFile` + `dataRoot: 'in_data'`, `subDirName: 'aws'`
+- 스케줄: `1min` (`* * * * *`) — **모든 분** 보존 (pack/exact용)
+- 후보: `mkFetchCandidate(1, 30)` 후 **최신 2개 drop**
+- `AWS_FETCH_SOURCE`:
+  - `auto` (기본): MSSQL 조회 → 비면 API Hub
+  - `db`: MSSQL만
+  - `hub`: API Hub만 (`API_KEY` 필요)
+- `jsonData.length === 0` → `no data to save` 후 continue
+- 저장: `file.saveFile` + `dataRoot: 'in_data'`, `subDirName: 'aws'`
+- 저장 전 `patchAwsRowsForSave` (STN_NAME)
 
-스케줄러는 이전 job이 끝나지 않으면 `Skipping task`로 tick을 건너뛴다. 로그에 skip이 많으면 lookback과 별개로 기회를 잃는다.
+홀수분 존재 확인:
 
-## 일단위 DB backfill: `backfill_aws_min.js`
+```bash
+node kma_fetch/probe_aws_min_cadence.js
+```
 
-MSSQL에 데이터가 남아 있을 때 하루 gap을 메운다.
+## 일단위 backfill: `backfill_aws_min.js`
 
 ```bash
 NODE_ENV=production node kma_fetch/backfill_aws_min.js 20260810 --dry-run
-NODE_ENV=production node kma_fetch/backfill_aws_min.js 20260810
+AWS_FETCH_SOURCE=auto NODE_ENV=production node kma_fetch/backfill_aws_min.js 20260810
 ```
 
-- 하루 720 슬롯(2분) 스캔 → 없는 파일만 조회/저장
-- 경로 규칙은 `main_AWS`와 동일
+- 하루 **1440** 슬롯(1분) 스캔 → 없는 파일만 조회/저장
+- 소스 정책은 `main_AWS`와 동일 (`AWS_FETCH_SOURCE`)
 
 ## 과거 API 허브: `work/fetch_aws_apihub.js`
 
-서버 원본/MSSQL에 없는 구간(예: 보관 시작일 이전)용.
-
 ```bash
-# API_KEY 필요 (kma_fetch/.env.production 등)
 node work/fetch_aws_apihub.js --from 20260712 --to 20260803 --dry-run
 node work/fetch_aws_apihub.js --from 20260712 --to 20260803 --sleep 300
+# 짝수분만 필요하면
+node work/fetch_aws_apihub.js --from 20260712 --to 20260803 --even-only
 ```
 
-- 도메인: `https://apihub-pub.kma.go.kr/api/typ01/cgi-bin/url/nph-aws2_min`
-- `stn=0` → 창 길이 최대 10분
-- 기본 짝수분만 `work/out/{yyyy-MM-dd}/`에 저장
-- 운영 `in_data/aws`로 옮길 때는 경로·권한을 확인하고 복사
+- 도메인: `https://apihub-pub.kma.go.kr/.../nph-aws2_min`
+- 기본: **모든 분** 저장 (`--all-minutes`가 기본, `--even-only`로 제한)
+- 출력: `work/out/` → 운영 반영 시 `in_data/aws`로 복사
 
-쿼타 참고: 하루 ≈ 144 호출, 30일 ≈ 4,300 호출. sleep/재시도 권장.
+## 1분 TA pack
 
-## 로컬 `#` 원본: `work/convert_aws_raw_to_json.js`
-
-서버에 `#` 구분 분 파일이 남아 있을 때.
-
-```bash
-node work/convert_aws_raw_to_json.js --dry-run
-node work/convert_aws_raw_to_json.js
-```
-
-입력 `work/in/`, 출력 `work/out/`. 출력 폴더는 **파일명 TM** 기준.
+- Builder: `kma_fetch/utils/aws_min_pack.js`
+- API: `GET /api/aws/min/pack?from=&to=&variable=TA`
+- Binary 정적: `/datasets/aws/ta/1m/{dayKey}/ta.i16le` (`AWS_PACK_DIR` / `out_data/aws/pack`)
+- Debug: `GET /api/aws/min/exact?timestamp_kor=`
 
 ## 누락 진단 체크리스트
 
-1. 전체 로그에서 해당 TM의 `download AWS tm` / `no data to save` / `File saved` / `Skipping task`
-2. 시도 횟수 ≈ lookback 창 크기인지
-3. MSSQL에 그 TM row가 지금 있는지 → 있으면 `backfill_aws_min`
-4. MSSQL/서버 원본 모두 없으면 → API 허브 fetch
+1. 로그: `download AWS tm` / `no data to save` / `File saved` / `Skipping task`
+2. `probe_aws_min_cadence.js`로 disk odd / DB odd 확인
+3. DB에 있으면 backfill, 없으면 Hub (`AWS_FETCH_SOURCE=hub` 또는 auto)
+4. pack은 원천 1분 파일이 있어야 홀수 peak를 살림

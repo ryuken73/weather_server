@@ -6,41 +6,55 @@
 {resolveBaseDir('in_data')}/aws/{yyyy-MM-dd}/AWS_MIN_{yyyyMMddHHmm}.json
 ```
 
-예 (운영):
+1분마다 파일 1개 (홀수분 포함). 예:
 
 ```text
-/data/node_project/weather_data/in_data/aws/2026-08-10/AWS_MIN_202608100006.json
+.../aws/2026-08-12/AWS_MIN_202608121533.json
 ```
 
-`BASE_DIR`가 `in_data` / `out_data` / 상위 weather root 중 무엇이든 `file.resolveBaseDir('in_data')` 규칙을 따른다.  
-서버 HTTP는 `AWS_JSON_DIR` 또는 동일 derive (`kma_fetch/utils/aws_min_json.js`).
+Pack 출력:
 
-레거시 PNG (`/aws-RN_15M/.../image`)와 station JSON은 별개다.
+```text
+{resolveBaseDir('out_data')}/aws/pack/ta/1m/{yyyyMMdd}/ta.i16le
+{resolveBaseDir('out_data')}/aws/pack/ta/1m/{yyyyMMdd}/manifest.json
+```
 
-## JSON 항목 shape (MSSQL fetch / 서빙)
+HTTP binary: `/datasets/aws/ta/1m/{yyyyMMdd}/ta.i16le`  
+override: `AWS_JSON_DIR`, `AWS_PACK_DIR`.
 
-`main_AWS`가 저장하는 배열 원소:
+## JSON 항목 shape
 
 | 필드 | 비고 |
 | --- | --- |
-| `STN_NAME` | `wx_AWS_Area` 조인. 원본/API에는 없음 |
+| `STN_NAME` | 저장 시 stn_inf 코드표 패치 |
 | `STN_ID`, `TM` | TM = `YYYYMMDDHHMM` KST |
 | `LAT`, `LON`, `HT` | |
-| `WD`, `WS`, `TA`, `HM`, `PA`, `PS` | 내부 정수 스케일(대체로 물리값×10) |
-| `RN_YN`, `RN_1HR`, `RN_15M`, `RN_60M`, `RN_24HR` | |
-| `RN_6HR`, `RN_12HR`, `RN_48HR` | SQL에서 NULL |
-| `WD_INS`, `WS_INS` | 순간 풍향/풍속 |
+| `TA` 등 | ×10 정수 (277 = 27.7℃) |
+| `LAW_ADDR_*` | **디스크에 없음**. HTTP enrich / pack stations / `/stations` |
 
-코드표(이름·좌표 보강):
+코드표:
 
-- `kma_fetch/config/aws_stn_name_map_20260811.json`
-- `kma_fetch/config/aws_stn_code_20260811.json` (`STN_ID`, `STN_NAME`, `LAT`, `LON`, `HT`)
+- `stn_inf_aws_*.txt` → `_build_stn_code_from_stn_inf.js`
+- `aws_stn_code_*.json` (`LAW_ADDR_SIDO`, `LAW_ADDR_GUGUN` 포함)
+- `aws_stn_name_map_*.json`
 
-2026-08-11 DB 기준 750지점 중 일부는 조인 실패로 `STN_NAME`이 null일 수 있다.
+## TA pack binary
+
+| 항목 | 값 |
+| --- | --- |
+| dtype | int16 LE |
+| scale | 0.1 ℃ |
+| missing | -32768 |
+| order | FRAME_MAJOR_STATION_MINOR |
+| index | `frameIndex * stationCount + stationIndex` |
+| stations | STN_ID ASC (범위 union) |
+
+`byteLength = frameCount × stationCount × 2`
 
 ## HTTP
 
-- `GET /api/aws/min?timestamp_kor=`
-- `GET /api/aws/min/range?from=&to=`
+- 2분 호환: `/api/aws/min`, `/api/aws/min/range`
+- 1분: `/api/aws/min/pack`, `/api/aws/min/exact`, `/api/aws/min?intervalMinutes=1`
+- 카탈로그: `/api/aws/stations`
 
-상세는 `skills/weather-api-catalog` / `docs/openapi.yaml`.
+상세: `skills/weather-api-catalog` / `docs/openapi.yaml` / `docs/aws-producer-1min-pack-requirements.md`.
