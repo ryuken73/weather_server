@@ -11,3 +11,5 @@ kma_fetch/run_*.sh
 kma_fetch/python/gk2a_sync/run_ftp_sync_gk2a.sh
 kma_fetch/nohup.out
 kma_fetch/logs/
+work/in/
+work/out/
