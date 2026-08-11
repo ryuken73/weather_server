@@ -34,13 +34,21 @@ Query (모두 optional): `tmfc`, `from`, `to`, `intervalMinutes`, `downsampleFac
 ## AWS_MIN JSON
 
 파일 원천: `in_data/aws/{yyyy-MM-dd}/AWS_MIN_{YYYYMMDDHHMM}.json` (`main_AWS.js` 산출).  
-경로 override: env `AWS_JSON_DIR`. 기본은 `BASE_DIR` → `in_data/aws`.
+경로 override: env `AWS_JSON_DIR`. 기본은 `BASE_DIR` → `in_data/aws`.  
+지점 코드표: `kma_fetch/config/aws_stn_code_YYYYMMDD.json` (stn_inf).
+
+### `GET /api/aws/stations`
+
+- 응답: `{ source, generatedAt, codeFile, stationCount, stations[] }`
+- `stations[]`: `STN_ID`, `STN_NAME`, `LAT`, `LON`, `HT`, `LAW_ADDR_SIDO`, `LAW_ADDR_GUGUN`
+- Header: `Cache-Control: public, max-age=3600`
+- 시도·구군 필터는 이 카탈로그를 lookup하거나, 아래 min 응답의 enrich 필드를 사용
 
 ### `GET /api/aws/min?timestamp_kor=`
 
 - `timestamp_kor` = `YYYYMMDDHHMM` KST 필수, **2분 nearest snap**
 - 응답: `{ timestamp_kor, requested_timestamp_kor, count, data[] }`
-- `data[]`는 station row (`STN_ID`, `TM`, `LAT`, `LON`, `TA`, `RN_15M`, …)
+- `data[]`는 station row + **enrich**: `STN_NAME` 최신화, `LAW_ADDR_SIDO` / `LAW_ADDR_GUGUN` 부착 (디스크 파일에는 LAW 없음)
 - Header: `Cache-Control: no-store`
 - `400` / `404` (파일 없음) / `500`
 
@@ -49,6 +57,7 @@ Query (모두 optional): `tmfc`, `from`, `to`, `intervalMinutes`, `downsampleFac
 - `from`, `to` = `YYYYMMDDHHMM` KST inclusive, 각각 2분 snap
 - 2분 간격으로 열거. 최대 360 frames (~12h)
 - 존재하는 파일만 `items[]`. 없는 시각은 `missingTimestamps[]`
+- 각 `items[].data`는 `/api/aws/min`과 동일 enrich
 - 응답: `{ from, to, intervalMinutes: 2, requestedCount, itemCount, missingTimestamps, items }`
 - `400` (누락/순서/범위 초과) / `500`
 

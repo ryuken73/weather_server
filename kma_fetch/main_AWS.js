@@ -5,6 +5,7 @@ const file = require('./utils/file');
 const time = require('./utils/time');
 const schedule = require('./services/scheduler');
 const { TIMEZONE } = require('./config/env');
+const { patchAwsRowsForSave, loadStationCatalog } = require('./utils/aws_stn_catalog');
 
 const AWS_DATA_ROOT = 'in_data';
 const AWS_FILE_OPTIONS = { dataRoot: AWS_DATA_ROOT };
@@ -85,6 +86,7 @@ async function downloadLatestData(config) {
     }
 
     const pool = await db.connect();
+    const stnCatalog = loadStationCatalog();
     for await (const timeToDownload of timesToDownload) {
       console.log('download AWS tm =', timeToDownload)
       try {
@@ -106,7 +108,7 @@ async function downloadLatestData(config) {
           .input('tm', sql.VarChar, timeToDownload)
           .query(db.sqls.queryAwsMin);
         // console.log(result)
-        const jsonData = result.recordset;
+        const jsonData = patchAwsRowsForSave(result.recordset, stnCatalog);
         if(jsonData.length === 0){
           console.log('no data to save.', timeToDownload)
           continue;

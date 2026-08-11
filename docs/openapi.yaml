@@ -230,6 +230,34 @@ paths:
         '404':
           description: 파일 없음
 
+  /api/aws/stations:
+    get:
+      tags: [aws]
+      summary: AWS 지점 코드표 (stn_inf)
+      description: |
+        `kma_fetch/config/aws_stn_code_YYYYMMDD.json` (최신 날짜 suffix)을 반환한다.
+        `LAW_ADDR_SIDO` / `LAW_ADDR_GUGUN` 및 최신 `STN_NAME`·좌표 lookup용.
+        프레임 JSON(`/api/aws/min`)에는 LAW 필드를 저장하지 않으며, min 응답은 서버가 enrich한다.
+      operationId: getAwsStations
+      responses:
+        '200':
+          description: station catalog
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                example: 'public, max-age=3600'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AwsStationsResponse'
+        '500':
+          description: 서버 내부 오류
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorWithDetails'
+
   /api/aws/min:
     get:
       tags: [aws]
@@ -238,6 +266,8 @@ paths:
         `in_data/aws/{yyyy-MM-dd}/AWS_MIN_{YYYYMMDDHHMM}.json`을 읽는다.
         `timestamp_kor`는 2분 nearest로 snap한다 (`main_AWS` / image route와 동일).
         경로 override: env `AWS_JSON_DIR`. 기본은 `BASE_DIR` 기준 `in_data/aws`.
+        응답 `data[]`는 코드표로 enrich: `STN_NAME` 최신화 + `LAW_ADDR_SIDO` / `LAW_ADDR_GUGUN` 부착
+        (디스크 파일에는 LAW를 쓰지 않음).
       operationId: getAwsMin
       parameters:
         - name: timestamp_kor
@@ -292,6 +322,7 @@ paths:
         `from`~`to` (inclusive)를 2분 간격으로 열거해 존재하는 파일만 `items`에 담는다.
         없는 시각은 `missingTimestamps`에 모은다.
         최대 frame 수 360 (약 12시간). `from`/`to`도 2분 nearest snap.
+        각 `items[].data`는 `/api/aws/min`과 동일하게 코드표 enrich.
       operationId: getAwsMinRange
       parameters:
         - name: from
@@ -680,11 +711,14 @@ components:
 
     AwsStationRow:
       type: object
-      description: wx_AWS_MIN join 결과 row (main_AWS가 저장한 형태)
+      description: |
+        AWS_MIN row. 디스크 파일은 DB join 형태이며 LAW 필드 없음.
+        `/api/aws/min`·`/range` 응답에서는 코드표로 STN_NAME 최신화 및 LAW_ADDR_* 부착.
       properties:
         STN_NAME:
           type: string
           nullable: true
+          description: stn_inf STN_KO (HTTP enrich / 저장 시 패치)
         STN_ID:
           type: integer
         TM:
@@ -697,6 +731,14 @@ components:
         HT:
           type: number
           nullable: true
+        LAW_ADDR_SIDO:
+          type: string
+          nullable: true
+          description: HTTP enrich 전용. 디스크 JSON에는 없음
+        LAW_ADDR_GUGUN:
+          type: string
+          nullable: true
+          description: 시·군·구(없으면 읍·면·동). HTTP enrich 전용
         WD:
           type: number
           nullable: true
@@ -750,6 +792,49 @@ components:
           items:
             $ref: '#/components/schemas/AwsStationRow'
       required: [timestamp_kor, count, data]
+
+    AwsStationsResponse:
+      type: object
+      properties:
+        source:
+          type: string
+          nullable: true
+        generatedAt:
+          type: string
+          format: date-time
+          nullable: true
+        schemaVersion:
+          type: integer
+          nullable: true
+        codeFile:
+          type: string
+          example: aws_stn_code_20260811.json
+        stationCount:
+          type: integer
+        stations:
+          type: array
+          items:
+            type: object
+            properties:
+              STN_ID:
+                type: integer
+              STN_NAME:
+                type: string
+                nullable: true
+              LAT:
+                type: number
+              LON:
+                type: number
+              HT:
+                type: number
+                nullable: true
+              LAW_ADDR_SIDO:
+                type: string
+                nullable: true
+              LAW_ADDR_GUGUN:
+                type: string
+                nullable: true
+      required: [stationCount, stations, codeFile]
 
     AwsMinResponse:
       allOf:

@@ -15,6 +15,11 @@ const {
   enumerateTimestamps,
   readAwsMinFile
 } = require('./kma_fetch/utils/aws_min_json');
+const {
+  loadStationCatalog,
+  enrichAwsRowsForHttp,
+  getStationsPayload
+} = require('./kma_fetch/utils/aws_stn_catalog');
 
 require('dotenv').config(); // .env 파일 로드
 
@@ -44,10 +49,12 @@ const kimTextDatasetDir = path.join(kimTextOutDir, 'datasets');
 const kimTextLatestPath = path.join(kimTextOutDir, 'latest', 'hgt500.json');
 const awsJsonDir = deriveAwsJsonDir(__dirname);
 const snapAwsTimestamp = findNearestTimestamp(AWS_INTERVAL_MINUTES);
+const awsStnCatalog = loadStationCatalog();
 console.log(`MODE: ${mode}`);
 console.log(`DATA DIR: ${rootDir}`);
 console.log(`KIM TEXT DATASET DIR: ${kimTextDatasetDir}`);
 console.log(`AWS JSON DIR: ${awsJsonDir}`);
+console.log(`AWS STN CODE: ${awsStnCatalog.codeFile} (${awsStnCatalog.stationCount} stations)`);
 
 // 데이터베이스 연결 설정
 const dbConfig = {
@@ -166,8 +173,24 @@ const convertKSTToGMTString = (dateString) => {
   });
 
   /**
+   * AWS station catalog (stn_inf 기반 코드표).
+   * LAW_ADDR_* / 최신 STN_NAME / 좌표. 프레임 JSON에는 LAW를 넣지 않고 여기서 lookup.
+   */
+  fastify.get('/api/aws/stations', async (request, reply) => {
+    try {
+      const payload = getStationsPayload(awsStnCatalog);
+      reply.header('Cache-Control', 'public, max-age=3600');
+      return payload;
+    } catch (err) {
+      fastify.log.error(err);
+      return reply.code(500).send({ error: 'Internal server error', details: err.message });
+    }
+  });
+
+  /**
    * AWS_MIN station JSON for a single KST timestamp.
    * Reads in_data/aws/{yyyy-MM-dd}/AWS_MIN_{YYYYMMDDHHMM}.json (main_AWS output).
+   * Response rows are enriched: STN_NAME + LAW_ADDR_SIDO/GUGUN from station catalog.
    */
   fastify.get('/api/aws/min', async (request, reply) => {
     const { timestamp_kor } = request.query;
@@ -183,12 +206,13 @@ const convertKSTToGMTString = (dateString) => {
           timestamp_kor: snapped
         });
       }
+      const data = enrichAwsRowsForHttp(result.data, awsStnCatalog);
       reply.header('Cache-Control', 'no-store');
       return {
         timestamp_kor: result.timestamp_kor,
         requested_timestamp_kor: timestamp_kor,
-        count: result.count,
-        data: result.data
+        count: data.length,
+        data
       };
     } catch (err) {
       if (err.message && err.message.startsWith('Invalid timestamp')) {
@@ -202,6 +226,7 @@ const convertKSTToGMTString = (dateString) => {
   /**
    * AWS_MIN station JSON for a KST time range (inclusive, 2-minute steps).
    * Query: from, to (YYYYMMDDHHMM). Missing frames are listed in missingTimestamps.
+   * Each item.data is enriched like /api/aws/min.
    */
   fastify.get('/api/aws/min/range', async (request, reply) => {
     const { from, to } = request.query;
@@ -221,10 +246,11 @@ const convertKSTToGMTString = (dateString) => {
           missingTimestamps.push(tm);
           continue;
         }
+        const data = enrichAwsRowsForHttp(result.data, awsStnCatalog);
         items.push({
           timestamp_kor: result.timestamp_kor,
-          count: result.count,
-          data: result.data
+          count: data.length,
+          data
         });
       }
 

@@ -22,6 +22,7 @@ const file = require('./utils/file');
 const time = require('./utils/time');
 const env = require('./config/env');
 const { TIMEZONE } = env;
+const { patchAwsRowsForSave, loadStationCatalog } = require('./utils/aws_stn_catalog');
 
 const AWS_DATA_ROOT = 'in_data';
 const AWS_FILE_OPTIONS = { dataRoot: AWS_DATA_ROOT };
@@ -190,6 +191,7 @@ async function main() {
   }
 
   const pool = await db.connect();
+  const stnCatalog = loadStationCatalog();
   const summary = { saved: 0, noData: 0, skippedExists: 0, errors: 0 };
 
   try {
@@ -213,7 +215,7 @@ async function main() {
         const result = await pool.request()
           .input('tm', sql.VarChar, tm)
           .query(db.sqls.queryAwsMin);
-        const jsonData = result.recordset;
+        const jsonData = patchAwsRowsForSave(result.recordset, stnCatalog);
 
         if (!jsonData || jsonData.length === 0) {
           console.log('no data to save.', tm);
