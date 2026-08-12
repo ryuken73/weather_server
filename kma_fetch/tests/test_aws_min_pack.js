@@ -14,6 +14,9 @@ const {
   encodeTaToI16,
   parsePackVariables,
   packDayBounds,
+  isPackImmutableCacheable,
+  packManifestCacheHeaders,
+  PACK_SCHEMA_VERSION,
   MISSING_I16
 } = require('../utils/aws_min_pack');
 
@@ -47,6 +50,18 @@ async function main() {
   assert.throws(() => parsePackVariables('FULL'), /FULL is not supported/);
   assert.throws(() => parsePackVariables('WS'), /Unsupported pack variable: WS/);
   assert.throws(() => parsePackVariables('TA,WS'), /Unsupported pack variable: WS/);
+
+  assert.strictEqual(isPackImmutableCacheable({ complete: true, schemaVersion: 2 }), true);
+  assert.strictEqual(isPackImmutableCacheable({ complete: true, schemaVersion: 1 }), false);
+  assert.strictEqual(isPackImmutableCacheable({ complete: false, schemaVersion: 2 }), false);
+  assert.strictEqual(
+    packManifestCacheHeaders({ complete: true, schemaVersion: 2, datasetId: 'x' })['Cache-Control'],
+    'public, max-age=31536000, immutable'
+  );
+  assert.strictEqual(
+    packManifestCacheHeaders({ complete: false, schemaVersion: 2, datasetId: 'x' })['Cache-Control'],
+    'no-store'
+  );
 
   const tmp = await fsp.mkdtemp(path.join(os.tmpdir(), 'aws-pack-'));
   const awsRoot = path.join(tmp, 'aws');

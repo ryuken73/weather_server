@@ -33,7 +33,10 @@ const {
   parsePackVariables,
   packDayBounds,
   loadCachedManifest,
-  kstTodayYmd
+  kstTodayYmd,
+  PACK_SCHEMA_VERSION,
+  isPackImmutableCacheable,
+  packManifestCacheHeaders
 } = require('./kma_fetch/utils/aws_min_pack');
 
 require('dotenv').config(); // .env 파일 로드
@@ -158,24 +161,26 @@ const convertKSTToGMTString = (dateString) => {
     const binPath = path.join(dayDir, 'ta.i16le');
     try {
       const binary = await fs.readFile(binPath);
-      let complete = false;
-      let etag = null;
       const cached = await loadCachedManifest(awsPackDir, day);
-      if (cached && cached.data) {
-        complete = cached.complete === true;
-        if (cached.data.sha256) etag = `"${cached.data.sha256}"`;
-      }
       const today = kstTodayYmd();
-      if (day === today || !complete) {
-        reply.header('Cache-Control', 'no-store');
-      } else {
+      const immutable = cached && isPackImmutableCacheable(cached) && day !== today;
+      if (immutable) {
         reply.header('Cache-Control', 'public, max-age=31536000, immutable');
+      } else {
+        reply.header('Cache-Control', 'no-store');
+      }
+      reply.header('X-AWS-Pack-Schema-Version', String(
+        (cached && cached.schemaVersion) || PACK_SCHEMA_VERSION
+      ));
+      let etag = null;
+      if (cached && cached.data && cached.data.sha256) {
+        etag = `"${cached.data.sha256}"`;
       }
       if (!etag) {
         etag = `"${crypto.createHash('sha256').update(binary).digest('hex')}"`;
       }
       reply.header('ETag', etag);
-      if (request.headers['if-none-match'] === etag) {
+      if (immutable && request.headers['if-none-match'] === etag) {
         return reply.code(304).send();
       }
       reply.type('application/octet-stream');
@@ -189,11 +194,12 @@ const convertKSTToGMTString = (dateString) => {
     }
   });
 
-  // 더 구체적인 prefix를 먼저 등록
+  // manifest.json 등만 static. binary(.i16le)는 위 전용 route만 사용 (Cache-Control 보장)
   fastify.register(require('@fastify/static'), {
     root: awsPackDir,
     prefix: '/datasets/aws/',
-    decorateReply: false
+    decorateReply: false,
+    allowedPath: (pathName) => !/\.i16le$/i.test(pathName)
   });
   fastify.register(require('@fastify/static'), {
     root: kimTextDatasetDir,
@@ -338,12 +344,10 @@ const convertKSTToGMTString = (dateString) => {
         force: request.query.force === '1' || request.query.force === 'true'
       });
       const { manifest } = result;
-      if (manifest.complete) {
-        reply.header('Cache-Control', 'public, max-age=31536000, immutable');
-      } else {
-        reply.header('Cache-Control', 'no-store');
-      }
-      reply.header('ETag', `"${manifest.datasetId}"`);
+      const cacheHeaders = packManifestCacheHeaders(manifest);
+      reply.header('Cache-Control', cacheHeaders['Cache-Control']);
+      if (cacheHeaders.ETag) reply.header('ETag', cacheHeaders.ETag);
+      reply.header('X-AWS-Pack-Schema-Version', String(manifest.schemaVersion || PACK_SCHEMA_VERSION));
       return manifest;
     } catch (err) {
       if (err.code === 'BAD_QUERY') {

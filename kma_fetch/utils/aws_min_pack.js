@@ -373,6 +373,27 @@ async function warmAwsDayPack(awsJsonDir, packRoot, yyyymmdd, options = {}) {
   return getOrBuildAwsTaPack(awsJsonDir, packRoot, from, to, options);
 }
 
+function isPackImmutableCacheable(manifest) {
+  return (
+    manifest &&
+    manifest.complete === true &&
+    manifest.schemaVersion === PACK_SCHEMA_VERSION
+  );
+}
+
+function packManifestCacheHeaders(manifest) {
+  if (isPackImmutableCacheable(manifest)) {
+    return {
+      'Cache-Control': 'public, max-age=31536000, immutable',
+      ETag: `"${manifest.datasetId}"`
+    };
+  }
+  return {
+    'Cache-Control': 'no-store',
+    ETag: manifest && manifest.datasetId ? `"${manifest.datasetId}"` : undefined
+  };
+}
+
 module.exports = {
   MISSING_I16,
   PACK_INTERVAL_MINUTES,
@@ -393,5 +414,7 @@ module.exports = {
   packDayBounds,
   kstTodayYmd,
   kstYmdDaysAgo,
-  loadCachedManifest
+  loadCachedManifest,
+  isPackImmutableCacheable,
+  packManifestCacheHeaders
 };
