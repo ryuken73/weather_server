@@ -91,11 +91,40 @@ async function loadStationCatalogAsync(options = {}) {
  * @param {boolean} [opts.attachLawAddr=false]  HTTP enrich 전용. 디스크 저장 시 false
  * @param {ReturnType<typeof loadStationCatalog>} [opts.catalog]
  */
+function applyStationMeta(row, meta, { patchName, attachLawAddr }) {
+  if (!meta) {
+    if (attachLawAddr) {
+      row.LAW_ADDR_SIDO = null;
+      row.LAW_ADDR_GUGUN = null;
+    }
+    return row;
+  }
+  if (patchName && meta.STN_NAME != null) {
+    row.STN_NAME = meta.STN_NAME;
+  }
+  if (attachLawAddr) {
+    row.LAW_ADDR_SIDO = meta.LAW_ADDR_SIDO != null ? meta.LAW_ADDR_SIDO : null;
+    row.LAW_ADDR_GUGUN = meta.LAW_ADDR_GUGUN != null ? meta.LAW_ADDR_GUGUN : null;
+  }
+  return row;
+}
+
 function enrichAwsRows(rows, opts = {}) {
   if (!Array.isArray(rows)) return rows;
   const catalog = opts.catalog || loadStationCatalog();
   const patchName = opts.patchName !== false;
   const attachLawAddr = opts.attachLawAddr === true;
+  const mutate = opts.mutate === true;
+
+  if (mutate) {
+    for (const row of rows) {
+      if (!row) continue;
+      const id = row.STN_ID != null ? String(row.STN_ID) : null;
+      const meta = id ? catalog.byId.get(id) : null;
+      applyStationMeta(row, meta, { patchName, attachLawAddr });
+    }
+    return rows;
+  }
 
   return rows.map((row) => {
     const id = row && row.STN_ID != null ? String(row.STN_ID) : null;
@@ -110,13 +139,7 @@ function enrichAwsRows(rows, opts = {}) {
     }
 
     const next = { ...row };
-    if (patchName && meta.STN_NAME != null) {
-      next.STN_NAME = meta.STN_NAME;
-    }
-    if (attachLawAddr) {
-      next.LAW_ADDR_SIDO = meta.LAW_ADDR_SIDO != null ? meta.LAW_ADDR_SIDO : null;
-      next.LAW_ADDR_GUGUN = meta.LAW_ADDR_GUGUN != null ? meta.LAW_ADDR_GUGUN : null;
-    }
+    applyStationMeta(next, meta, { patchName, attachLawAddr });
     return next;
   });
 }
@@ -130,12 +153,13 @@ function patchAwsRowsForSave(rows, catalog) {
   });
 }
 
-/** HTTP /api/aws/min 응답용 */
+/** HTTP /api/aws/min 응답용. mutate=true 로 row 복사 없이 LAW 부착 (range 성능) */
 function enrichAwsRowsForHttp(rows, catalog) {
   return enrichAwsRows(rows, {
     catalog: catalog || loadStationCatalog(),
     patchName: true,
-    attachLawAddr: true
+    attachLawAddr: true,
+    mutate: true
   });
 }
 

@@ -24,6 +24,7 @@ GET {base}/api/aws/stations
 # 2분 호환 JSON
 GET {base}/api/aws/min?timestamp_kor=202604050000
 GET {base}/api/aws/min/range?from=202604050000&to=202604050100
+GET {base}/api/aws/min/range?from=202608070000&to=202608071158&enrich=0
 
 # 1분 exact / pack
 GET {base}/api/aws/min/exact?timestamp_kor=202608121533

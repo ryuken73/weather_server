@@ -67,6 +67,8 @@ Pack binary: `out_data/aws/pack/` → `/datasets/aws/...` (env `AWS_PACK_DIR`).
 ### `GET /api/aws/min/range?from=&to=`
 
 - 2분 간격, max 360 frames (~12h) — 호환 API
+- 서버: 파일 병렬 read + parsed LRU. `enrich=0`이면 LAW 부착 생략
+- 12시간 JSON은 TTFB/용량이 큼. 통계·1분 timeline은 `/api/aws/min/pack` 권장
 - 1분 하루 timeline은 `/api/aws/min/pack` 사용
 
 레거시 PNG (`/aws-RN_15M/.../image`)와 별개다.

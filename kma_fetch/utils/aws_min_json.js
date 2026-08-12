@@ -4,6 +4,44 @@ const fs = require('fs/promises');
 const AWS_INTERVAL_MINUTES = 2;
 /** 2분 간격 기준 최대 12시간 */
 const AWS_RANGE_MAX_FRAMES = 360;
+/** parsed JSON LRU (mtime 일치 시 hit). 약 12h range 한 바퀴 */
+const AWS_FILE_CACHE_MAX = Number(process.env.AWS_JSON_CACHE_MAX || 400);
+const AWS_READ_CONCURRENCY = Number(process.env.AWS_READ_CONCURRENCY || 24);
+
+const awsFileCache = new Map();
+
+function cacheGet(filePath, mtimeMs) {
+  const hit = awsFileCache.get(filePath);
+  if (!hit || hit.mtimeMs !== mtimeMs) return null;
+  awsFileCache.delete(filePath);
+  awsFileCache.set(filePath, hit);
+  return hit.data;
+}
+
+function cacheSet(filePath, mtimeMs, data) {
+  if (awsFileCache.size >= AWS_FILE_CACHE_MAX) {
+    const oldest = awsFileCache.keys().next().value;
+    awsFileCache.delete(oldest);
+  }
+  awsFileCache.set(filePath, { mtimeMs, data });
+}
+
+async function mapLimit(items, limit, fn) {
+  const n = items.length;
+  const out = new Array(n);
+  if (n === 0) return out;
+  const concurrency = Math.max(1, Math.min(limit, n));
+  let next = 0;
+  async function worker() {
+    while (next < n) {
+      const idx = next;
+      next += 1;
+      out[idx] = await fn(items[idx], idx);
+    }
+  }
+  await Promise.all(Array.from({ length: concurrency }, () => worker()));
+  return out;
+}
 
 function resolveLocalPath(baseDir, dir) {
   return path.isAbsolute(dir) ? dir : path.resolve(baseDir, dir);
@@ -96,6 +134,16 @@ function enumerateTimestamps(fromKor, toKor, intervalMinutes = AWS_INTERVAL_MINU
 async function readAwsMinFile(awsJsonDir, timestampKor) {
   const filePath = awsMinJsonPath(awsJsonDir, timestampKor);
   try {
+    const st = await fs.stat(filePath);
+    const cached = cacheGet(filePath, st.mtimeMs);
+    if (cached) {
+      return {
+        timestamp_kor: timestampKor,
+        count: cached.length,
+        data: cached,
+        missing: false
+      };
+    }
     const raw = await fs.readFile(filePath, 'utf8');
     const data = JSON.parse(raw);
     if (!Array.isArray(data)) {
@@ -103,6 +151,7 @@ async function readAwsMinFile(awsJsonDir, timestampKor) {
       err.code = 'BAD_DATA';
       throw err;
     }
+    cacheSet(filePath, st.mtimeMs, data);
     return {
       timestamp_kor: timestampKor,
       count: data.length,
@@ -111,6 +160,7 @@ async function readAwsMinFile(awsJsonDir, timestampKor) {
     };
   } catch (err) {
     if (err.code === 'ENOENT') {
+      awsFileCache.delete(filePath);
       return {
         timestamp_kor: timestampKor,
         count: 0,
@@ -122,12 +172,19 @@ async function readAwsMinFile(awsJsonDir, timestampKor) {
   }
 }
 
+async function readAwsMinFiles(awsJsonDir, timestamps, options = {}) {
+  const concurrency = options.concurrency || AWS_READ_CONCURRENCY;
+  return mapLimit(timestamps, concurrency, (tm) => readAwsMinFile(awsJsonDir, tm));
+}
+
 module.exports = {
   AWS_INTERVAL_MINUTES,
   AWS_RANGE_MAX_FRAMES,
+  AWS_READ_CONCURRENCY,
   deriveAwsJsonDir,
   awsMinJsonPath,
   enumerateTimestamps,
   readAwsMinFile,
+  readAwsMinFiles,
   folderDateFromTimestampKor
 };

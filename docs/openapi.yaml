@@ -441,7 +441,10 @@ paths:
         `from`~`to` (inclusive)를 2분 간격으로 열거해 존재하는 파일만 `items`에 담는다.
         없는 시각은 `missingTimestamps`에 모은다.
         최대 frame 수 360 (약 12시간). `from`/`to`도 2분 nearest snap.
-        각 `items[].data`는 `/api/aws/min`과 동일하게 코드표 enrich.
+        각 `items[].data`는 기본으로 코드표 enrich (`STN_NAME`, `LAW_ADDR_*`).
+        `enrich=0`이면 디스크 JSON 그대로 (클라이언트는 `/api/aws/stations` lookup).
+        서버는 파일을 병렬 읽고 parsed LRU를 쓴다. 12시간(360 frame) JSON은 여전히 큼 —
+        시계열 통계는 `/api/aws/min/pack`을 권장.
         1분 packed timeline은 `/api/aws/min/pack`을 사용한다.
       operationId: getAwsMinRange
       parameters:
@@ -461,6 +464,13 @@ paths:
             pattern: '^\d{12}$'
           description: YYYYMMDDHHMM KST (inclusive end)
           example: '202604050100'
+        - name: enrich
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: ['0', '1', 'true', 'false']
+          description: 기본 1. 0이면 LAW/이름 enrich 생략
       responses:
         '200':
           description: 범위 결과

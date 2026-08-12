@@ -13,7 +13,8 @@ const {
   AWS_INTERVAL_MINUTES,
   deriveAwsJsonDir,
   enumerateTimestamps,
-  readAwsMinFile
+  readAwsMinFile,
+  readAwsMinFiles
 } = require('./kma_fetch/utils/aws_min_json');
 const {
   loadStationCatalog,
@@ -329,16 +330,20 @@ const convertKSTToGMTString = (dateString) => {
       const fromSnap = snapAwsTimestamp(from);
       const toSnap = snapAwsTimestamp(to);
       const timestamps = enumerateTimestamps(fromSnap, toSnap, AWS_INTERVAL_MINUTES);
+      const skipEnrich =
+        request.query.enrich === '0' || request.query.enrich === 'false';
+      const frames = await readAwsMinFiles(awsJsonDir, timestamps);
       const items = [];
       const missingTimestamps = [];
 
-      for (const tm of timestamps) {
-        const result = await readAwsMinFile(awsJsonDir, tm);
+      for (const result of frames) {
         if (result.missing) {
-          missingTimestamps.push(tm);
+          missingTimestamps.push(result.timestamp_kor);
           continue;
         }
-        const data = enrichAwsRowsForHttp(result.data, awsStnCatalog);
+        const data = skipEnrich
+          ? result.data
+          : enrichAwsRowsForHttp(result.data, awsStnCatalog);
         items.push({
           timestamp_kor: result.timestamp_kor,
           count: data.length,
