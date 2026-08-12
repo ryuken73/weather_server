@@ -104,14 +104,17 @@ NODE_ENV=production node kma_fetch/warm_aws_ta_pack.js --yesterday
 
 ## 1분 변수별 pack
 
-- Builder: `kma_fetch/utils/aws_min_pack.js`
+- Builder: `kma_fetch/utils/aws_min_pack.js` (`schemaVersion: 2`)
 - 변수별 일파일. 지금은 TA만. `variable=FULL` 없음. 이후 `WS` 등은 파일 추가 + `variable=TA,WS`
 - API: `GET /api/aws/min/pack?date=YYYYMMDD&variable=TA` (레거시 `from`/`to`)
 - Binary: `/datasets/aws/ta/1m/{dayKey}/ta.i16le` (`AWS_PACK_DIR` / `out_data/aws/pack`)
-- 사전생성: backfill 종료, `main_AWS` 어제 워밍, `warm_aws_ta_pack.js`. 오늘(미완)은 API 요청 시 재빌드
+- TA 결측 → `-32768`: `null`, sentinel `-999`, Hub 물리 ≤ -50℃(×10 ≤ -500), > 60℃. 정상 음수 유지
+- Cache: 과거 complete binary/manifest → `immutable`+ETag; 오늘/미완 → `no-store`
+- 사전생성: backfill 종료, `main_AWS` 어제 워밍, `warm_aws_ta_pack.js` (`--force`로 schema v2 재생성)
 - 임의 구간·전 변수 JSON은 range 유지
 - Debug: `GET /api/aws/min/exact?timestamp_kor=`
 - 원천 1분 파일이 없으면 홀수 peak를 pack이 살릴 수 없다
+- 구 pack(`schemaVersion < 2`)은 다음 워밍/요청 시 재빌드 (캐시 무시)
 
 ## 누락 진단 체크리스트
 

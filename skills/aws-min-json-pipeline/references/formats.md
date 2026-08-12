@@ -41,6 +41,16 @@ YYMMDDHHMI STN WD1 WS1 WDS WSS WD10 WS10 TA RE RN-15m RN-60m RN-12H RN-DAY HM PA
 단위는 **물리값**(도, m/s, °C, %, hPa, mm).  
 `-50` 이하·`-99.9` 류는 결측으로 본다.
 
+Pack binary로 넣을 때 (`encodeTaToI16`, schemaVersion 2):
+
+| 원천 (JSON ×10) | pack Int16 |
+| --- | --- |
+| `null` / 비유한 | `-32768` |
+| `-999` (DB sentinel) | `-32768` |
+| ≤ `-500` (물리 ≤ -50℃, Hub) | `-32768` |
+| > `600` (물리 > 60℃) | `-32768` |
+| 그 외 (예: `-150` = -15.0℃) | 그대로 |
+
 JSON으로 넣을 때 (`work/fetch_aws_apihub.js`):
 
 | API | JSON 필드 | 변환 |

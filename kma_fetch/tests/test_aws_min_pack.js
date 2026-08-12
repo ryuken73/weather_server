@@ -28,6 +28,13 @@ async function main() {
   assert.strictEqual(encodeTaToI16(408), 408);
   assert.strictEqual(encodeTaToI16(413), 413);
   assert.strictEqual(encodeTaToI16(null), MISSING_I16);
+  assert.strictEqual(encodeTaToI16(-999), MISSING_I16); // DB/×10 sentinel
+  assert.strictEqual(encodeTaToI16(-500), MISSING_I16); // Hub ≤ -50℃
+  assert.strictEqual(encodeTaToI16(-501), MISSING_I16);
+  assert.strictEqual(encodeTaToI16(-150), -150); // -15.0℃ keep
+  assert.strictEqual(encodeTaToI16(-400), -400); // -40.0℃ keep
+  assert.strictEqual(encodeTaToI16(601), MISSING_I16); // > 60℃ out of range
+  assert.strictEqual(encodeTaToI16(600), 600);
 
   assert.deepStrictEqual(parsePackVariables(undefined), ['TA']);
   assert.deepStrictEqual(parsePackVariables('ta'), ['TA']);
@@ -57,7 +64,7 @@ async function main() {
   ]);
   await writeFrame(awsRoot, '202608121534', [
     { STN_ID: stnA, TM: '202608121534', TA: 409, LAT: 1, LON: 2, HT: 3, STN_NAME: 'A' },
-    { STN_ID: stnB, TM: '202608121534', TA: 299, LAT: 1, LON: 2, HT: 3, STN_NAME: 'B' }
+    { STN_ID: stnB, TM: '202608121534', TA: -999, LAT: 1, LON: 2, HT: 3, STN_NAME: 'B' }
   ]);
   // 15:35 missing entire frame
 
@@ -111,8 +118,12 @@ async function main() {
   assert.strictEqual(view[0 * 2 + 0], 408);
   assert.strictEqual(view[1 * 2 + 0], 413);
   assert.strictEqual(view[2 * 2 + 0], 409);
+  assert.strictEqual(view[2 * 2 + 1], MISSING_I16); // TA=-999 → sentinel
   assert.strictEqual(view[3 * 2 + 0], MISSING_I16);
   assert.strictEqual(view[3 * 2 + 1], MISSING_I16);
+  assert.ok(!Array.from(view).includes(-999));
+  assert.strictEqual(manifest.schemaVersion, 2);
+  assert.strictEqual(manifest.data.sha256.length, 64);
 
   // daily max for stnA from pack
   let max = MISSING_I16;

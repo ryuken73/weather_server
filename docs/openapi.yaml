@@ -269,6 +269,9 @@ paths:
         `variable` 기본 `TA`. `FULL` 없음. 복수 지정은 `variable=TA,WS` (현재 TA만 구현).
         Binary는 변수별 파일 (`data.url`, 예: `/datasets/aws/ta/1m/{day}/ta.i16le`).
         layout: FRAME_MAJOR_STATION_MINOR, TA scale 0.1℃, missing -32768.
+        TA 결측: null, sentinel -999, Hub 물리 ≤ -50℃(×10 ≤ -500), > 60℃ → -32768. 정상 음수 유지.
+        Binary URL: 과거 complete는 immutable+ETag, 오늘/미완은 no-store.
+        schemaVersion 2.
         과거 완결일(`complete:true`)은 디스크 캐시 + immutable.
         오늘(미완)은 요청 시 재빌드, `no-store`.
         일 pack은 backfill 종료 후·어제 워밍으로 미리 생성한다.

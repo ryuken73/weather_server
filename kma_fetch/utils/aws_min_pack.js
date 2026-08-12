@@ -17,8 +17,19 @@ const MISSING_I16 = -32768;
 const PACK_INTERVAL_MINUTES = 1;
 const PACK_MAX_FRAMES = 1440;
 const VARIABLE_TA = 'TA';
+/** 결측 정규화 반영. 구 pack(schemaVersion < 2)은 재빌드 */
+const PACK_SCHEMA_VERSION = 2;
 /** 현재 생성·서빙하는 pack 변수. FULL 없음. 추후 WS 등은 여기와 파일만 추가. */
 const SUPPORTED_PACK_VARIABLES = Object.freeze([VARIABLE_TA]);
+
+/**
+ * Hub nph-aws2_min: 물리기온 ≤ -50℃ 결측.
+ * JSON/MSSQL TA는 ×10 정수. DB 관례 sentinel `-999`(= -99.9℃)도 결측.
+ * 정상 음수(예: -15.0 → -150)는 유지.
+ */
+const TA_PHYSICAL_MISSING_MAX_C = -50;
+const TA_PHYSICAL_VALID_MAX_C = 60;
+const TA_SCALED_SENTINELS = Object.freeze(new Set([-999]));
 
 function deriveAwsPackDir(projectRoot, env = process.env) {
   if (env.AWS_PACK_DIR) {
@@ -54,6 +65,10 @@ function encodeTaToI16(raw) {
   if (!Number.isFinite(n)) return MISSING_I16;
   // in_data JSON / MSSQL: TA 는 ×10 정수 (277 → 27.7℃)
   const scaled = Math.round(n);
+  if (TA_SCALED_SENTINELS.has(scaled)) return MISSING_I16;
+  // Hub MISSING_LT: physical °C <= -50 → missing (scaled <= -500)
+  if (scaled <= TA_PHYSICAL_MISSING_MAX_C * 10) return MISSING_I16;
+  if (scaled > TA_PHYSICAL_VALID_MAX_C * 10) return MISSING_I16;
   if (scaled > 32767 || scaled < -32767) return MISSING_I16;
   return scaled;
 }
@@ -258,7 +273,7 @@ async function buildAwsTaPack(awsJsonDir, fromKor, toKor, options = {}) {
   const relUrl = `/datasets/aws/ta/1m/${dayKey}/ta.i16le`;
 
   const manifest = {
-    schemaVersion: 1,
+    schemaVersion: PACK_SCHEMA_VERSION,
     datasetId,
     source: 'KMA_AWS_MIN',
     variable: VARIABLE_TA,
@@ -333,7 +348,13 @@ async function getOrBuildAwsTaPack(awsJsonDir, packRoot, fromKor, toKor, options
 
   if (!force && !isToday && isFullPastDay(from, to)) {
     const cached = await loadCachedManifest(packRoot, dayKey);
-    if (cached && cached.complete && cached.from === from && cached.to === to) {
+    if (
+      cached &&
+      cached.complete &&
+      cached.schemaVersion === PACK_SCHEMA_VERSION &&
+      cached.from === from &&
+      cached.to === to
+    ) {
       return { manifest: cached, fromCache: true };
     }
   }
@@ -356,8 +377,11 @@ module.exports = {
   MISSING_I16,
   PACK_INTERVAL_MINUTES,
   PACK_MAX_FRAMES,
+  PACK_SCHEMA_VERSION,
   VARIABLE_TA,
   SUPPORTED_PACK_VARIABLES,
+  TA_PHYSICAL_MISSING_MAX_C,
+  TA_PHYSICAL_VALID_MAX_C,
   deriveAwsPackDir,
   encodeTaToI16,
   buildAwsTaPack,
@@ -368,5 +392,6 @@ module.exports = {
   parseTimestampKorStrict,
   packDayBounds,
   kstTodayYmd,
-  kstYmdDaysAgo
+  kstYmdDaysAgo,
+  loadCachedManifest
 };

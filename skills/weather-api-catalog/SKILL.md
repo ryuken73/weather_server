@@ -62,6 +62,12 @@ description: weather_api 서버가 노출하는 HTTP API 카탈로그(producer).
 
 일 pack은 서버가 어제/backfill 후 디스크에 만든다. 첫 요청 전에 워밍되면 바로 binary만 받는다. 오늘은 미완이라 요청 시 재빌드.
 
+Pack binary 계약 (consumer):
+
+- 결측은 모두 Int16 `-32768` (`null`, `-999`, Hub ≤ -50℃). 정상 음수 기온은 유지. 통계에서 sentinel 제외
+- 과거 `complete:true` manifest·binary → `Cache-Control: public, max-age=31536000, immutable` + ETag. 오늘/미완 → `no-store`
+- `schemaVersion: 2`
+
 ## 핵심 규칙
 
 - `/api/hgt500/latest`는 mutable pointer다. animation은 `manifestUrl`의 `frames`를 쓴다.

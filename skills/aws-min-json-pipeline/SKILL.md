@@ -31,7 +31,7 @@ description: AWS_MIN station JSON 수집·누락 복구·과거 backfill·1분 T
 - `USE_API=true`(기본)이면 env 로드 시 `API_KEY` 필수. DB-only면 `USE_API=false` + `AWS_FETCH_SOURCE=db`.
 - lookback: `candidateMinute:1`, `candiateCount:30`, 최신 2개 drop
 - 기업용 API 허브: `apihub-pub.kma.go.kr` / `nph-aws2_min` / `stn=0` 최대 10분 창
-- JSON TA는 ×10 정수. pack Int16도 동일 스케일(×0.1℃), missing `-32768`
+- JSON TA는 ×10 정수. pack Int16도 동일 스케일(×0.1℃), missing `-32768` (`-999`·Hub ≤ -50℃ 포함)
 - `STN_NAME` 저장 시 패치, `LAW_ADDR_*`는 HTTP enrich / stations / pack stations만
 - Pack: 변수별 일파일 (지금은 TA만). `FULL` 없음. backfill 후·어제 워밍으로 미리 생성. 요청은 `variable=TA` (이후 `TA,WS`)
 - HTTP: `GET /api/aws/min/pack?date=YYYYMMDD` → binary `/datasets/aws/ta/1m/{day}/ta.i16le`

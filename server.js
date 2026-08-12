@@ -2,6 +2,7 @@ const fastify = require('fastify')({ logger: false });
 const path = require('path');
 const fs = require('fs/promises');
 const fsSync = require('fs');
+const crypto = require('crypto');
 const YAML = require('yaml');
 const sharp = require('sharp');
 const {addHours, format, parse} = require('date-fns');
@@ -30,7 +31,9 @@ const {
   getOrBuildAwsTaPack,
   parseTimestampKorStrict,
   parsePackVariables,
-  packDayBounds
+  packDayBounds,
+  loadCachedManifest,
+  kstTodayYmd
 } = require('./kma_fetch/utils/aws_min_pack');
 
 require('dotenv').config(); // .env 파일 로드
@@ -141,6 +144,51 @@ const convertKSTToGMTString = (dateString) => {
   })
   await fs.mkdir(kimTextDatasetDir, { recursive: true });
   await fs.mkdir(awsPackDir, { recursive: true });
+
+  /**
+   * Pack binary: past complete → immutable + ETag(sha256); today/incomplete → no-store.
+   * Registered before static so Cache-Control is not overwritten by @fastify/static defaults.
+   */
+  fastify.get('/datasets/aws/ta/1m/:day/ta.i16le', async (request, reply) => {
+    const day = String(request.params.day || '');
+    if (!/^\d{8}$/.test(day)) {
+      return reply.code(400).send({ error: 'Invalid day. Expected YYYYMMDD' });
+    }
+    const dayDir = path.join(awsPackDir, 'ta', '1m', day);
+    const binPath = path.join(dayDir, 'ta.i16le');
+    try {
+      const binary = await fs.readFile(binPath);
+      let complete = false;
+      let etag = null;
+      const cached = await loadCachedManifest(awsPackDir, day);
+      if (cached && cached.data) {
+        complete = cached.complete === true;
+        if (cached.data.sha256) etag = `"${cached.data.sha256}"`;
+      }
+      const today = kstTodayYmd();
+      if (day === today || !complete) {
+        reply.header('Cache-Control', 'no-store');
+      } else {
+        reply.header('Cache-Control', 'public, max-age=31536000, immutable');
+      }
+      if (!etag) {
+        etag = `"${crypto.createHash('sha256').update(binary).digest('hex')}"`;
+      }
+      reply.header('ETag', etag);
+      if (request.headers['if-none-match'] === etag) {
+        return reply.code(304).send();
+      }
+      reply.type('application/octet-stream');
+      return reply.send(binary);
+    } catch (err) {
+      if (err.code === 'ENOENT') {
+        return reply.code(404).send({ error: 'Pack binary not found', day });
+      }
+      fastify.log.error(err);
+      return reply.code(500).send({ error: 'Internal server error', details: err.message });
+    }
+  });
+
   // 더 구체적인 prefix를 먼저 등록
   fastify.register(require('@fastify/static'), {
     root: awsPackDir,
