@@ -51,15 +51,15 @@ async function main() {
   assert.throws(() => parsePackVariables('WS'), /Unsupported pack variable: WS/);
   assert.throws(() => parsePackVariables('TA,WS'), /Unsupported pack variable: WS/);
 
-  assert.strictEqual(isPackImmutableCacheable({ complete: true, schemaVersion: 2 }), true);
+  assert.strictEqual(isPackImmutableCacheable({ complete: true, schemaVersion: PACK_SCHEMA_VERSION }), true);
   assert.strictEqual(isPackImmutableCacheable({ complete: true, schemaVersion: 1 }), false);
-  assert.strictEqual(isPackImmutableCacheable({ complete: false, schemaVersion: 2 }), false);
+  assert.strictEqual(isPackImmutableCacheable({ complete: false, schemaVersion: PACK_SCHEMA_VERSION }), false);
   assert.strictEqual(
-    packManifestCacheHeaders({ complete: true, schemaVersion: 2, datasetId: 'x' })['Cache-Control'],
+    packManifestCacheHeaders({ complete: true, schemaVersion: PACK_SCHEMA_VERSION, datasetId: 'x' })['Cache-Control'],
     'public, max-age=31536000, immutable'
   );
   assert.strictEqual(
-    packManifestCacheHeaders({ complete: false, schemaVersion: 2, datasetId: 'x' })['Cache-Control'],
+    packManifestCacheHeaders({ complete: false, schemaVersion: PACK_SCHEMA_VERSION, datasetId: 'x' })['Cache-Control'],
     'no-store'
   );
 
@@ -137,8 +137,9 @@ async function main() {
   assert.strictEqual(view[3 * 2 + 0], MISSING_I16);
   assert.strictEqual(view[3 * 2 + 1], MISSING_I16);
   assert.ok(!Array.from(view).includes(-999));
-  assert.strictEqual(manifest.schemaVersion, 2);
+  assert.strictEqual(manifest.schemaVersion, PACK_SCHEMA_VERSION);
   assert.strictEqual(manifest.data.sha256.length, 64);
+  assert.ok(manifest.qc && manifest.qc.taTemporal);
 
   // daily max for stnA from pack
   let max = MISSING_I16;
@@ -157,6 +158,31 @@ async function main() {
   await publishAwsTaPack(packRoot, built);
   assert.ok(fs.existsSync(path.join(packRoot, 'ta', '1m', '20260812', 'ta.i16le')));
   assert.ok(fs.existsSync(path.join(packRoot, 'ta', '1m', '20260812', 'manifest.json')));
+
+  // 서석(535) 유형: 연속 비현실 급락 — 첫 분만 유지, 이후 QC 제외
+  const glitchRoot = path.join(tmp, 'aws-glitch');
+  const stn535 = 535;
+  const glitchTemps = [-30, -73, -108, -134, -142, -149]; // -3.0 → -14.9℃
+  for (let i = 0; i < glitchTemps.length; i++) {
+    const mm = String(50 + i).padStart(2, '0');
+    const tm = `2026081210${mm}`;
+    await writeFrame(glitchRoot, tm, [
+      { STN_ID: stn535, TM: tm, TA: glitchTemps[i], STN_NAME: '서석' }
+    ]);
+  }
+  const glitchBuilt = await buildAwsTaPack(glitchRoot, '202608121050', '202608121055', {
+    catalog: { byId: new Map(), stations: [{ STN_ID: stn535, STN_NAME: '서석' }] }
+  });
+  const gv = new Int16Array(
+    glitchBuilt.binary.buffer,
+    glitchBuilt.binary.byteOffset,
+    glitchBuilt.binary.length / 2
+  );
+  assert.strictEqual(gv[0], -30);
+  for (let fi = 1; fi < 6; fi++) {
+    assert.strictEqual(gv[fi], MISSING_I16, `frame ${fi} should be QC excluded`);
+  }
+  assert.ok(glitchBuilt.manifest.qc.taTemporal.excludedSampleCount >= 5);
 
   console.log('OK test_aws_min_pack');
   await fsp.rm(tmp, { recursive: true, force: true });

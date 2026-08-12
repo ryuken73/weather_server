@@ -17,8 +17,8 @@ const MISSING_I16 = -32768;
 const PACK_INTERVAL_MINUTES = 1;
 const PACK_MAX_FRAMES = 1440;
 const VARIABLE_TA = 'TA';
-/** 결측 정규화 반영. 구 pack(schemaVersion < 2)은 재빌드 */
-const PACK_SCHEMA_VERSION = 2;
+/** 결측 정규화 + TA temporal QC. 구 pack(schemaVersion < 3)은 재빌드 */
+const PACK_SCHEMA_VERSION = 3;
 /** 현재 생성·서빙하는 pack 변수. FULL 없음. 추후 WS 등은 여기와 파일만 추가. */
 const SUPPORTED_PACK_VARIABLES = Object.freeze([VARIABLE_TA]);
 
@@ -57,6 +57,67 @@ function parseTimestampKorStrict(timestampKor) {
     throw err;
   }
   return timestampKor;
+}
+
+function readTaQcConfig(env = process.env) {
+  const enabled = env.AWS_TA_QC !== '0' && env.AWS_TA_QC !== 'false';
+  return {
+    enabled,
+    maxDeltaScaled: Math.round(Number(env.AWS_TA_QC_MAX_DELTA_DEGC || 3) * 10),
+    spikeNeighborMaxScaled: Math.round(Number(env.AWS_TA_QC_SPIKE_NEIGHBOR_MAX_DEGC || 1.5) * 10),
+    spikeMinScaled: Math.round(Number(env.AWS_TA_QC_SPIKE_MIN_DEGC || 2.5) * 10)
+  };
+}
+
+/**
+ * Pack 전용 temporal QC. /exact·디스크 JSON 원천은 그대로.
+ * 1) 직전 유효 분 대비 |ΔTA| > maxDelta → missing
+ * 2) 양 이웃은 비슷한데 가운데만 크게 튐 → missing (고립 스파이크)
+ */
+function applyTaTemporalQc(int16, stationCount, frameCount, config) {
+  if (!config.enabled) return 0;
+  let excluded = 0;
+
+  for (let si = 0; si < stationCount; si++) {
+    for (let fi = 1; fi < frameCount; fi++) {
+      const idx = fi * stationCount + si;
+      const curr = int16[idx];
+      if (curr === MISSING_I16) continue;
+
+      let prevVal = null;
+      for (let pj = fi - 1; pj >= 0; pj--) {
+        const pv = int16[pj * stationCount + si];
+        if (pv !== MISSING_I16) {
+          prevVal = pv;
+          break;
+        }
+      }
+      if (prevVal == null) continue;
+      if (Math.abs(curr - prevVal) > config.maxDeltaScaled) {
+        int16[idx] = MISSING_I16;
+        excluded += 1;
+      }
+    }
+
+    for (let fi = 1; fi < frameCount - 1; fi++) {
+      const idx = fi * stationCount + si;
+      if (int16[idx] === MISSING_I16) continue;
+      const prev = int16[(fi - 1) * stationCount + si];
+      const next = int16[(fi + 1) * stationCount + si];
+      const curr = int16[idx];
+      if (prev === MISSING_I16 || next === MISSING_I16) continue;
+      if (
+        Math.abs(prev - next) <= config.spikeNeighborMaxScaled &&
+        Math.abs(curr - prev) > config.spikeMinScaled &&
+        Math.abs(curr - next) > config.spikeMinScaled
+      ) {
+        int16[idx] = MISSING_I16;
+        excluded += 1;
+      }
+    }
+  }
+
+  return excluded;
 }
 
 function encodeTaToI16(raw) {
@@ -258,6 +319,9 @@ async function buildAwsTaPack(awsJsonDir, fromKor, toKor, options = {}) {
     }
   }
 
+  const taQcConfig = readTaQcConfig(options.env);
+  const taQcExcluded = applyTaTemporalQc(int16, stationCount, frameCount, taQcConfig);
+
   const binary = Buffer.from(int16.buffer, int16.byteOffset, int16.byteLength);
   const sha256 = crypto.createHash('sha256').update(binary).digest('hex');
   const dayKey = dayKeyFromRange(from, to);
@@ -300,7 +364,18 @@ async function buildAwsTaPack(awsJsonDir, fromKor, toKor, options = {}) {
       sha256
     },
     missingTimestamps,
-    warnings: []
+    qc: {
+      taTemporal: {
+        enabled: taQcConfig.enabled,
+        maxDeltaDegCPerMinute: taQcConfig.maxDeltaScaled / 10,
+        spikeNeighborMaxDegC: taQcConfig.spikeNeighborMaxScaled / 10,
+        spikeMinDegCDelta: taQcConfig.spikeMinScaled / 10,
+        excludedSampleCount: taQcExcluded
+      }
+    },
+    warnings: taQcExcluded > 0
+      ? [`TA temporal QC excluded ${taQcExcluded} samples (see qc.taTemporal)`]
+      : []
   };
 
   return { manifest, binary, dayKey, datasetId, revision };
@@ -405,6 +480,8 @@ module.exports = {
   TA_PHYSICAL_VALID_MAX_C,
   deriveAwsPackDir,
   encodeTaToI16,
+  readTaQcConfig,
+  applyTaTemporalQc,
   buildAwsTaPack,
   publishAwsTaPack,
   getOrBuildAwsTaPack,

@@ -55,7 +55,8 @@ Pack binary: `out_data/aws/pack/` → `/datasets/aws/...` (env `AWS_PACK_DIR`).
 - Binary: `GET {data.url}` → Int16 LE, scale 0.1℃, missing `-32768`, FRAME_MAJOR
 - TA 결측 정규화: `null`/비유한, sentinel `-999`, Hub 계약 물리 ≤ -50℃(×10 ≤ -500), > 60℃ → `-32768`. 정상 음수 유지
 - Binary 캐시: 과거 `complete:true` → `Cache-Control: public, max-age=31536000, immutable` + ETag(sha256)/304. 오늘·미완 → `no-store`
-- `schemaVersion: 2` (구 pack은 재빌드)
+- `schemaVersion: 3` (구 pack은 재빌드)
+- Pack temporal QC: 1분 급변·고립 스파이크 → `-32768` (manifest `qc.taTemporal`). `/exact`는 원천 유지
 - 생성: backfill 종료 후, `main_AWS`가 어제 하루 워밍, 또는 `warm_aws_ta_pack.js`. 오늘은 요청 시 재빌드
 - 과거 `complete:true` → 디스크 캐시 + immutable / today → `no-store`
 - Binary URL도 동일 캐시 정책 (전용 route, ETag=sha256)

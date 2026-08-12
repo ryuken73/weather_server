@@ -64,9 +64,10 @@ description: weather_api 서버가 노출하는 HTTP API 카탈로그(producer).
 
 Pack binary 계약 (consumer):
 
-- 결측은 모두 Int16 `-32768` (`null`, `-999`, Hub ≤ -50℃). 정상 음수 기온은 유지. 통계에서 sentinel 제외
+- 결측은 모두 Int16 `-32768` (`null`, `-999`, Hub ≤ -50℃, pack temporal QC). 정상 음수 기온은 유지. 통계에서 sentinel 제외
+- Temporal QC는 **pack만**. `/exact`·디스크 JSON은 원천 그대로
 - 과거 `complete:true` manifest·binary → `Cache-Control: public, max-age=31536000, immutable` + ETag. 오늘/미완 → `no-store`
-- `schemaVersion: 2`
+- `schemaVersion: 3`
 
 ## 핵심 규칙
 

@@ -109,8 +109,9 @@ NODE_ENV=production node kma_fetch/warm_aws_ta_pack.js --yesterday
 - API: `GET /api/aws/min/pack?date=YYYYMMDD&variable=TA` (레거시 `from`/`to`)
 - Binary: `/datasets/aws/ta/1m/{dayKey}/ta.i16le` (`AWS_PACK_DIR` / `out_data/aws/pack`)
 - TA 결측 → `-32768`: `null`, sentinel `-999`, Hub 물리 ≤ -50℃(×10 ≤ -500), > 60℃. 정상 음수 유지
+- **Pack temporal QC** (기본 on, `AWS_TA_QC=0`으로 off): 1분 |ΔTA| > 3℃(env `AWS_TA_QC_MAX_DELTA_DEGC`) 또는 고립 스파이크 → `-32768`. manifest `qc.taTemporal`. `/exact`·디스크 JSON은 원천 그대로
 - Cache: 과거 complete binary/manifest → `immutable`+ETag; 오늘/미완 → `no-store`
-- 사전생성: backfill 종료, `main_AWS` 어제 워밍, `warm_aws_ta_pack.js` (`--force`로 schema v2 재생성)
+- 사전생성: backfill 종료, `main_AWS` 어제 워밍, `warm_aws_ta_pack.js` (`--force`로 schema v3 재생성)
 - 임의 구간·전 변수 JSON은 range 유지
 - Debug: `GET /api/aws/min/exact?timestamp_kor=`
 - 원천 1분 파일이 없으면 홀수 peak를 pack이 살릴 수 없다
