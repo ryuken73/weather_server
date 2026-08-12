@@ -15,11 +15,21 @@ GET {base}/api/hgt500/datasets/kim-glob-hgt500-2026070100/manifest
 GET {base}/datasets/kim-glob-hgt500-2026070100/manifest.json
 ```
 
-## AWS_MIN JSON
+## AWS
 
 ```text
+# 지점 코드표 (LAW_ADDR_* lookup)
+GET {base}/api/aws/stations
+
+# 2분 호환 JSON
 GET {base}/api/aws/min?timestamp_kor=202604050000
 GET {base}/api/aws/min/range?from=202604050000&to=202604050100
+
+# 1분 exact / pack
+GET {base}/api/aws/min/exact?timestamp_kor=202608121533
+GET {base}/api/aws/min?timestamp_kor=202608121533&intervalMinutes=1
+GET {base}/api/aws/min/pack?from=202608120000&to=202608122359&variable=TA
+GET {base}/datasets/aws/ta/1m/20260812/ta.i16le
 ```
 
 ## IR105 JSON

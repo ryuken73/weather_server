@@ -1,6 +1,6 @@
 ---
 name: weather-api-catalog
-description: weather_api 서버가 노출하는 HTTP API 카탈로그(producer). Use when calling or documenting /api/hgt500, /api/aws/min, /datasets, /ir105, /{type}/{area}/{step}/image, GFS wind, AWS_MIN JSON, IR105 image, OpenAPI, Swagger /docs, Postman/Apidog import, or weather_api base URL contracts.
+description: weather_api 서버가 노출하는 HTTP API 카탈로그(producer). Use when calling or documenting /api/hgt500, /api/aws/min, /api/aws/min/pack, /api/aws/stations, /datasets, /ir105, /{type}/{area}/{step}/image, GFS wind, AWS_MIN JSON, IR105 image, OpenAPI, Swagger /docs, Postman/Apidog import, or weather_api base URL contracts.
 ---
 
 # weather_api Catalog (Producer)

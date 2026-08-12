@@ -17,24 +17,25 @@ description: AWS_MIN station JSON 수집·누락 복구·과거 backfill·1분 T
 
 ## 빠른 판단
 
-1. 실시간/준실시간 수집·lookback·누락 → `references/ops-fetch.md`
+1. 실시간/준실시간 수집·lookback·누락·**운영 env/재기동/복사** → `references/ops-fetch.md`
 2. 파일 경로·JSON shape·단위·pack → `references/paths-and-schema.md`
 3. `#` 원본 / API 허브 응답 포맷·변환 → `references/formats.md`
-4. 과거 한 달 등 → API 허브 `work/fetch_aws_apihub.js` (기본 **all-minutes**)
+4. 과거 한 달 등 → API 허브 `work/fetch_aws_apihub.js` (기본 **all-minutes**) → `work/out`를 `in_data/aws`로 복사
 5. HTTP로 읽기만 → `skills/weather-api-catalog`
 
 ## 핵심 규칙
 
 - 저장 경로: `{resolveBaseDir(in_data)}/aws/{yyyy-MM-dd}/AWS_MIN_{yyyyMMddHHmm}.json`
 - 수집 주기는 **1분** (홀수분 포함). 기존 `/api/aws/min`·`/range`는 **2분 snap**으로 호환 유지.
-- `main_AWS.js`: `AWS_FETCH_SOURCE=auto|db|hub` (기본 auto = DB 후 Hub fallback)
+- `AWS_FETCH_SOURCE=auto|db|hub` (기본 auto = **DB 후 Hub**). Hub에는 `API_KEY` 필요.
+- `USE_API=true`(기본)이면 env 로드 시 `API_KEY` 필수. DB-only면 `USE_API=false` + `AWS_FETCH_SOURCE=db`.
 - lookback: `candidateMinute:1`, `candiateCount:30`, 최신 2개 drop
 - 기업용 API 허브: `apihub-pub.kma.go.kr` / `nph-aws2_min` / `stn=0` 최대 10분 창
 - JSON TA는 ×10 정수. pack Int16도 동일 스케일(×0.1℃), missing `-32768`
 - `STN_NAME` 저장 시 패치, `LAW_ADDR_*`는 HTTP enrich / stations / pack stations만
 - Pack: `GET /api/aws/min/pack` → binary `/datasets/aws/ta/1m/{day}/ta.i16le`
-- Gate0: `node kma_fetch/probe_aws_min_cadence.js`
-
+- Gate0: `probe_aws_min_cadence.js` (홀수분). 배포 후 `main_AWS`+`server` 재기동; 과거 파일은 backfill/Hub 복사 별도.
+- 운영 체크리스트 상세: `references/ops-fetch.md`
 ## 관련 원천
 
 - 실시간: `kma_fetch/main_AWS.js`

@@ -31,11 +31,22 @@
 - batch의 `timestamps`는 동일 형식 값의 comma-separated 목록
 - `/fs`만 `timestamp_utc`를 파일명에 사용
 
-## AWS_MIN JSON
+## AWS_MIN JSON / pack
 
-- 관측 주기 2분. API는 image route와 같이 `findNearestTimestamp(2)`로 snap한다.
-- range는 snap된 `from`~`to`를 inclusive로 2분 step 열거한다.
-- 파일명·폴더는 snap된 KST 시각 기준: `aws/YYYY-MM-DD/AWS_MIN_{YYYYMMDDHHMM}.json`
+디스크에는 **1분** 파일이 쌓일 수 있다. HTTP 계약은 endpoint마다 다르다.
+
+| Endpoint | 간격 | snap |
+| --- | --- | --- |
+| `GET /api/aws/min` (기본) | 2분 | `findNearestTimestamp(2)` — **호환** |
+| `GET /api/aws/min?intervalMinutes=1` | 1분 | snap 없음 (exact) |
+| `GET /api/aws/min/exact` | 1분 | snap 없음 |
+| `GET /api/aws/min/range` | 2분 | from/to 각각 2분 snap 후 2분 step, max 360 |
+| `GET /api/aws/min/pack` | 1분 | snap 없음. `from`~`to` inclusive 1분 step, max 1440 |
+
+- 파일명·폴더: `aws/YYYY-MM-DD/AWS_MIN_{YYYYMMDDHHMM}.json` (요청/스냅된 KST 시각)
+- image route의 `aws-*` PNG도 **2분** nearest snap (`server_util`)
+- 일최고·임계·홀수 분 peak는 **pack / exact**를 쓴다. 2분 min/range만으로는 복원 불가
+- pack binary URL timezone도 KST timeline (`intervalMinutes: 1` in manifest)
 
 ## HGT500
 
