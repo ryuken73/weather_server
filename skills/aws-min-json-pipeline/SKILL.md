@@ -18,6 +18,7 @@ description: AWS_MIN station JSON 수집·누락 복구·과거 backfill·1분 T
 ## 빠른 판단
 
 1. 실시간/준실시간 수집·lookback·누락·**운영 env/재기동/복사** → `references/ops-fetch.md`
+   - 수작업 backfill + pack 생성 → 같은 파일 **수작업 runbook**
 2. 파일 경로·JSON shape·단위·pack → `references/paths-and-schema.md`
 3. `#` 원본 / API 허브 응답 포맷·변환 → `references/formats.md`
 4. 과거 한 달 등 → API 허브 `work/fetch_aws_apihub.js` (기본 **all-minutes**) → `work/out`를 `in_data/aws`로 복사
@@ -32,6 +33,7 @@ description: AWS_MIN station JSON 수집·누락 복구·과거 backfill·1분 T
 - lookback: `candidateMinute:1`, `candiateCount:30`, 최신 2개 drop
 - 기업용 API 허브: `apihub-pub.kma.go.kr` / `nph-aws2_min` / `stn=0` 최대 10분 창
 - JSON TA는 ×10 정수. pack Int16도 동일 스케일(×0.1℃), missing `-32768` (`-999`·Hub ≤ -50℃ 포함)
+- Pack temporal QC는 **pack만** (`schemaVersion: 3`). `/exact`·디스크 JSON은 원천 그대로. `AWS_TA_QC=0`으로 off
 - `STN_NAME` 저장 시 패치, `LAW_ADDR_*`는 HTTP enrich / stations / pack stations만
 - Pack: 변수별 일파일 (지금은 TA만). `FULL` 없음. backfill 후·어제 워밍으로 미리 생성. 요청은 `variable=TA` (이후 `TA,WS`)
 - HTTP: `GET /api/aws/min/pack?date=YYYYMMDD` → binary `/datasets/aws/ta/1m/{day}/ta.i16le`

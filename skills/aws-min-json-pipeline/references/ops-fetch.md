@@ -10,6 +10,10 @@
 | `BASE_DIR` | `in_data` / `out_data` resolve 기준 |
 | `AWS_JSON_DIR` | (서버) JSON 루트 override |
 | `AWS_PACK_DIR` | (서버) pack 루트 override |
+| `AWS_TA_QC` | pack temporal QC. 기본 on. `0`/`false`면 off |
+| `AWS_TA_QC_MAX_DELTA_DEGC` | 직전 유효 분 대비 최대 |ΔTA| (기본 3℃) |
+| `AWS_TA_QC_SPIKE_NEIGHBOR_MAX_DEGC` | 고립 스파이크: 양 이웃 허용 차 (기본 1.5℃) |
+| `AWS_TA_QC_SPIKE_MIN_DEGC` | 고립 스파이크: 가운데 vs 이웃 최소 차 (기본 2.5℃) |
 
 권장 운영(1분 + auto fallback):
 
@@ -20,6 +24,94 @@ AWS_FETCH_SOURCE=auto   # 생략 가능
 ```
 
 `USE_API`는 Hub on/off가 아니라 **“API_KEY 필수 검사 on/off”**다. 실제 소스는 `AWS_FETCH_SOURCE`가 결정한다.
+
+운영 스크립트는 repo 루트(`weather_api`)에서 실행한다. `NODE_ENV=production`이면 `kma_fetch/.env.production`을 읽고 `BASE_DIR`(예: `/data/node_project/weather_data`) 아래 `in_data/aws`, `out_data/aws/pack`을 쓴다.
+
+## 수작업 runbook: backfill + pack
+
+재기동만으로는 과거 JSON/pack이 채워지지 않는다. 아래 중 **한 경로**를 고른다.
+
+| 상황 | 할 일 |
+| --- | --- |
+| 운영 `in_data/aws`에 그날 파일이 일부만 있음 (DB/Hub로 gap 메움) | **A.** `backfill_aws_min.js` (끝나면 그날 pack 자동 워밍) |
+| 과거 여러 날을 Hub에서 통째로 받을 때 | **B.** `fetch_aws_apihub.js` → `in_data/aws` 복사 → pack |
+| JSON은 이미 있고 pack만 만들거나 schema v3로 다시 쓸 때 | **C.** `warm_aws_ta_pack.js` (`--force`면 재빌드) |
+
+날짜는 KST. `backfill_aws_min.js`는 **하루 단위**(1440 슬롯). 여러 날은 날짜를 바꿔 반복하거나 B를 쓴다.
+
+### A. 하루 gap backfill (권장: 운영 서버)
+
+```bash
+cd /path/to/weather_api
+
+# 1) 누락만 확인 (조회/저장 없음)
+NODE_ENV=production node kma_fetch/backfill_aws_min.js 20260811 --dry-run
+
+# 2) 홀수분 존재 여부
+USE_API=false NODE_ENV=production node kma_fetch/probe_aws_min_cadence.js --day 2026-08-11
+
+# 3) 채우기. auto = DB 후 비면 Hub. 끝나면 그날 TA pack 워밍
+AWS_FETCH_SOURCE=auto NODE_ENV=production node kma_fetch/backfill_aws_min.js 20260811
+
+# pack만 나중에: --skip-pack 후 C
+```
+
+여러 날 예 (bash):
+
+```bash
+for d in 20260809 20260810 20260811; do
+  AWS_FETCH_SOURCE=auto NODE_ENV=production node kma_fetch/backfill_aws_min.js "$d"
+done
+```
+
+### B. Hub 대량 수신 → 운영 경로 복사 → pack
+
+Hub 산출물은 `work/out/{yyyy-MM-dd}/`다. HTTP 서빙 경로는 `in_data/aws`이므로 **복사 후** pack 한다.
+
+```bash
+cd /path/to/weather_api
+# API_KEY는 셸 또는 .env.production. 키를 문서/git에 넣지 말 것
+
+node work/fetch_aws_apihub.js --from 20260712 --to 20260803 --sleep 300
+
+# 운영 서버 예 (덮어쓰기 전 샘플 확인)
+# rsync -av work/out/2026-07-12/ /data/node_project/weather_data/in_data/aws/2026-07-12/
+
+USE_API=false NODE_ENV=production node kma_fetch/probe_aws_min_cadence.js --day 2026-07-12
+NODE_ENV=production node kma_fetch/warm_aws_ta_pack.js --from 20260712 --to 20260803
+```
+
+복사 없이 `work/out`만 워밍할 때(로컬 검증):
+
+```bash
+USE_API=false node kma_fetch/warm_aws_ta_pack.js --from 20260701 --to 20260811 --json-dir work/out
+```
+
+이 pack은 운영 `out_data`가 아니다. 운영 서빙하려면 JSON을 `in_data/aws`에 두고 `NODE_ENV=production`으로 다시 워밍한다.
+
+### C. pack만 생성 / schema v3 재빌드
+
+JSON이 `in_data/aws`에 있을 때. 구 pack(`schemaVersion < 3`)은 `--force`가 필요하다.
+
+```bash
+cd /path/to/weather_api
+
+NODE_ENV=production node kma_fetch/warm_aws_ta_pack.js 20260811
+NODE_ENV=production node kma_fetch/warm_aws_ta_pack.js --yesterday
+NODE_ENV=production node kma_fetch/warm_aws_ta_pack.js --from 20260701 --to 20260811 --force
+```
+
+산출: `{BASE_DIR}/out_data/aws/pack/ta/1m/{YYYYMMDD}/manifest.json`, `ta.i16le`
+
+확인:
+
+```bash
+# manifest schemaVersion 3, qc.taTemporal, complete
+# 운영 HTTP (server.js 재기동 후)
+curl -sS "https://weather-map.sbs.co.kr/api/aws/min/pack?date=20260811&variable=TA"
+```
+
+`complete:true`여도 schema가 낮으면 `--force`. 오늘(미완)은 요청 시 재빌드되고 `no-store`.
 
 ## Gate0: 홀수분(1분) 존재 probe
 
@@ -104,18 +196,18 @@ NODE_ENV=production node kma_fetch/warm_aws_ta_pack.js --yesterday
 
 ## 1분 변수별 pack
 
-- Builder: `kma_fetch/utils/aws_min_pack.js` (`schemaVersion: 2`)
+- Builder: `kma_fetch/utils/aws_min_pack.js` (`schemaVersion: 3`)
 - 변수별 일파일. 지금은 TA만. `variable=FULL` 없음. 이후 `WS` 등은 파일 추가 + `variable=TA,WS`
 - API: `GET /api/aws/min/pack?date=YYYYMMDD&variable=TA` (레거시 `from`/`to`)
 - Binary: `/datasets/aws/ta/1m/{dayKey}/ta.i16le` (`AWS_PACK_DIR` / `out_data/aws/pack`)
 - TA 결측 → `-32768`: `null`, sentinel `-999`, Hub 물리 ≤ -50℃(×10 ≤ -500), > 60℃. 정상 음수 유지
-- **Pack temporal QC** (기본 on, `AWS_TA_QC=0`으로 off): 1분 |ΔTA| > 3℃(env `AWS_TA_QC_MAX_DELTA_DEGC`) 또는 고립 스파이크 → `-32768`. manifest `qc.taTemporal`. `/exact`·디스크 JSON은 원천 그대로
+- **Pack temporal QC** (기본 on, `AWS_TA_QC=0`으로 off): 1분 |ΔTA| > 3℃ 또는 고립 스파이크 → `-32768`. manifest `qc.taTemporal`. `/exact`·디스크 JSON은 원천 그대로
 - Cache: 과거 complete binary/manifest → `immutable`+ETag; 오늘/미완 → `no-store`
 - 사전생성: backfill 종료, `main_AWS` 어제 워밍, `warm_aws_ta_pack.js` (`--force`로 schema v3 재생성)
 - 임의 구간·전 변수 JSON은 range 유지
 - Debug: `GET /api/aws/min/exact?timestamp_kor=`
 - 원천 1분 파일이 없으면 홀수 peak를 pack이 살릴 수 없다
-- 구 pack(`schemaVersion < 2`)은 다음 워밍/요청 시 재빌드 (캐시 무시)
+- 구 pack(`schemaVersion < 3`)은 다음 워밍/요청 시 재빌드 (캐시 무시)
 
 ## 누락 진단 체크리스트
 
