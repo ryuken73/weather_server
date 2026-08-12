@@ -12,6 +12,7 @@
  * 옵션:
  *   --dry-run   DB/Hub 조회/저장 없이 누락 목록만 출력
  *   --sleep N   저장 성공 후 대기 ms (기본 200)
+ *   --skip-pack TA pack 워밍 생략
  *
  * env AWS_FETCH_SOURCE=auto|db|hub (기본 auto: DB 후 Hub)
  */
@@ -26,6 +27,10 @@ const env = require('./config/env');
 const { TIMEZONE } = env;
 const { patchAwsRowsForSave, loadStationCatalog } = require('./utils/aws_stn_catalog');
 const { fetchAwsMinRowsFromHub } = require('./services/aws_apihub_min');
+const { deriveAwsJsonDir } = require('./utils/aws_min_json');
+const { deriveAwsPackDir, warmAwsDayPack } = require('./utils/aws_min_pack');
+
+const PROJECT_ROOT = path.join(__dirname, '..');
 
 const AWS_DATA_ROOT = 'in_data';
 const AWS_FILE_OPTIONS = { dataRoot: AWS_DATA_ROOT };
@@ -53,19 +58,22 @@ async function fetchRowsForTm(tm, pool, stnCatalog) {
 }
 
 function usage() {
-  console.log(`Usage: node kma_fetch/backfill_aws_min.js <YYYYMMDD|YYYY-MM-DD> [--dry-run] [--sleep ms]
+  console.log(`Usage: node kma_fetch/backfill_aws_min.js <YYYYMMDD|YYYY-MM-DD> [--dry-run] [--sleep ms] [--skip-pack]
 
 Path (same as main_AWS.js):
   \${resolveBaseDir('in_data')}/aws/{yyyy-MM-dd}/AWS_MIN_{yyyyMMddHHmm}.json
+  After JSON fill, warms TA pack for that day (0000-2359) unless --skip-pack.
   BASE_DIR=${env.BASE_DIR}
 `);
 }
 
 function parseArgs(argv) {
-  const args = { date: null, dryRun: false, sleepMs: 200 };
+  const args = { date: null, dryRun: false, skipPack: false, sleepMs: 200 };
   for (const a of argv) {
     if (a === '--dry-run') {
       args.dryRun = true;
+    } else if (a === '--skip-pack') {
+      args.skipPack = true;
     } else if (a === '--help' || a === '-h') {
       args.help = true;
     } else if (a.startsWith('--sleep=')) {
@@ -166,6 +174,7 @@ async function main() {
   console.log('example     :', buildFilePath(folderDate, timestamps[0]));
   console.log('slots       :', timestamps.length);
   console.log('dry-run     :', args.dryRun);
+  console.log('skip-pack   :', args.skipPack);
   console.log('sleepMs     :', args.sleepMs);
 
   // 하루 폴더를 한 번만 스캔 (main_AWS listFiles 와 동일 경로)
@@ -198,16 +207,19 @@ async function main() {
   console.log('existing    :', timestamps.length - missing.length);
   console.log('missing     :', missing.length);
 
-  if (missing.length === 0) {
-    console.log('Nothing to backfill.');
-    return;
-  }
-
   if (args.dryRun) {
     console.log('--- missing timestamps (dry-run) ---');
     for (const item of missing) {
       console.log(item.tm, '->', item.filePath);
     }
+    return;
+  }
+
+  const stnCatalog = loadStationCatalog();
+
+  if (missing.length === 0) {
+    console.log('Nothing to backfill.');
+    await maybeWarmDayPack(yyyymmdd, args.skipPack, stnCatalog);
     return;
   }
 
@@ -222,7 +234,6 @@ async function main() {
       console.warn('DB connect failed; Hub-only backfill:', err.message);
     }
   }
-  const stnCatalog = loadStationCatalog();
   const summary = { saved: 0, noData: 0, skippedExists: 0, errors: 0 };
 
   try {
@@ -278,8 +289,31 @@ async function main() {
 
   console.log('=== summary ===');
   console.log(summary);
+  await maybeWarmDayPack(yyyymmdd, args.skipPack, stnCatalog);
   if (summary.errors > 0) {
     process.exitCode = 2;
+  }
+}
+
+async function maybeWarmDayPack(yyyymmdd, skipPack, catalog) {
+  if (skipPack) {
+    console.log('skip TA pack warm (--skip-pack)');
+    return;
+  }
+  const awsJsonDir = deriveAwsJsonDir(PROJECT_ROOT);
+  const awsPackDir = deriveAwsPackDir(PROJECT_ROOT);
+  console.log('warming TA pack', yyyymmdd, '->', awsPackDir);
+  try {
+    const result = await warmAwsDayPack(awsJsonDir, awsPackDir, yyyymmdd, { catalog });
+    console.log(
+      'TA pack',
+      result.fromCache ? 'cache' : 'built',
+      'complete=',
+      Boolean(result.manifest && result.manifest.complete),
+      result.manifest && result.manifest.data && result.manifest.data.url
+    );
+  } catch (err) {
+    console.error('TA pack warm failed', yyyymmdd, err.message || err);
   }
 }
 

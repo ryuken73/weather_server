@@ -33,7 +33,7 @@ description: weather_api 서버가 노출하는 HTTP API 카탈로그(producer).
 상세는 `references/endpoints.md`.
 
 - **HGT500**: `GET /api/hgt500/latest`, `GET /api/hgt500/datasets`, `GET /api/hgt500/datasets/{id}/manifest` (302), static `/datasets/{id}/**`
-- **AWS**: `GET /api/aws/stations`, `/api/aws/min`, `/api/aws/min/range` (2분 호환), `/api/aws/min/pack` (1분 TA), `/api/aws/min/exact`
+- **AWS**: `GET /api/aws/stations`, `/api/aws/min`, `/api/aws/min/range` (2분·임의 구간 JSON), `/api/aws/min/pack` (1분 변수별 binary, 기본 TA), `/api/aws/min/exact`
 - **IR105 JSON**: `GET /ir105/{area}/{step}`, `/batch`, `/fs`
 - **레거시 image/wind**: `GET /{type}/{area}/{step}/image?timestamp_kor=`
 - **Static**: `/weather/**`
@@ -48,6 +48,19 @@ description: weather_api 서버가 노출하는 HTTP API 카탈로그(producer).
 4. HGT500 클라이언트 플로우·manifest frame schema → `docs/kim_hgt500_frontend_api_spec.md`
 5. packed PNG 복호화·렌더링 → `skills/kim-hgt500-png-pipeline`
 6. AWS_MIN 파일 채우기·과거 분 확보 → `skills/aws-min-json-pipeline`
+
+## AWS API 선택 (consumer)
+
+| 하고 싶은 일 | 쓸 API |
+| --- | --- |
+| 지점명·시도/구군 lookup | `GET /api/aws/stations` |
+| 하루 기온 재생, 일최고/최저, 임계 돌파 (1분) | `GET /api/aws/min/pack?date={YYYYMMDD}&variable=TA` 후 `data.url` binary |
+| 여러 변수 하루 timeline (이후) | 같은 pack, `variable=TA,WS` — 요청한 url만. `FULL` 없음 |
+| 임의 시각 구간, 전 변수 표/JSON, 2분 호환 | `GET /api/aws/min/range?from=&to=` (max 12h) |
+| 한 시각 전 지점 JSON | `GET /api/aws/min?timestamp_kor=` (기본 2분 snap) |
+| pack 값 vs 원본 1분 대조 | `GET /api/aws/min/exact` 또는 `intervalMinutes=1` |
+
+일 pack은 서버가 어제/backfill 후 디스크에 만든다. 첫 요청 전에 워밍되면 바로 binary만 받는다. 오늘은 미완이라 요청 시 재빌드.
 
 ## 핵심 규칙
 

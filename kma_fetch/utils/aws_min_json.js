@@ -110,7 +110,12 @@ function formatTimestampKor(date) {
   );
 }
 
-function enumerateTimestamps(fromKor, toKor, intervalMinutes = AWS_INTERVAL_MINUTES) {
+function enumerateTimestamps(
+  fromKor,
+  toKor,
+  intervalMinutes = AWS_INTERVAL_MINUTES,
+  maxFrames = AWS_RANGE_MAX_FRAMES
+) {
   const start = parseTimestampKor(fromKor);
   const end = parseTimestampKor(toKor);
   if (start.getTime() > end.getTime()) {
@@ -120,12 +125,13 @@ function enumerateTimestamps(fromKor, toKor, intervalMinutes = AWS_INTERVAL_MINU
   }
 
   const stepMs = intervalMinutes * 60 * 1000;
+  const limit = Number.isFinite(maxFrames) && maxFrames > 0 ? maxFrames : AWS_RANGE_MAX_FRAMES;
   const timestamps = [];
   for (let t = start.getTime(); t <= end.getTime(); t += stepMs) {
     timestamps.push(formatTimestampKor(new Date(t)));
-    if (timestamps.length > AWS_RANGE_MAX_FRAMES) {
+    if (timestamps.length > limit) {
       const err = new Error(
-        `Range too large. Max ${AWS_RANGE_MAX_FRAMES} frames at ${intervalMinutes}-minute interval`
+        `Range too large. Max ${limit} frames at ${intervalMinutes}-minute interval`
       );
       err.code = 'BAD_QUERY';
       throw err;

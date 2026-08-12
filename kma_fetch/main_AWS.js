@@ -1,3 +1,4 @@
+const path = require('path');
 const db = require('./utils/db');
 const sql = require('mssql');
 const api = require('./services/api');
@@ -8,6 +9,63 @@ const env = require('./config/env');
 const { TIMEZONE } = env;
 const { patchAwsRowsForSave, loadStationCatalog } = require('./utils/aws_stn_catalog');
 const { fetchAwsMinRowsFromHub } = require('./services/aws_apihub_min');
+const { deriveAwsJsonDir } = require('./utils/aws_min_json');
+const {
+  deriveAwsPackDir,
+  warmAwsDayPack,
+  kstYmdDaysAgo
+} = require('./utils/aws_min_pack');
+
+const PROJECT_ROOT = path.join(__dirname, '..');
+const awsJsonDir = deriveAwsJsonDir(PROJECT_ROOT);
+const awsPackDir = deriveAwsPackDir(PROJECT_ROOT);
+
+let yesterdayPackWarmed = null;
+let yesterdayPackWarmInFlight = null;
+
+function kstHourMinute() {
+  const fmt = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Seoul',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23'
+  });
+  const parts = fmt.formatToParts(new Date());
+  const hour = Number(parts.find((p) => p.type === 'hour').value);
+  const minute = Number(parts.find((p) => p.type === 'minute').value);
+  return { hour, minute };
+}
+
+function scheduleYesterdayPackWarm(catalog) {
+  const yesterday = kstYmdDaysAgo(1);
+  if (yesterdayPackWarmed === yesterday || yesterdayPackWarmInFlight) return;
+  yesterdayPackWarmInFlight = (async () => {
+    try {
+      const result = await warmAwsDayPack(awsJsonDir, awsPackDir, yesterday, { catalog });
+      const complete = Boolean(result.manifest && result.manifest.complete);
+      const { hour, minute } = kstHourMinute();
+      // lookback ~30분이 어제 끝분을 더 채울 수 있으면 다음 틱에 재시도
+      const pastLookback = hour > 0 || minute >= 40;
+      if (complete || pastLookback) {
+        yesterdayPackWarmed = yesterday;
+      }
+      console.log(
+        'yesterday TA pack',
+        yesterday,
+        result.fromCache ? 'cache' : 'built',
+        complete ? 'complete' : 'incomplete'
+      );
+    } catch (err) {
+      console.error('yesterday TA pack warm failed', yesterday, err.message || err);
+      const { hour, minute } = kstHourMinute();
+      if (hour > 0 || minute >= 40) {
+        yesterdayPackWarmed = yesterday;
+      }
+    } finally {
+      yesterdayPackWarmInFlight = null;
+    }
+  })();
+}
 
 const AWS_DATA_ROOT = 'in_data';
 const AWS_FILE_OPTIONS = { dataRoot: AWS_DATA_ROOT };
@@ -71,6 +129,7 @@ async function fetchRowsForTm(tm, pool, stnCatalog) {
 
 async function downloadLatestData(config) {
   const { subDirName, compressed, fileExt, getCandidate, candiateCount, candidateMinute } = config;
+  scheduleYesterdayPackWarm(loadStationCatalog());
   try {
     const timeCandidatesRaw = getCandidate(candidateMinute, candiateCount);
     const [, , ...timeCandidates] = timeCandidatesRaw;

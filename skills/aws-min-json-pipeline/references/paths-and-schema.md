@@ -12,12 +12,14 @@
 .../aws/2026-08-12/AWS_MIN_202608121533.json
 ```
 
-Pack 출력:
+Pack 출력 (변수별 일파일. 지금은 TA만):
 
 ```text
 {resolveBaseDir('out_data')}/aws/pack/ta/1m/{yyyyMMdd}/ta.i16le
 {resolveBaseDir('out_data')}/aws/pack/ta/1m/{yyyyMMdd}/manifest.json
 ```
+
+과거 완결일은 backfill/`warm_aws_ta_pack.js`/`main_AWS` 어제 워밍으로 미리 쓴다. `variable=FULL` 없음.
 
 HTTP binary: `/datasets/aws/ta/1m/{yyyyMMdd}/ta.i16le`  
 override: `AWS_JSON_DIR`, `AWS_PACK_DIR`.
@@ -53,8 +55,9 @@ override: `AWS_JSON_DIR`, `AWS_PACK_DIR`.
 
 ## HTTP
 
-- 2분 호환: `/api/aws/min`, `/api/aws/min/range`
-- 1분: `/api/aws/min/pack`, `/api/aws/min/exact`, `/api/aws/min?intervalMinutes=1`
+- 2분 호환·임의 구간 JSON: `/api/aws/min`, `/api/aws/min/range`
+- 1분 일 pack: `/api/aws/min/pack` (`variable=TA`, 이후 comma 복수)
+- 1분 단건: `/api/aws/min/exact`, `/api/aws/min?intervalMinutes=1`
 - 카탈로그: `/api/aws/stations`
 
 상세: `skills/weather-api-catalog` / `docs/openapi.yaml` / `docs/aws-producer-1min-pack-requirements.md`.

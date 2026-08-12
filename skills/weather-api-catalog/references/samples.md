@@ -29,8 +29,10 @@ GET {base}/api/aws/min/range?from=202608070000&to=202608071158&enrich=0
 # 1분 exact / pack
 GET {base}/api/aws/min/exact?timestamp_kor=202608121533
 GET {base}/api/aws/min?timestamp_kor=202608121533&intervalMinutes=1
-GET {base}/api/aws/min/pack?from=202608120000&to=202608122359&variable=TA
+GET {base}/api/aws/min/pack?date=20260812&variable=TA
+GET {base}/api/aws/min/pack?date=2026-08-12
 GET {base}/datasets/aws/ta/1m/20260812/ta.i16le
+# 레거시: from&to=YYYYMMDDHHMM 도 허용. variable=FULL 은 400. 이후 예: variable=TA,WS
 ```
 
 ## IR105 JSON

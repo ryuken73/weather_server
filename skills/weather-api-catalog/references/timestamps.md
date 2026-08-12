@@ -5,7 +5,8 @@
 | 이름 | 형식 | Timezone | 사용처 |
 | --- | --- | --- | --- |
 | `timestamp_kor` | `YYYYMMDDHHMM` | KST | `/{type}/.../image`, `/api/aws/min`, 일부 IR105 |
-| `from` / `to` | `YYYYMMDDHHMM` | KST | `/api/aws/min/range` |
+| `from` / `to` | `YYYYMMDDHHMM` | KST | `/api/aws/min/range`, pack 레거시 |
+| `date` | `YYYYMMDD` 또는 `YYYY-MM-DD` | KST | `/api/aws/min/pack` (권장) |
 | `timestamp_utc` | `YYYYMMDDHHMM` | UTC | `/ir105/.../fs` |
 | `tmfc` | `YYYYMMDDHH` | UTC | HGT500 dataset id / list filter |
 | ISO-8601 | e.g. `2026-07-28T00:00:00Z` | UTC | HGT500 `from`/`to`, manifest `validTime` |
@@ -41,11 +42,12 @@
 | `GET /api/aws/min?intervalMinutes=1` | 1분 | snap 없음 (exact) |
 | `GET /api/aws/min/exact` | 1분 | snap 없음 |
 | `GET /api/aws/min/range` | 2분 | from/to 각각 2분 snap 후 2분 step, max 360 |
-| `GET /api/aws/min/pack` | 1분 | snap 없음. `from`~`to` inclusive 1분 step, max 1440 |
+| `GET /api/aws/min/pack` | 1분 | `date=YYYYMMDD` → `0000–2359`. 레거시 `from`/`to` 허용. max 1440 |
 
 - 파일명·폴더: `aws/YYYY-MM-DD/AWS_MIN_{YYYYMMDDHHMM}.json` (요청/스냅된 KST 시각)
 - image route의 `aws-*` PNG도 **2분** nearest snap (`server_util`)
 - 일최고·임계·홀수 분 peak는 **pack / exact**를 쓴다. 2분 min/range만으로는 복원 불가
+- pack `variable=FULL` 없음. 기본 `TA`, 이후 comma 복수
 - pack binary URL timezone도 KST timeline (`intervalMinutes: 1` in manifest)
 
 ## HGT500

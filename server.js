@@ -28,7 +28,9 @@ const {
 const {
   deriveAwsPackDir,
   getOrBuildAwsTaPack,
-  parseTimestampKorStrict
+  parseTimestampKorStrict,
+  parsePackVariables,
+  packDayBounds
 } = require('./kma_fetch/utils/aws_min_pack');
 
 require('dotenv').config(); // .env 파일 로드
@@ -241,20 +243,49 @@ const convertKSTToGMTString = (dateString) => {
   });
 
   /**
-   * 1분 TA packed timeline manifest.
+   * 1분 변수별 packed day timeline manifest.
+   * Primary: ?date=YYYYMMDD (KST 하루 0000–2359).
+   * Legacy: ?from=&to= YYYYMMDDHHMM (호환).
    * Binary: GET manifest.data.url (static /datasets/aws/...)
    */
   fastify.get('/api/aws/min/pack', async (request, reply) => {
-    const { from, to, variable } = request.query;
-    if (!from || !to) {
-      return reply.code(400).send({ error: 'from and to query parameters are required' });
+    const { date, from, to, variable } = request.query;
+    let fromKor = from;
+    let toKor = to;
+    try {
+      if (date) {
+        const bounds = packDayBounds(date);
+        fromKor = bounds.from;
+        toKor = bounds.to;
+      } else if (!fromKor || !toKor) {
+        return reply.code(400).send({
+          error: 'date query parameter is required (YYYYMMDD). Legacy from&to still accepted.'
+        });
+      }
+    } catch (err) {
+      if (err.code === 'BAD_QUERY') {
+        return reply.code(400).send({ error: err.message });
+      }
+      throw err;
     }
-    const variableNorm = (variable || 'TA').toUpperCase();
-    if (variableNorm !== 'TA') {
-      return reply.code(400).send({ error: 'Only variable=TA is supported in this version' });
+
+    let variables;
+    try {
+      variables = parsePackVariables(variable);
+    } catch (err) {
+      if (err.code === 'BAD_QUERY') {
+        return reply.code(400).send({ error: err.message });
+      }
+      throw err;
+    }
+    // 현재 TA만. 복수 요청이면 지원 변수 url만 채울 예정 (지금은 TA 단일 manifest).
+    if (variables.length !== 1 || variables[0] !== 'TA') {
+      return reply.code(400).send({
+        error: `Unsupported pack variable combination: ${variables.join(',')}. Supported: TA`
+      });
     }
     try {
-      const result = await getOrBuildAwsTaPack(awsJsonDir, awsPackDir, from, to, {
+      const result = await getOrBuildAwsTaPack(awsJsonDir, awsPackDir, fromKor, toKor, {
         catalog: awsStnCatalog,
         force: request.query.force === '1' || request.query.force === 'true'
       });

@@ -44,13 +44,18 @@ Pack binary: `out_data/aws/pack/` → `/datasets/aws/...` (env `AWS_PACK_DIR`).
 - `stations[]`: `STN_ID`, `STN_NAME`, `LAT`, `LON`, `HT`, `LAW_ADDR_SIDO`, `LAW_ADDR_GUGUN`
 - Header: `Cache-Control: public, max-age=3600`
 
-### `GET /api/aws/min/pack?from=&to=&variable=TA`
+### `GET /api/aws/min/pack?date=&variable=TA`
 
-- 1분 exact 범위 (2분 snap 없음), 최대 1440 frame
+- **권장**: `date=YYYYMMDD` (또는 `YYYY-MM-DD`) → 서버가 KST `0000–2359` 하루로 펼침
+- 레거시: `from`/`to` (YYYYMMDDHHMM)도 허용
+- 1분 exact, 최대 1440 frame
+- `variable` 기본 `TA`. `FULL` 없음. 이후 `variable=TA,WS`처럼 복수 → 요청한 변수 url만
+- 디스크: 변수별 `{var}.i16le` + 공유 `stations[]` (지금은 `ta.i16le`만)
 - 응답: pack manifest (`intervalMinutes:1`, `stations[]`, `data.url`, `sha256`, `missingTimestamps`, `complete`)
 - Binary: `GET {data.url}` → Int16 LE, scale 0.1℃, missing `-32768`, FRAME_MAJOR
-- 과거 `complete:true` → immutable cache / today → `no-store`
-- `400` / `404` (원자료 전무) / `500`
+- 생성: backfill 종료 후, `main_AWS`가 어제 하루 워밍, 또는 `warm_aws_ta_pack.js`. 오늘은 요청 시 재빌드
+- 과거 `complete:true` → 디스크 캐시 + immutable / today → `no-store`
+- `400` (`FULL`·미지원 변수·date 누락) / `404` (원자료 전무) / `500`
 
 ### `GET /api/aws/min/exact?timestamp_kor=`
 
@@ -71,8 +76,8 @@ Pack binary: `out_data/aws/pack/` → `/datasets/aws/...` (env `AWS_PACK_DIR`).
 - **과거 구간** (`to` 날짜 < 오늘 KST): stringify 결과 메모리 캐시, `Cache-Control: public, max-age=86400`, `ETag`, 헤더 `X-AWS-Range-Cache: hit|miss`
 - **오늘 포함**: `Cache-Control: no-store`
 - 클라이언트가 `fetch(..., { cache: 'no-store' })`면 브라우저 캐시가 무시된다. 과거 날짜는 `cache: 'default'` 권장
-- 12시간 JSON은 응답이 ~7MB. 통계·1분 timeline은 `/api/aws/min/pack` 권장
-- 1분 하루 timeline은 `/api/aws/min/pack` 사용
+- 임의 `from`/`to`·전 변수 JSON용으로 유지. 일단위 1분 기온/통계는 `/api/aws/min/pack`
+- 12시간 JSON은 응답이 큼 (~7MB+). 과거일은 payload 메모리 캐시 + `max-age=86400`
 
 레거시 PNG (`/aws-RN_15M/.../image`)와 별개다.
 

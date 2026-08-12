@@ -17,6 +17,8 @@ const MISSING_I16 = -32768;
 const PACK_INTERVAL_MINUTES = 1;
 const PACK_MAX_FRAMES = 1440;
 const VARIABLE_TA = 'TA';
+/** 현재 생성·서빙하는 pack 변수. FULL 없음. 추후 WS 등은 여기와 파일만 추가. */
+const SUPPORTED_PACK_VARIABLES = Object.freeze([VARIABLE_TA]);
 
 function deriveAwsPackDir(projectRoot, env = process.env) {
   if (env.AWS_PACK_DIR) {
@@ -115,6 +117,62 @@ function kstTodayYmd() {
   return fmt.format(new Date()).replace(/-/g, '');
 }
 
+function kstYmdDaysAgo(days) {
+  const ms = Date.now() - Number(days) * 24 * 60 * 60 * 1000;
+  const fmt = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Seoul',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  });
+  return fmt.format(new Date(ms)).replace(/-/g, '');
+}
+
+function packDayBounds(yyyymmdd) {
+  const day = String(yyyymmdd || '').replace(/-/g, '');
+  if (!/^\d{8}$/.test(day)) {
+    const err = new Error(`Invalid pack date. Expected YYYYMMDD or YYYY-MM-DD, got: ${yyyymmdd}`);
+    err.code = 'BAD_QUERY';
+    throw err;
+  }
+  return { yyyymmdd: day, from: `${day}0000`, to: `${day}2359` };
+}
+
+/**
+ * `variable` query. 기본 TA. comma 복수(TA,WS). FULL 불가.
+ * @returns {string[]}
+ */
+function parsePackVariables(raw) {
+  const fail = (message) => {
+    const err = new Error(message);
+    err.code = 'BAD_QUERY';
+    throw err;
+  };
+  if (raw == null || String(raw).trim() === '') {
+    return [VARIABLE_TA];
+  }
+  const parts = String(raw)
+    .split(',')
+    .map((s) => s.trim().toUpperCase())
+    .filter(Boolean);
+  if (parts.length === 0) return [VARIABLE_TA];
+  const seen = new Set();
+  const out = [];
+  for (const v of parts) {
+    if (v === 'FULL') {
+      fail('variable=FULL is not supported. Request variables separately (e.g. variable=TA or variable=TA,WS).');
+    }
+    if (!SUPPORTED_PACK_VARIABLES.includes(v)) {
+      fail(`Unsupported pack variable: ${v}. Supported: ${SUPPORTED_PACK_VARIABLES.join(', ')}`);
+    }
+    if (!seen.has(v)) {
+      seen.add(v);
+      out.push(v);
+    }
+  }
+  return out;
+}
+
 /**
  * @returns {Promise<{ manifest: object, binary: Buffer, packDirRel: string }>}
  */
@@ -127,12 +185,12 @@ async function buildAwsTaPack(awsJsonDir, fromKor, toKor, options = {}) {
     throw err;
   }
 
-  const timestamps = enumerateTimestamps(from, to, PACK_INTERVAL_MINUTES);
-  if (timestamps.length > PACK_MAX_FRAMES) {
-    const err = new Error(`Range too large. Max ${PACK_MAX_FRAMES} frames at 1-minute interval`);
-    err.code = 'BAD_QUERY';
-    throw err;
-  }
+  const timestamps = enumerateTimestamps(
+    from,
+    to,
+    PACK_INTERVAL_MINUTES,
+    PACK_MAX_FRAMES
+  );
 
   const catalog = options.catalog || loadStationCatalog();
   const frames = [];
@@ -285,14 +343,30 @@ async function getOrBuildAwsTaPack(awsJsonDir, packRoot, fromKor, toKor, options
   return { manifest: built.manifest, fromCache: false };
 }
 
+/**
+ * 완료된 KST 하루(0000–2359) TA pack을 디스크에 만든다.
+ * 과거 complete면 cache hit. 수집 매분이 아니라 backfill/어제 워밍용.
+ */
+async function warmAwsDayPack(awsJsonDir, packRoot, yyyymmdd, options = {}) {
+  const { from, to } = packDayBounds(yyyymmdd);
+  return getOrBuildAwsTaPack(awsJsonDir, packRoot, from, to, options);
+}
+
 module.exports = {
   MISSING_I16,
   PACK_INTERVAL_MINUTES,
   PACK_MAX_FRAMES,
+  VARIABLE_TA,
+  SUPPORTED_PACK_VARIABLES,
   deriveAwsPackDir,
   encodeTaToI16,
   buildAwsTaPack,
   publishAwsTaPack,
   getOrBuildAwsTaPack,
-  parseTimestampKorStrict
+  warmAwsDayPack,
+  parsePackVariables,
+  parseTimestampKorStrict,
+  packDayBounds,
+  kstTodayYmd,
+  kstYmdDaysAgo
 };

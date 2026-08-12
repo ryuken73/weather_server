@@ -12,6 +12,8 @@ const {
   buildAwsTaPack,
   publishAwsTaPack,
   encodeTaToI16,
+  parsePackVariables,
+  packDayBounds,
   MISSING_I16
 } = require('../utils/aws_min_pack');
 
@@ -26,6 +28,18 @@ async function main() {
   assert.strictEqual(encodeTaToI16(408), 408);
   assert.strictEqual(encodeTaToI16(413), 413);
   assert.strictEqual(encodeTaToI16(null), MISSING_I16);
+
+  assert.deepStrictEqual(parsePackVariables(undefined), ['TA']);
+  assert.deepStrictEqual(parsePackVariables('ta'), ['TA']);
+  assert.deepStrictEqual(parsePackVariables('TA,TA'), ['TA']);
+  assert.deepStrictEqual(packDayBounds('2026-08-11'), {
+    yyyymmdd: '20260811',
+    from: '202608110000',
+    to: '202608112359'
+  });
+  assert.throws(() => parsePackVariables('FULL'), /FULL is not supported/);
+  assert.throws(() => parsePackVariables('WS'), /Unsupported pack variable: WS/);
+  assert.throws(() => parsePackVariables('TA,WS'), /Unsupported pack variable: WS/);
 
   const tmp = await fsp.mkdtemp(path.join(os.tmpdir(), 'aws-pack-'));
   const awsRoot = path.join(tmp, 'aws');

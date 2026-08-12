@@ -33,14 +33,17 @@ description: AWS_MIN station JSON 수집·누락 복구·과거 backfill·1분 T
 - 기업용 API 허브: `apihub-pub.kma.go.kr` / `nph-aws2_min` / `stn=0` 최대 10분 창
 - JSON TA는 ×10 정수. pack Int16도 동일 스케일(×0.1℃), missing `-32768`
 - `STN_NAME` 저장 시 패치, `LAW_ADDR_*`는 HTTP enrich / stations / pack stations만
-- Pack: `GET /api/aws/min/pack` → binary `/datasets/aws/ta/1m/{day}/ta.i16le`
+- Pack: 변수별 일파일 (지금은 TA만). `FULL` 없음. backfill 후·어제 워밍으로 미리 생성. 요청은 `variable=TA` (이후 `TA,WS`)
+- HTTP: `GET /api/aws/min/pack?date=YYYYMMDD` → binary `/datasets/aws/ta/1m/{day}/ta.i16le`
+- 임의 구간 JSON은 `/api/aws/min/range` (2분). 수집 매분에 pack을 다시 만들지 않음
 - Gate0: `probe_aws_min_cadence.js` (홀수분). 배포 후 `main_AWS`+`server` 재기동; 과거 파일은 backfill/Hub 복사 별도.
 - 운영 체크리스트 상세: `references/ops-fetch.md`
+
 ## 관련 원천
 
 - 실시간: `kma_fetch/main_AWS.js`
-- Backfill: `kma_fetch/backfill_aws_min.js` (1440 slots/day)
+- Backfill: `kma_fetch/backfill_aws_min.js` (1440 slots/day, 끝나면 TA pack 워밍)
 - Hub client: `kma_fetch/services/aws_apihub_min.js`
-- Pack: `kma_fetch/utils/aws_min_pack.js`
+- Pack: `kma_fetch/utils/aws_min_pack.js`, 수동 `kma_fetch/warm_aws_ta_pack.js`
 - HTTP: `server.js` + `aws_min_json.js` + `aws_stn_catalog.js`
 - 요건: `docs/aws-producer-1min-pack-requirements.md`

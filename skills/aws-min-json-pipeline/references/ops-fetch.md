@@ -45,15 +45,18 @@ USE_API=false NODE_ENV=production node kma_fetch/probe_aws_min_cadence.js --day 
 - `jsonData.length === 0` → `no data to save` 후 continue
 - 저장: `in_data/aws/{yyyy-MM-dd}/AWS_MIN_{tm}.json`
 - 저장 전 `patchAwsRowsForSave` (STN_NAME). `LAW_ADDR_*`는 디스크에 안 넣음
+- 매분 pack을 만들지 않음. 틱마다 **어제** `0000–2359` TA pack을 한 번 워밍 (`warmAwsDayPack`)
 
 ## 일단위 backfill: `backfill_aws_min.js`
 
 ```bash
 NODE_ENV=production node kma_fetch/backfill_aws_min.js 20260810 --dry-run
 AWS_FETCH_SOURCE=auto NODE_ENV=production node kma_fetch/backfill_aws_min.js 20260810
+NODE_ENV=production node kma_fetch/backfill_aws_min.js 20260810 --skip-pack
 ```
 
 - 하루 **1440** 슬롯(1분). 소스 정책은 `main_AWS`와 동일
+- JSON 채운 뒤(또는 이미 전부 있으면) 그날 TA pack 워밍. `--skip-pack`이면 생략
 
 ## 과거 API 허브 → 운영 반영
 
@@ -72,7 +75,17 @@ node work/fetch_aws_apihub.js --from 20260712 --to 20260803 --sleep 300
 rsync -av work/out/2026-07-12/ /data/node_project/weather_data/in_data/aws/2026-07-12/
 ```
 
-복사 후 `probe_aws_min_cadence.js --day 2026-07-12`로 odd 건수 확인. pack은 요청 시 `in_data`를 읽어 생성한다.
+복사 후 `probe_aws_min_cadence.js --day 2026-07-12`로 odd 건수 확인. 이어서 pack 워밍:
+
+```bash
+NODE_ENV=production node kma_fetch/warm_aws_ta_pack.js 20260712
+NODE_ENV=production node kma_fetch/warm_aws_ta_pack.js --from 20260701 --to 20260712
+# Hub 산출물(work/out)에서:
+USE_API=false node kma_fetch/warm_aws_ta_pack.js --from 20260701 --to 20260811 --json-dir work/out
+NODE_ENV=production node kma_fetch/warm_aws_ta_pack.js --yesterday
+```
+
+기본 JSON 루트는 `in_data/aws`다. `work/out`에만 있으면 `--json-dir work/out` 또는 운영 경로로 복사 후 워밍.
 
 ## 배포·재기동 범위
 
@@ -80,7 +93,8 @@ rsync -av work/out/2026-07-12/ /data/node_project/weather_data/in_data/aws/2026-
 | --- | --- | --- |
 | `main_AWS.js` | 재기동 | 이후 **새 분**부터 1분 수집·STN_NAME 패치·auto/Hub |
 | `server.js` | 재기동 | `/api/aws/min/pack`, `/exact`, stations enrich, 2분 min/range |
-| `backfill_aws_min.js` | 필요 시 수동 | 과거 gap 메움 (데몬 아님) |
+| `backfill_aws_min.js` | 필요 시 수동 | 과거 gap 메움 + 그날 TA pack 워밍 |
+| `warm_aws_ta_pack.js` | 필요 시 수동 | 하루 TA pack만 생성 (`--yesterday` / `--force`) |
 | `patch_aws_min_stn_names.js` | 필요 시 수동 | 이미 쌓인 JSON의 STN_NAME만 (LAW는 HTTP enrich) |
 | `work/out` 복사 | 수동 | 과거 1분 파일을 `in_data`에 반영 |
 
@@ -88,11 +102,14 @@ rsync -av work/out/2026-07-12/ /data/node_project/weather_data/in_data/aws/2026-
 
 코드·config(`aws_stn_code_*.json`, `aws_stn_catalog.js` 등)는 재기동 **전에** 배포되어 있어야 한다.
 
-## 1분 TA pack
+## 1분 변수별 pack
 
 - Builder: `kma_fetch/utils/aws_min_pack.js`
-- API: `GET /api/aws/min/pack?from=&to=&variable=TA`
+- 변수별 일파일. 지금은 TA만. `variable=FULL` 없음. 이후 `WS` 등은 파일 추가 + `variable=TA,WS`
+- API: `GET /api/aws/min/pack?date=YYYYMMDD&variable=TA` (레거시 `from`/`to`)
 - Binary: `/datasets/aws/ta/1m/{dayKey}/ta.i16le` (`AWS_PACK_DIR` / `out_data/aws/pack`)
+- 사전생성: backfill 종료, `main_AWS` 어제 워밍, `warm_aws_ta_pack.js`. 오늘(미완)은 API 요청 시 재빌드
+- 임의 구간·전 변수 JSON은 range 유지
 - Debug: `GET /api/aws/min/exact?timestamp_kor=`
 - 원천 1분 파일이 없으면 홀수 peak를 pack이 살릴 수 없다
 
@@ -102,4 +119,4 @@ rsync -av work/out/2026-07-12/ /data/node_project/weather_data/in_data/aws/2026-
 2. 로그: `download AWS tm` / `no data to save` / `File saved` / `Skipping task` / Hub fallback warn
 3. `probe_aws_min_cadence.js` → disk odd / DB odd
 4. DB에 있으면 backfill, 없으면 Hub(`auto`/`hub`) 후 `in_data` 확인
-5. pack 요청 전 해당일 홀수분 파일 샘플 존재 여부
+5. pack 요청 전 해당일 홀수분 파일 샘플 존재 여부. 과거일은 `warm_aws_ta_pack.js`로 미리 만들 수 있음

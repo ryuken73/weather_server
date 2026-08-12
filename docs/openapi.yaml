@@ -261,36 +261,54 @@ paths:
   /api/aws/min/pack:
     get:
       tags: [aws]
-      summary: AWS 1분 TA packed timeline manifest
+      summary: AWS 1분 packed day timeline manifest
       description: |
-        KST 1분 exact 범위의 TA Int16 LE pack manifest.
-        2분 snap 없음. 최대 1440 frame. variable은 현재 `TA`만.
-        Binary는 `data.url` (예: `/datasets/aws/ta/1m/{day}/ta.i16le`).
-        layout: FRAME_MAJOR_STATION_MINOR, scale 0.1℃, missing -32768.
-        과거 완결일(`complete:true`)은 immutable cache, today는 no-store.
+        KST **하루** 1분 timeline의 변수별 Int16 LE pack manifest.
+        권장 query: `date=YYYYMMDD` (또는 YYYY-MM-DD) → 서버가 `0000–2359`로 펼친다.
+        레거시: `from`/`to` (YYYYMMDDHHMM)도 허용.
+        `variable` 기본 `TA`. `FULL` 없음. 복수 지정은 `variable=TA,WS` (현재 TA만 구현).
+        Binary는 변수별 파일 (`data.url`, 예: `/datasets/aws/ta/1m/{day}/ta.i16le`).
+        layout: FRAME_MAJOR_STATION_MINOR, TA scale 0.1℃, missing -32768.
+        과거 완결일(`complete:true`)은 디스크 캐시 + immutable.
+        오늘(미완)은 요청 시 재빌드, `no-store`.
+        일 pack은 backfill 종료 후·어제 워밍으로 미리 생성한다.
+        임의 구간·전 변수 JSON은 `/api/aws/min/range` (2분).
       operationId: getAwsMinPack
       parameters:
+        - name: date
+          in: query
+          required: false
+          schema:
+            type: string
+            pattern: '^(\d{8}|\d{4}-\d{2}-\d{2})$'
+          example: '20260812'
+          description: KST 일자. 지정 시 0000–2359 하루 pack (권장)
         - name: from
           in: query
-          required: true
+          required: false
           schema:
             type: string
             pattern: '^\d{12}$'
           example: '202608120000'
+          description: 레거시. date 없을 때 to와 함께 사용
         - name: to
           in: query
-          required: true
+          required: false
           schema:
             type: string
             pattern: '^\d{12}$'
           example: '202608122359'
+          description: 레거시. date 없을 때 from과 함께 사용
         - name: variable
           in: query
           required: false
           schema:
             type: string
-            enum: [TA]
             default: TA
+            example: TA
+          description: |
+            기본 TA. comma로 복수 (`TA,WS`). `FULL`은 400.
+            현재 구현은 TA만. 미지원 변수는 400.
         - name: force
           in: query
           required: false
@@ -306,7 +324,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/AwsMinPackManifest'
         '400':
-          description: 범위/variable 오류
+          description: date/범위/variable 오류
           content:
             application/json:
               schema:
@@ -443,9 +461,9 @@ paths:
         최대 frame 수 360 (약 12시간). `from`/`to`도 2분 nearest snap.
         각 `items[].data`는 기본으로 코드표 enrich (`STN_NAME`, `LAW_ADDR_*`).
         `enrich=0`이면 디스크 JSON 그대로 (클라이언트는 `/api/aws/stations` lookup).
-        서버는 파일을 병렬 읽고 parsed LRU를 쓴다. 12시간(360 frame) JSON은 여전히 큼 —
-        시계열 통계는 `/api/aws/min/pack`을 권장.
-        1분 packed timeline은 `/api/aws/min/pack`을 사용한다.
+        서버는 파일을 병렬 읽고 parsed LRU를 쓴다. 12시간(360 frame) JSON은 여전히 큼.
+        일단위 1분 기온 재생·일최고/임계는 `/api/aws/min/pack` (변수별 binary).
+        이 endpoint는 임의 `from`/`to`·전 변수 JSON용으로 유지한다.
       operationId: getAwsMinRange
       parameters:
         - name: from
