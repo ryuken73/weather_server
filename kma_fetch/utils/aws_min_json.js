@@ -4,11 +4,14 @@ const fs = require('fs/promises');
 const AWS_INTERVAL_MINUTES = 2;
 /** 2분 간격 기준 최대 12시간 */
 const AWS_RANGE_MAX_FRAMES = 360;
-/** parsed JSON LRU (mtime 일치 시 hit). 약 12h range 한 바퀴 */
-const AWS_FILE_CACHE_MAX = Number(process.env.AWS_JSON_CACHE_MAX || 400);
+/** parsed JSON LRU. 5일×360 frame 대비 기본 2500 */
+const AWS_FILE_CACHE_MAX = Number(process.env.AWS_JSON_CACHE_MAX || 2500);
 const AWS_READ_CONCURRENCY = Number(process.env.AWS_READ_CONCURRENCY || 24);
+/** 과거 range stringify 결과. 24개 × ~8MB ≈ 200MB 상한 */
+const AWS_RANGE_CACHE_MAX = Number(process.env.AWS_RANGE_CACHE_MAX || 24);
 
 const awsFileCache = new Map();
+const awsRangePayloadCache = new Map();
 
 function cacheGet(filePath, mtimeMs) {
   const hit = awsFileCache.get(filePath);
@@ -177,6 +180,44 @@ async function readAwsMinFiles(awsJsonDir, timestamps, options = {}) {
   return mapLimit(timestamps, concurrency, (tm) => readAwsMinFile(awsJsonDir, tm));
 }
 
+function kstYmdNow() {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Seoul',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  })
+    .format(new Date())
+    .replace(/-/g, '');
+}
+
+/** to 시각의 날짜가 오늘(KST)보다 이전이면 과거 완결 구간으로 본다 */
+function isPastAwsRange(toSnap) {
+  return String(toSnap).slice(0, 8) < kstYmdNow();
+}
+
+function awsRangeCacheKey(fromSnap, toSnap, skipEnrich) {
+  return `${fromSnap}:${toSnap}:${skipEnrich ? '0' : '1'}`;
+}
+
+function getAwsRangePayload(key) {
+  const hit = awsRangePayloadCache.get(key);
+  if (!hit) return null;
+  awsRangePayloadCache.delete(key);
+  awsRangePayloadCache.set(key, hit);
+  return hit;
+}
+
+function setAwsRangePayload(key, body) {
+  while (awsRangePayloadCache.size >= AWS_RANGE_CACHE_MAX) {
+    const oldest = awsRangePayloadCache.keys().next().value;
+    awsRangePayloadCache.delete(oldest);
+  }
+  const etag = `"${key}:${body.length}"`;
+  awsRangePayloadCache.set(key, { body, etag });
+  return { body, etag };
+}
+
 module.exports = {
   AWS_INTERVAL_MINUTES,
   AWS_RANGE_MAX_FRAMES,
@@ -186,5 +227,9 @@ module.exports = {
   enumerateTimestamps,
   readAwsMinFile,
   readAwsMinFiles,
-  folderDateFromTimestampKor
+  folderDateFromTimestampKor,
+  isPastAwsRange,
+  awsRangeCacheKey,
+  getAwsRangePayload,
+  setAwsRangePayload
 };

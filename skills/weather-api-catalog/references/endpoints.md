@@ -68,7 +68,10 @@ Pack binary: `out_data/aws/pack/` → `/datasets/aws/...` (env `AWS_PACK_DIR`).
 
 - 2분 간격, max 360 frames (~12h) — 호환 API
 - 서버: 파일 병렬 read + parsed LRU. `enrich=0`이면 LAW 부착 생략
-- 12시간 JSON은 TTFB/용량이 큼. 통계·1분 timeline은 `/api/aws/min/pack` 권장
+- **과거 구간** (`to` 날짜 < 오늘 KST): stringify 결과 메모리 캐시, `Cache-Control: public, max-age=86400`, `ETag`, 헤더 `X-AWS-Range-Cache: hit|miss`
+- **오늘 포함**: `Cache-Control: no-store`
+- 클라이언트가 `fetch(..., { cache: 'no-store' })`면 브라우저 캐시가 무시된다. 과거 날짜는 `cache: 'default'` 권장
+- 12시간 JSON은 응답이 ~7MB. 통계·1분 timeline은 `/api/aws/min/pack` 권장
 - 1분 하루 timeline은 `/api/aws/min/pack` 사용
 
 레거시 PNG (`/aws-RN_15M/.../image`)와 별개다.

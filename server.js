@@ -14,7 +14,11 @@ const {
   deriveAwsJsonDir,
   enumerateTimestamps,
   readAwsMinFile,
-  readAwsMinFiles
+  readAwsMinFiles,
+  isPastAwsRange,
+  awsRangeCacheKey,
+  getAwsRangePayload,
+  setAwsRangePayload
 } = require('./kma_fetch/utils/aws_min_json');
 const {
   loadStationCatalog,
@@ -332,6 +336,22 @@ const convertKSTToGMTString = (dateString) => {
       const timestamps = enumerateTimestamps(fromSnap, toSnap, AWS_INTERVAL_MINUTES);
       const skipEnrich =
         request.query.enrich === '0' || request.query.enrich === 'false';
+      const past = isPastAwsRange(toSnap);
+      const rangeKey = awsRangeCacheKey(fromSnap, toSnap, skipEnrich);
+
+      if (past) {
+        const cached = getAwsRangePayload(rangeKey);
+        if (cached) {
+          reply.header('Cache-Control', 'public, max-age=86400');
+          reply.header('ETag', cached.etag);
+          reply.header('X-AWS-Range-Cache', 'hit');
+          if (request.headers['if-none-match'] === cached.etag) {
+            return reply.code(304).send();
+          }
+          return reply.type('application/json').send(cached.body);
+        }
+      }
+
       const frames = await readAwsMinFiles(awsJsonDir, timestamps);
       const items = [];
       const missingTimestamps = [];
@@ -351,8 +371,7 @@ const convertKSTToGMTString = (dateString) => {
         });
       }
 
-      reply.header('Cache-Control', 'no-store');
-      return {
+      const payload = {
         from: fromSnap,
         to: toSnap,
         requested_from: from,
@@ -363,6 +382,19 @@ const convertKSTToGMTString = (dateString) => {
         missingTimestamps,
         items
       };
+
+      if (past) {
+        const body = JSON.stringify(payload);
+        const stored = setAwsRangePayload(rangeKey, body);
+        reply.header('Cache-Control', 'public, max-age=86400');
+        reply.header('ETag', stored.etag);
+        reply.header('X-AWS-Range-Cache', 'miss');
+        return reply.type('application/json').send(body);
+      }
+
+      reply.header('Cache-Control', 'no-store');
+      reply.header('X-AWS-Range-Cache', 'skip-today');
+      return payload;
     } catch (err) {
       if (err.code === 'BAD_QUERY' || (err.message && err.message.startsWith('Invalid timestamp'))) {
         return reply.code(400).send({ error: err.message });
