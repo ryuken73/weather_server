@@ -1,26 +1,29 @@
 /**
- * AWS_MIN → TA Int16 LE pack (1분 timeline)
+ * AWS_MIN → variable Int16 LE pack (1분 timeline)
  * @see docs/aws-producer-1min-pack-requirements.md
+ * @see skills/aws-min-json-pipeline/references/rainfall-producer-implementation-handoff.md
  */
-const fs = require('fs');
 const fsp = require('fs/promises');
 const path = require('path');
 const crypto = require('crypto');
 const {
   awsMinJsonPath,
-  folderDateFromTimestampKor,
   enumerateTimestamps
 } = require('./aws_min_json');
 const { loadStationCatalog } = require('./aws_stn_catalog');
+const {
+  PRODUCTION_AWS_PACK_DIR,
+  isProductionNodeEnv,
+  resolveEnvPath,
+  deriveAwsPackDirFromBase
+} = require('./aws_paths');
 
 const MISSING_I16 = -32768;
 const PACK_INTERVAL_MINUTES = 1;
 const PACK_MAX_FRAMES = 1440;
 const VARIABLE_TA = 'TA';
-/** 결측 정규화 + TA temporal QC. 구 pack(schemaVersion < 3)은 재빌드 */
+/** TA QC + rain missing rules. Binary layout unchanged → keep v3. */
 const PACK_SCHEMA_VERSION = 3;
-/** 현재 생성·서빙하는 pack 변수. FULL 없음. 추후 WS 등은 여기와 파일만 추가. */
-const SUPPORTED_PACK_VARIABLES = Object.freeze([VARIABLE_TA]);
 
 /**
  * Hub nph-aws2_min: 물리기온 ≤ -50℃ 결측.
@@ -30,24 +33,110 @@ const SUPPORTED_PACK_VARIABLES = Object.freeze([VARIABLE_TA]);
 const TA_PHYSICAL_MISSING_MAX_C = -50;
 const TA_PHYSICAL_VALID_MAX_C = 60;
 const TA_SCALED_SENTINELS = Object.freeze(new Set([-999]));
+const RAIN_PHYSICAL_MISSING_MAX_MM = -50;
+
+function encodeTaToI16(raw) {
+  if (raw == null || raw === '') return MISSING_I16;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return MISSING_I16;
+  const scaled = Math.round(n);
+  if (TA_SCALED_SENTINELS.has(scaled)) return MISSING_I16;
+  if (scaled <= TA_PHYSICAL_MISSING_MAX_C * 10) return MISSING_I16;
+  if (scaled > TA_PHYSICAL_VALID_MAX_C * 10) return MISSING_I16;
+  if (scaled > 32767 || scaled < -32767) return MISSING_I16;
+  return scaled;
+}
+
+/**
+ * Rain JSON is already ×10 mm integer.
+ * 0 → 0 (valid 0.0 mm). null / non-number / Hub ≤ -50 / any negative → missing.
+ * Values above Int16 max → missing (counted as overflow, not silent wrap).
+ */
+function encodeRainToI16(raw) {
+  if (raw == null || raw === '') return MISSING_I16;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return MISSING_I16;
+  const scaled = Math.round(n);
+  if (scaled <= RAIN_PHYSICAL_MISSING_MAX_MM * 10) return MISSING_I16;
+  if (scaled < 0) return MISSING_I16;
+  if (scaled > 32767) return MISSING_I16;
+  return scaled;
+}
+
+const PACK_VARIABLES = Object.freeze({
+  TA: {
+    jsonField: 'TA',
+    slug: 'ta',
+    unit: 'degC',
+    scale: 0.1,
+    source: 'KMA_AWS_MIN',
+    sourceField: 'TA',
+    encode: encodeTaToI16,
+    temporalQc: 'ta'
+  },
+  RN_15M: {
+    jsonField: 'RN_15M',
+    slug: 'rn_15m',
+    unit: 'mm',
+    scale: 0.1,
+    source: 'KMA_APIHUB_nph-aws2_min',
+    sourceField: 'RN-15m',
+    accumulation: { type: 'rolling', windowMinutes: 15 },
+    encode: encodeRainToI16
+  },
+  RN_60M: {
+    jsonField: 'RN_60M',
+    slug: 'rn_60m',
+    unit: 'mm',
+    scale: 0.1,
+    source: 'KMA_APIHUB_nph-aws2_min',
+    sourceField: 'RN-60m',
+    accumulation: { type: 'rolling', windowMinutes: 60 },
+    encode: encodeRainToI16
+  },
+  RN_12HR: {
+    jsonField: 'RN_12HR',
+    slug: 'rn_12hr',
+    unit: 'mm',
+    scale: 0.1,
+    source: 'KMA_APIHUB_nph-aws2_min',
+    sourceField: 'RN-12H',
+    accumulation: { type: 'rolling', windowMinutes: 720 },
+    encode: encodeRainToI16
+  },
+  RN_24HR: {
+    jsonField: 'RN_24HR',
+    slug: 'rn_24hr',
+    unit: 'mm',
+    scale: 0.1,
+    source: 'KMA_APIHUB_nph-aws2_min',
+    sourceField: 'RN-DAY',
+    accumulation: { type: 'day', timezone: 'Asia/Seoul' },
+    encode: encodeRainToI16
+  }
+});
+
+const SUPPORTED_PACK_VARIABLES = Object.freeze(Object.keys(PACK_VARIABLES));
+const PACK_SLUG_TO_VARIABLE = Object.freeze(
+  Object.fromEntries(SUPPORTED_PACK_VARIABLES.map((name) => [PACK_VARIABLES[name].slug, name]))
+);
+
+function getPackVariableSpec(variable) {
+  const name = String(variable || '').toUpperCase();
+  const spec = PACK_VARIABLES[name];
+  if (!spec) {
+    const err = new Error(`Unsupported pack variable: ${variable}. Supported: ${SUPPORTED_PACK_VARIABLES.join(', ')}`);
+    err.code = 'BAD_QUERY';
+    throw err;
+  }
+  return { name, spec };
+}
 
 function deriveAwsPackDir(projectRoot, env = process.env) {
-  if (env.AWS_PACK_DIR) {
-    return path.isAbsolute(env.AWS_PACK_DIR)
-      ? env.AWS_PACK_DIR
-      : path.resolve(projectRoot, env.AWS_PACK_DIR);
-  }
-  const base = env.BASE_DIR || './data/weather';
-  const resolved = path.isAbsolute(base) ? base : path.resolve(projectRoot, base);
-  const normalized = path.normalize(resolved);
-  const baseName = path.basename(normalized);
-  if (baseName === 'in_data') {
-    return path.join(path.dirname(normalized), 'out_data', 'aws', 'pack');
-  }
-  if (baseName === 'out_data') {
-    return path.join(normalized, 'aws', 'pack');
-  }
-  return path.join(normalized, 'out_data', 'aws', 'pack');
+  const override = resolveEnvPath(projectRoot, env.AWS_PACK_DIR);
+  if (override) return override;
+  if (isProductionNodeEnv(env)) return PRODUCTION_AWS_PACK_DIR;
+  return deriveAwsPackDirFromBase(projectRoot, env.BASE_DIR || './data/weather');
 }
 
 function parseTimestampKorStrict(timestampKor) {
@@ -120,20 +209,6 @@ function applyTaTemporalQc(int16, stationCount, frameCount, config) {
   return excluded;
 }
 
-function encodeTaToI16(raw) {
-  if (raw == null || raw === '') return MISSING_I16;
-  const n = Number(raw);
-  if (!Number.isFinite(n)) return MISSING_I16;
-  // in_data JSON / MSSQL: TA 는 ×10 정수 (277 → 27.7℃)
-  const scaled = Math.round(n);
-  if (TA_SCALED_SENTINELS.has(scaled)) return MISSING_I16;
-  // Hub MISSING_LT: physical °C <= -50 → missing (scaled <= -500)
-  if (scaled <= TA_PHYSICAL_MISSING_MAX_C * 10) return MISSING_I16;
-  if (scaled > TA_PHYSICAL_VALID_MAX_C * 10) return MISSING_I16;
-  if (scaled > 32767 || scaled < -32767) return MISSING_I16;
-  return scaled;
-}
-
 async function readFrameRows(awsJsonDir, tm) {
   const filePath = awsMinJsonPath(awsJsonDir, tm);
   try {
@@ -189,7 +264,6 @@ function kstTodayYmd() {
     month: '2-digit',
     day: '2-digit'
   });
-  // en-CA → YYYY-MM-DD
   return fmt.format(new Date()).replace(/-/g, '');
 }
 
@@ -214,8 +288,16 @@ function packDayBounds(yyyymmdd) {
   return { yyyymmdd: day, from: `${day}0000`, to: `${day}2359` };
 }
 
+function packRelDir(spec, dayKey) {
+  return path.join(spec.slug, '1m', dayKey);
+}
+
+function packBinaryUrl(spec, dayKey) {
+  return `/datasets/aws/${spec.slug}/1m/${dayKey}/${spec.slug}.i16le`;
+}
+
 /**
- * `variable` query. 기본 TA. comma 복수(TA,WS). FULL 불가.
+ * `variable` query. 기본 TA. comma 복수(TA,RN_60M). FULL 불가.
  * @returns {string[]}
  */
 function parsePackVariables(raw) {
@@ -236,9 +318,11 @@ function parsePackVariables(raw) {
   const out = [];
   for (const v of parts) {
     if (v === 'FULL') {
-      fail('variable=FULL is not supported. Request variables separately (e.g. variable=TA or variable=TA,WS).');
+      fail(
+        `variable=FULL is not supported. Request variables separately (e.g. variable=TA or variable=${SUPPORTED_PACK_VARIABLES.join(',')}).`
+      );
     }
-    if (!SUPPORTED_PACK_VARIABLES.includes(v)) {
+    if (!PACK_VARIABLES[v]) {
       fail(`Unsupported pack variable: ${v}. Supported: ${SUPPORTED_PACK_VARIABLES.join(', ')}`);
     }
     if (!seen.has(v)) {
@@ -249,26 +333,17 @@ function parsePackVariables(raw) {
   return out;
 }
 
-/**
- * @returns {Promise<{ manifest: object, binary: Buffer, packDirRel: string }>}
- */
-async function buildAwsTaPack(awsJsonDir, fromKor, toKor, options = {}) {
-  const from = parseTimestampKorStrict(fromKor);
-  const to = parseTimestampKorStrict(toKor);
-  if (from > to) {
-    const err = new Error('`from` must be less than or equal to `to`');
-    err.code = 'BAD_QUERY';
-    throw err;
+function countSamples(int16) {
+  let valid = 0;
+  let missing = 0;
+  for (let i = 0; i < int16.length; i++) {
+    if (int16[i] === MISSING_I16) missing += 1;
+    else valid += 1;
   }
+  return { validSampleCount: valid, missingSampleCount: missing };
+}
 
-  const timestamps = enumerateTimestamps(
-    from,
-    to,
-    PACK_INTERVAL_MINUTES,
-    PACK_MAX_FRAMES
-  );
-
-  const catalog = options.catalog || loadStationCatalog();
+async function readDayFrames(awsJsonDir, timestamps, catalog) {
   const frames = [];
   const missingTimestamps = [];
   const idSet = new Set();
@@ -296,18 +371,40 @@ async function buildAwsTaPack(awsJsonDir, fromKor, toKor, options = {}) {
     throw err;
   }
 
-  // union이 비면 코드표 전체로 fallback (전부 missing sentinel)
   let stationIds = [...idSet].sort((a, b) => a - b);
   if (stationIds.length === 0) {
     stationIds = catalog.stations.map((s) => s.STN_ID).sort((a, b) => a - b);
   }
 
+  return { frames, missingTimestamps, stationIds };
+}
+
+/**
+ * @returns {Promise<{ manifest: object, binary: Buffer, dayKey: string, datasetId: string, revision: string, variable: string }>}
+ */
+async function buildAwsVariablePack(awsJsonDir, fromKor, toKor, variable, options = {}) {
+  const { name, spec } = getPackVariableSpec(variable);
+  const from = parseTimestampKorStrict(fromKor);
+  const to = parseTimestampKorStrict(toKor);
+  if (from > to) {
+    const err = new Error('`from` must be less than or equal to `to`');
+    err.code = 'BAD_QUERY';
+    throw err;
+  }
+
+  const timestamps = enumerateTimestamps(from, to, PACK_INTERVAL_MINUTES, PACK_MAX_FRAMES);
+  const catalog = options.catalog || loadStationCatalog();
+  const { frames, missingTimestamps, stationIds } = await readDayFrames(awsJsonDir, timestamps, catalog);
+
   const stations = stationIds.map((id) => stationMetaFromCatalog(id, catalog));
   const stationCount = stations.length;
   const frameCount = timestamps.length;
-  const sampleCount = frameCount * stationCount;
-  const int16 = new Int16Array(sampleCount);
+  const int16 = new Int16Array(frameCount * stationCount);
   int16.fill(MISSING_I16);
+
+  let overflowCount = 0;
+  let negativeRainCount = 0;
+  const jsonField = spec.jsonField;
 
   for (let fi = 0; fi < frameCount; fi++) {
     const byId = frames[fi];
@@ -315,33 +412,54 @@ async function buildAwsTaPack(awsJsonDir, fromKor, toKor, options = {}) {
     for (let si = 0; si < stationCount; si++) {
       const row = byId.get(stationIds[si]);
       if (!row) continue;
-      int16[fi * stationCount + si] = encodeTaToI16(row.TA);
+      const raw = row[jsonField];
+      if (spec.encode === encodeRainToI16 && raw != null && raw !== '') {
+        const n = Number(raw);
+        if (Number.isFinite(n)) {
+          const scaled = Math.round(n);
+          if (scaled > 32767) overflowCount += 1;
+          else if (scaled < 0 && scaled > RAIN_PHYSICAL_MISSING_MAX_MM * 10) negativeRainCount += 1;
+        }
+      }
+      int16[fi * stationCount + si] = spec.encode(raw);
     }
   }
 
-  const taQcConfig = readTaQcConfig(options.env);
-  const taQcExcluded = applyTaTemporalQc(int16, stationCount, frameCount, taQcConfig);
+  let taQcConfig = null;
+  let taQcExcluded = 0;
+  if (spec.temporalQc === 'ta') {
+    taQcConfig = readTaQcConfig(options.env);
+    taQcExcluded = applyTaTemporalQc(int16, stationCount, frameCount, taQcConfig);
+  }
 
+  const { validSampleCount, missingSampleCount } = countSamples(int16);
   const binary = Buffer.from(int16.buffer, int16.byteOffset, int16.byteLength);
   const sha256 = crypto.createHash('sha256').update(binary).digest('hex');
   const dayKey = dayKeyFromRange(from, to);
   const todayYmd = kstTodayYmd();
   const isToday = from.slice(0, 8) === todayYmd || to.slice(0, 8) === todayYmd;
-  const complete =
-    !isToday &&
-    isFullPastDay(from, to) &&
-    missingTimestamps.length === 0;
-
+  const complete = !isToday && isFullPastDay(from, to) && missingTimestamps.length === 0;
   const revision = sha256.slice(0, 8);
-  const datasetId = `aws-ta-1m-${dayKey}-v${revision}`;
-  const relUrl = `/datasets/aws/ta/1m/${dayKey}/ta.i16le`;
+  const datasetId = `aws-${spec.slug}-1m-${dayKey}-v${revision}`;
+
+  const warnings = [];
+  if (taQcExcluded > 0) {
+    warnings.push(`TA temporal QC excluded ${taQcExcluded} samples (see qc.taTemporal)`);
+  }
+  if (overflowCount > 0) {
+    warnings.push(`Int16 overflow excluded ${overflowCount} samples (value > 3276.7 ${spec.unit})`);
+  }
+  if (negativeRainCount > 0) {
+    warnings.push(`Negative ${name} excluded ${negativeRainCount} samples`);
+  }
 
   const manifest = {
     schemaVersion: PACK_SCHEMA_VERSION,
     datasetId,
-    source: 'KMA_AWS_MIN',
-    variable: VARIABLE_TA,
-    unit: 'degC',
+    source: spec.source,
+    variable: name,
+    sourceField: spec.sourceField,
+    unit: spec.unit,
     timezone: 'Asia/Seoul',
     intervalMinutes: PACK_INTERVAL_MINUTES,
     from,
@@ -353,41 +471,57 @@ async function buildAwsTaPack(awsJsonDir, fromKor, toKor, options = {}) {
     stationOrder: 'STN_ID_ASC',
     stations,
     data: {
-      url: relUrl,
+      url: packBinaryUrl(spec, dayKey),
       dtype: 'int16',
       endianness: 'little',
       order: 'FRAME_MAJOR_STATION_MINOR',
-      scale: 0.1,
+      scale: spec.scale,
       offset: 0,
       missingValue: MISSING_I16,
       byteLength: binary.length,
       sha256
     },
     missingTimestamps,
-    qc: {
-      taTemporal: {
-        enabled: taQcConfig.enabled,
-        maxDeltaDegCPerMinute: taQcConfig.maxDeltaScaled / 10,
-        spikeNeighborMaxDegC: taQcConfig.spikeNeighborMaxScaled / 10,
-        spikeMinDegCDelta: taQcConfig.spikeMinScaled / 10,
-        excludedSampleCount: taQcExcluded
-      }
-    },
-    warnings: taQcExcluded > 0
-      ? [`TA temporal QC excluded ${taQcExcluded} samples (see qc.taTemporal)`]
-      : []
+    validSampleCount,
+    missingSampleCount,
+    qc: {},
+    warnings
   };
 
-  return { manifest, binary, dayKey, datasetId, revision };
+  if (spec.accumulation) {
+    manifest.accumulation = { ...spec.accumulation };
+  }
+  if (spec.temporalQc === 'ta' && taQcConfig) {
+    manifest.qc.taTemporal = {
+      enabled: taQcConfig.enabled,
+      maxDeltaDegCPerMinute: taQcConfig.maxDeltaScaled / 10,
+      spikeNeighborMaxDegC: taQcConfig.spikeNeighborMaxScaled / 10,
+      spikeMinDegCDelta: taQcConfig.spikeMinScaled / 10,
+      excludedSampleCount: taQcExcluded
+    };
+  }
+  if (overflowCount > 0 || negativeRainCount > 0) {
+    manifest.qc.encode = {
+      overflowExcluded: overflowCount,
+      negativeExcluded: negativeRainCount
+    };
+  }
+
+  return { manifest, binary, dayKey, datasetId, revision, variable: name };
 }
 
-async function publishAwsTaPack(packRoot, built) {
-  const { manifest, binary, dayKey } = built;
-  const outDir = path.join(packRoot, 'ta', '1m', dayKey);
+async function buildAwsTaPack(awsJsonDir, fromKor, toKor, options = {}) {
+  return buildAwsVariablePack(awsJsonDir, fromKor, toKor, VARIABLE_TA, options);
+}
+
+async function publishAwsVariablePack(packRoot, built) {
+  const { manifest, binary, dayKey, variable } = built;
+  const { spec } = getPackVariableSpec(variable || manifest.variable);
+  const outDir = path.join(packRoot, packRelDir(spec, dayKey));
   await fsp.mkdir(outDir, { recursive: true });
 
-  const binTmp = path.join(outDir, `ta.i16le.${process.pid}.tmp`);
-  const binFinal = path.join(outDir, 'ta.i16le');
+  const binTmp = path.join(outDir, `${spec.slug}.i16le.${process.pid}.tmp`);
+  const binFinal = path.join(outDir, `${spec.slug}.i16le`);
   const manTmp = path.join(outDir, `manifest.json.${process.pid}.tmp`);
   const manFinal = path.join(outDir, 'manifest.json');
 
@@ -399,8 +533,13 @@ async function publishAwsTaPack(packRoot, built) {
   return { manifest, binaryPath: binFinal, manifestPath: manFinal };
 }
 
-async function loadCachedManifest(packRoot, dayKey) {
-  const manPath = path.join(packRoot, 'ta', '1m', dayKey, 'manifest.json');
+async function publishAwsTaPack(packRoot, built) {
+  return publishAwsVariablePack(packRoot, { ...built, variable: VARIABLE_TA });
+}
+
+async function loadCachedManifest(packRoot, dayKey, variable = VARIABLE_TA) {
+  const { spec } = getPackVariableSpec(variable);
+  const manPath = path.join(packRoot, packRelDir(spec, dayKey), 'manifest.json');
   try {
     const raw = await fsp.readFile(manPath, 'utf8');
     return JSON.parse(raw);
@@ -410,10 +549,8 @@ async function loadCachedManifest(packRoot, dayKey) {
   }
 }
 
-/**
- * 과거 complete pack은 cache hit, today/불완전은 재빌드
- */
-async function getOrBuildAwsTaPack(awsJsonDir, packRoot, fromKor, toKor, options = {}) {
+async function getOrBuildAwsVariablePack(awsJsonDir, packRoot, fromKor, toKor, variable, options = {}) {
+  const { name } = getPackVariableSpec(variable);
   const from = parseTimestampKorStrict(fromKor);
   const to = parseTimestampKorStrict(toKor);
   const dayKey = dayKeyFromRange(from, to);
@@ -422,30 +559,69 @@ async function getOrBuildAwsTaPack(awsJsonDir, packRoot, fromKor, toKor, options
   const isToday = from.slice(0, 8) === todayYmd || to.slice(0, 8) === todayYmd;
 
   if (!force && !isToday && isFullPastDay(from, to)) {
-    const cached = await loadCachedManifest(packRoot, dayKey);
+    const cached = await loadCachedManifest(packRoot, dayKey, name);
     if (
       cached &&
       cached.complete &&
       cached.schemaVersion === PACK_SCHEMA_VERSION &&
+      cached.variable === name &&
       cached.from === from &&
       cached.to === to
     ) {
-      return { manifest: cached, fromCache: true };
+      return { manifest: cached, fromCache: true, variable: name };
     }
   }
 
-  const built = await buildAwsTaPack(awsJsonDir, from, to, options);
-  await publishAwsTaPack(packRoot, built);
-  return { manifest: built.manifest, fromCache: false };
+  const built = await buildAwsVariablePack(awsJsonDir, from, to, name, options);
+  await publishAwsVariablePack(packRoot, built);
+  return { manifest: built.manifest, fromCache: false, variable: name };
+}
+
+async function getOrBuildAwsTaPack(awsJsonDir, packRoot, fromKor, toKor, options = {}) {
+  return getOrBuildAwsVariablePack(awsJsonDir, packRoot, fromKor, toKor, VARIABLE_TA, options);
 }
 
 /**
- * 완료된 KST 하루(0000–2359) TA pack을 디스크에 만든다.
- * 과거 complete면 cache hit. 수집 매분이 아니라 backfill/어제 워밍용.
+ * 완료된 KST 하루(0000–2359) pack을 디스크에 만든다.
+ * options.variables 기본 ['TA']. 복수면 items[]로 개별 성공/실패.
+ * TA-only 호출은 기존처럼 { manifest, fromCache } 를 유지한다.
  */
 async function warmAwsDayPack(awsJsonDir, packRoot, yyyymmdd, options = {}) {
   const { from, to } = packDayBounds(yyyymmdd);
-  return getOrBuildAwsTaPack(awsJsonDir, packRoot, from, to, options);
+  const variables = options.variables
+    ? parsePackVariables(Array.isArray(options.variables) ? options.variables.join(',') : options.variables)
+    : [VARIABLE_TA];
+
+  const items = [];
+  for (const variable of variables) {
+    try {
+      const result = await getOrBuildAwsVariablePack(awsJsonDir, packRoot, from, to, variable, options);
+      items.push({
+        variable,
+        ok: true,
+        fromCache: result.fromCache,
+        complete: Boolean(result.manifest && result.manifest.complete),
+        manifest: result.manifest
+      });
+    } catch (err) {
+      items.push({
+        variable,
+        ok: false,
+        fromCache: false,
+        complete: false,
+        error: err,
+        message: err && err.message ? err.message : String(err)
+      });
+    }
+  }
+
+  const primary =
+    items.find((i) => i.ok && i.variable === VARIABLE_TA) || items.find((i) => i.ok) || items[0];
+  return {
+    manifest: primary && primary.manifest,
+    fromCache: Boolean(primary && primary.fromCache),
+    items
+  };
 }
 
 function isPackImmutableCacheable(manifest) {
@@ -475,15 +651,22 @@ module.exports = {
   PACK_MAX_FRAMES,
   PACK_SCHEMA_VERSION,
   VARIABLE_TA,
+  PACK_VARIABLES,
   SUPPORTED_PACK_VARIABLES,
+  PACK_SLUG_TO_VARIABLE,
   TA_PHYSICAL_MISSING_MAX_C,
   TA_PHYSICAL_VALID_MAX_C,
   deriveAwsPackDir,
   encodeTaToI16,
+  encodeRainToI16,
   readTaQcConfig,
   applyTaTemporalQc,
+  getPackVariableSpec,
+  buildAwsVariablePack,
   buildAwsTaPack,
+  publishAwsVariablePack,
   publishAwsTaPack,
+  getOrBuildAwsVariablePack,
   getOrBuildAwsTaPack,
   warmAwsDayPack,
   parsePackVariables,

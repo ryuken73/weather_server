@@ -10,8 +10,10 @@ const path = require('path');
 const os = require('os');
 const {
   buildAwsTaPack,
+  buildAwsVariablePack,
   publishAwsTaPack,
   encodeTaToI16,
+  encodeRainToI16,
   parsePackVariables,
   packDayBounds,
   isPackImmutableCacheable,
@@ -19,6 +21,7 @@ const {
   PACK_SCHEMA_VERSION,
   MISSING_I16
 } = require('../utils/aws_min_pack');
+const { parseApiText, apiRowToDbShape } = require('../services/aws_apihub_min');
 
 async function writeFrame(awsRoot, tm, rows) {
   const day = `${tm.slice(0, 4)}-${tm.slice(4, 6)}-${tm.slice(6, 8)}`;
@@ -50,6 +53,18 @@ async function main() {
   assert.throws(() => parsePackVariables('FULL'), /FULL is not supported/);
   assert.throws(() => parsePackVariables('WS'), /Unsupported pack variable: WS/);
   assert.throws(() => parsePackVariables('TA,WS'), /Unsupported pack variable: WS/);
+  assert.deepStrictEqual(parsePackVariables('TA,RN_60M,rn_15m'), ['TA', 'RN_60M', 'RN_15M']);
+
+  assert.strictEqual(encodeRainToI16(0), 0);
+  assert.strictEqual(encodeRainToI16(15), 15);
+  assert.strictEqual(encodeRainToI16(null), MISSING_I16);
+  assert.strictEqual(encodeRainToI16('x'), MISSING_I16);
+  assert.strictEqual(encodeRainToI16(-999), MISSING_I16); // -99.9 Hub missing ×10
+  assert.strictEqual(encodeRainToI16(-997), MISSING_I16); // -99.7
+  assert.strictEqual(encodeRainToI16(-992), MISSING_I16); // -99.2
+  assert.strictEqual(encodeRainToI16(-1), MISSING_I16); // negative rain invalid
+  assert.strictEqual(encodeRainToI16(-500), MISSING_I16);
+  assert.strictEqual(encodeRainToI16(32768), MISSING_I16); // Int16 overflow → missing
 
   assert.strictEqual(isPackImmutableCacheable({ complete: true, schemaVersion: PACK_SCHEMA_VERSION }), true);
   assert.strictEqual(isPackImmutableCacheable({ complete: true, schemaVersion: 1 }), false);
@@ -183,6 +198,73 @@ async function main() {
     assert.strictEqual(gv[fi], MISSING_I16, `frame ${fi} should be QC excluded`);
   }
   assert.ok(glitchBuilt.manifest.qc.taTemporal.excludedSampleCount >= 5);
+
+  const fixtureText = fs.readFileSync(
+    path.join(__dirname, '..', '..', 'skills', 'aws-min-json-pipeline', 'assets', 'nph-aws2_min_202608131200.txt'),
+    'utf8'
+  );
+  const fixtureParts = parseApiText(fixtureText).get('202608131200');
+  const fixtureRows = fixtureParts.map((p) => apiRowToDbShape(p, {}, new Map()));
+  const rainRoot = path.join(tmp, 'aws-rain');
+  await writeFrame(rainRoot, '202608131200', fixtureRows);
+  const rainCatalog = {
+    byId: new Map(),
+    stations: fixtureRows.map((r) => ({ STN_ID: r.STN_ID, STN_NAME: null }))
+  };
+  const rn60 = await buildAwsVariablePack(rainRoot, '202608131200', '202608131200', 'RN_60M', {
+    catalog: rainCatalog
+  });
+  assert.strictEqual(rn60.manifest.variable, 'RN_60M');
+  assert.strictEqual(rn60.manifest.sourceField, 'RN-60m');
+  assert.strictEqual(rn60.manifest.unit, 'mm');
+  assert.strictEqual(rn60.manifest.accumulation.type, 'rolling');
+  assert.strictEqual(rn60.manifest.accumulation.windowMinutes, 60);
+  assert.strictEqual(rn60.manifest.frameCount, 1);
+  assert.strictEqual(rn60.manifest.stationCount, 736);
+  assert.strictEqual(rn60.manifest.data.byteLength, 736 * 2);
+  assert.strictEqual(rn60.binary.length, rn60.manifest.data.byteLength);
+  assert.strictEqual(rn60.manifest.validSampleCount, 712);
+  assert.strictEqual(rn60.manifest.missingSampleCount, 24);
+  assert.ok(!rn60.manifest.qc || !rn60.manifest.qc.taTemporal);
+
+  const stationIndex = new Map(rn60.manifest.stations.map((s, i) => [s.STN_ID, i]));
+  const rainView = new Int16Array(rn60.binary.buffer, rn60.binary.byteOffset, rn60.binary.length / 2);
+  assert.strictEqual(rainView[stationIndex.get(530)], 60);
+  assert.strictEqual(rainView[stationIndex.get(679)], 0);
+  assert.strictEqual(rainView[stationIndex.get(793)], 10);
+
+  const rn15 = await buildAwsVariablePack(rainRoot, '202608131200', '202608131200', 'RN_15M', {
+    catalog: rainCatalog
+  });
+  const rn12 = await buildAwsVariablePack(rainRoot, '202608131200', '202608131200', 'RN_12HR', {
+    catalog: rainCatalog
+  });
+  const rn24 = await buildAwsVariablePack(rainRoot, '202608131200', '202608131200', 'RN_24HR', {
+    catalog: rainCatalog
+  });
+  const v15 = new Int16Array(rn15.binary.buffer, rn15.binary.byteOffset, rn15.binary.length / 2);
+  const v12 = new Int16Array(rn12.binary.buffer, rn12.binary.byteOffset, rn12.binary.length / 2);
+  const v24 = new Int16Array(rn24.binary.buffer, rn24.binary.byteOffset, rn24.binary.length / 2);
+  assert.strictEqual(v15[stationIndex.get(530)], 5);
+  assert.strictEqual(v12[stationIndex.get(530)], 95);
+  assert.strictEqual(v24[stationIndex.get(530)], 95);
+  assert.strictEqual(v12[stationIndex.get(679)], 245);
+  assert.strictEqual(v24[stationIndex.get(679)], 245);
+  assert.deepStrictEqual(
+    rn60.manifest.stations.map((s) => s.STN_ID),
+    rn15.manifest.stations.map((s) => s.STN_ID)
+  );
+
+  // rain must not use TA temporal QC even on huge 1-min jumps
+  const spikeRoot = path.join(tmp, 'aws-rain-spike');
+  await writeFrame(spikeRoot, '202608121000', [{ STN_ID: 1, RN_60M: 0, TA: 200 }]);
+  await writeFrame(spikeRoot, '202608121001', [{ STN_ID: 1, RN_60M: 80, TA: -100 }]);
+  const spikePack = await buildAwsVariablePack(spikeRoot, '202608121000', '202608121001', 'RN_60M', {
+    catalog: { byId: new Map(), stations: [{ STN_ID: 1 }] }
+  });
+  const sv = new Int16Array(spikePack.binary.buffer, spikePack.binary.byteOffset, spikePack.binary.length / 2);
+  assert.strictEqual(sv[0], 0);
+  assert.strictEqual(sv[1], 80);
 
   console.log('OK test_aws_min_pack');
   await fsp.rm(tmp, { recursive: true, force: true });

@@ -28,13 +28,15 @@ const {
 } = require('./kma_fetch/utils/aws_stn_catalog');
 const {
   deriveAwsPackDir,
-  getOrBuildAwsTaPack,
+  getOrBuildAwsVariablePack,
   parseTimestampKorStrict,
   parsePackVariables,
   packDayBounds,
   loadCachedManifest,
   kstTodayYmd,
   PACK_SCHEMA_VERSION,
+  PACK_SLUG_TO_VARIABLE,
+  SUPPORTED_PACK_VARIABLES,
   isPackImmutableCacheable,
   packManifestCacheHeaders
 } = require('./kma_fetch/utils/aws_min_pack');
@@ -152,16 +154,26 @@ const convertKSTToGMTString = (dateString) => {
    * Pack binary: past complete → immutable + ETag(sha256); today/incomplete → no-store.
    * Registered before static so Cache-Control is not overwritten by @fastify/static defaults.
    */
-  fastify.get('/datasets/aws/ta/1m/:day/ta.i16le', async (request, reply) => {
+  fastify.get('/datasets/aws/:slug/1m/:day/:file', async (request, reply) => {
+    const slug = String(request.params.slug || '').toLowerCase();
     const day = String(request.params.day || '');
+    const file = String(request.params.file || '');
+    const variable = PACK_SLUG_TO_VARIABLE[slug];
+    if (!variable) {
+      return reply.code(400).send({
+        error: `Unsupported pack slug: ${slug}. Supported: ${SUPPORTED_PACK_VARIABLES.join(', ')}`
+      });
+    }
     if (!/^\d{8}$/.test(day)) {
       return reply.code(400).send({ error: 'Invalid day. Expected YYYYMMDD' });
     }
-    const dayDir = path.join(awsPackDir, 'ta', '1m', day);
-    const binPath = path.join(dayDir, 'ta.i16le');
+    if (file !== `${slug}.i16le`) {
+      return reply.code(404).send({ error: 'Pack binary not found', slug, day, file });
+    }
+    const binPath = path.join(awsPackDir, slug, '1m', day, `${slug}.i16le`);
     try {
       const binary = await fs.readFile(binPath);
-      const cached = await loadCachedManifest(awsPackDir, day);
+      const cached = await loadCachedManifest(awsPackDir, day, variable);
       const today = kstTodayYmd();
       const immutable = cached && isPackImmutableCacheable(cached) && day !== today;
       if (immutable) {
@@ -187,7 +199,7 @@ const convertKSTToGMTString = (dateString) => {
       return reply.send(binary);
     } catch (err) {
       if (err.code === 'ENOENT') {
-        return reply.code(404).send({ error: 'Pack binary not found', day });
+        return reply.code(404).send({ error: 'Pack binary not found', slug, day });
       }
       fastify.log.error(err);
       return reply.code(500).send({ error: 'Internal server error', details: err.message });
@@ -332,23 +344,34 @@ const convertKSTToGMTString = (dateString) => {
       }
       throw err;
     }
-    // 현재 TA만. 복수 요청이면 지원 변수 url만 채울 예정 (지금은 TA 단일 manifest).
-    if (variables.length !== 1 || variables[0] !== 'TA') {
-      return reply.code(400).send({
-        error: `Unsupported pack variable combination: ${variables.join(',')}. Supported: TA`
-      });
-    }
     try {
-      const result = await getOrBuildAwsTaPack(awsJsonDir, awsPackDir, fromKor, toKor, {
-        catalog: awsStnCatalog,
-        force: request.query.force === '1' || request.query.force === 'true'
-      });
-      const { manifest } = result;
-      const cacheHeaders = packManifestCacheHeaders(manifest);
-      reply.header('Cache-Control', cacheHeaders['Cache-Control']);
-      if (cacheHeaders.ETag) reply.header('ETag', cacheHeaders.ETag);
-      reply.header('X-AWS-Pack-Schema-Version', String(manifest.schemaVersion || PACK_SCHEMA_VERSION));
-      return manifest;
+      const force = request.query.force === '1' || request.query.force === 'true';
+      const items = [];
+      for (const v of variables) {
+        const result = await getOrBuildAwsVariablePack(awsJsonDir, awsPackDir, fromKor, toKor, v, {
+          catalog: awsStnCatalog,
+          force
+        });
+        items.push(result.manifest);
+      }
+      if (items.length === 1) {
+        const manifest = items[0];
+        const cacheHeaders = packManifestCacheHeaders(manifest);
+        reply.header('Cache-Control', cacheHeaders['Cache-Control']);
+        if (cacheHeaders.ETag) reply.header('ETag', cacheHeaders.ETag);
+        reply.header('X-AWS-Pack-Schema-Version', String(manifest.schemaVersion || PACK_SCHEMA_VERSION));
+        return manifest;
+      }
+      const allImmutable = items.every((m) => isPackImmutableCacheable(m));
+      reply.header('Cache-Control', allImmutable ? 'public, max-age=31536000, immutable' : 'no-store');
+      reply.header('X-AWS-Pack-Schema-Version', String(PACK_SCHEMA_VERSION));
+      return {
+        schemaVersion: PACK_SCHEMA_VERSION,
+        from: fromKor,
+        to: toKor,
+        variables,
+        items
+      };
     } catch (err) {
       if (err.code === 'BAD_QUERY') {
         return reply.code(400).send({ error: err.message });

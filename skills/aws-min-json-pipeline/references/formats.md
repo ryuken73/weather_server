@@ -20,7 +20,7 @@ STN_ID#TM#LAT#LON#HT#WD#WS#TA#HM#PA#PS#RN_YN#RN_1HR#RN_24HR#RN_15M#RN_60M#WD_INS
 
 ```text
 https://apihub-pub.kma.go.kr/api/typ01/cgi-bin/url/nph-aws2_min
-  ?tm1={YYYYMMDDHHmm}&tm2={YYYYMMDDHHmm}&stn=0&disp=0&help=0&authKey=...
+  ?tm1={YYYYMMDDHHmm}&tm2={YYYYMMDDHHmm}&stn=0&disp=0&help=1&authKey=...
 ```
 
 요청 인자 요약:
@@ -30,7 +30,7 @@ https://apihub-pub.kma.go.kr/api/typ01/cgi-bin/url/nph-aws2_min
 | `tm1` / `tm2` | KST. 전체지점(`stn=0`)이면 구간 **≤ 10분** |
 | `stn` | `0` = 전체 |
 | `disp` | `0` 고정폭, `1` CSV |
-| `help` | `0` 짧은 헤더, `2` 값만 |
+| `help` | `0` 짧은 헤더, `1` 필드 설명 포함, `2` 값만 |
 
 데이터 컬럼(공백/`disp=0`):
 
@@ -40,6 +40,10 @@ YYMMDDHHMI STN WD1 WS1 WDS WSS WD10 WS10 TA RE RN-15m RN-60m RN-12H RN-DAY HM PA
 
 단위는 **물리값**(도, m/s, °C, %, hPa, mm).  
 `-50` 이하·`-99.9` 류는 결측으로 본다.
+
+원문 샘플(1분, `stn=0`, `disp=0`, `help=1`, CP949→UTF-8):  
+`skills/aws-min-json-pipeline/assets/nph-aws2_min_202608131200.txt`  
+(`#START7777` + 필드 설명 + 컬럼 헤더 + 지점 데이터 + `#7777END`. 운영 fetch는 `help=0`. `--save-raw` 시 `work/in/apihub/`에도 쌓이지만 gitignore.)
 
 Pack binary로 넣을 때 (`encodeTaToI16` 후 temporal QC, schemaVersion 3):
 
@@ -63,7 +67,22 @@ JSON으로 넣을 때 (`work/fetch_aws_apihub.js`):
 | WDS / WSS | `WD_INS` / `WS_INS` | ×10 |
 | TA / HM / PA / PS | 동일 | ×10 |
 | RE | `RN_YN` | 0/1 |
-| RN-15m / RN-60m / RN-DAY | `RN_15M` / `RN_60M`·`RN_1HR` / `RN_24HR` | ×10 |
+| RN-15m | `RN_15M` | ×10 |
+| RN-60m | `RN_60M` (+ 호환 별칭 `RN_1HR`, 원본 변수가 아님) | ×10 |
+| RN-12H (`parts[12]`) | `RN_12HR` | ×10 |
+| RN-DAY | `RN_24HR` | ×10 |
+| RE | `RN_YN` | 0/1. 음수/≤-50 → null. pack 대상 아님 |
 | (없음) | `LAT`,`LON`,`HT`,`STN_NAME` | 코드표 |
+
+강수 pack (`encodeRainToI16`, schemaVersion 3, TA QC 없음):
+
+| 원천 (JSON ×10 mm) | pack Int16 |
+| --- | --- |
+| `0` | `0` (0.0 mm, 결측 아님) |
+| 양수 (예: `15` = 1.5 mm) | 그대로 |
+| `null` / 비유한 | `-32768` |
+| ≤ `-500` (물리 ≤ -50 mm, Hub `-99.9` 등) | `-32768` |
+| `< 0` (그 외 음수) | `-32768` |
+| `> 32767` | `-32768` + manifest warning |
 
 일반 사용자 도메인 `apihub.kma.go.kr`는 기업 키로 **403**이 날 수 있다 → 반드시 `apihub-pub`.

@@ -266,10 +266,12 @@ paths:
         KST **하루** 1분 timeline의 변수별 Int16 LE pack manifest.
         권장 query: `date=YYYYMMDD` (또는 YYYY-MM-DD) → 서버가 `0000–2359`로 펼친다.
         레거시: `from`/`to` (YYYYMMDDHHMM)도 허용.
-        `variable` 기본 `TA`. `FULL` 없음. 복수 지정은 `variable=TA,WS` (현재 TA만 구현).
-        Binary는 변수별 파일 (`data.url`, 예: `/datasets/aws/ta/1m/{day}/ta.i16le`).
-        layout: FRAME_MAJOR_STATION_MINOR, TA scale 0.1℃, missing -32768.
+        `variable` 기본 `TA`. 지원: `TA, RN_15M, RN_60M, RN_12HR, RN_24HR`. `FULL` 없음.
+        단일 변수는 기존과 같이 해당 manifest. 복수는 `{ variables, items: [manifest...] }` (binary는 섞지 않음).
+        Binary는 변수별 파일 (`data.url`, 예: `/datasets/aws/ta/1m/{day}/ta.i16le`, `/datasets/aws/rn_60m/1m/{day}/rn_60m.i16le`).
+        layout: FRAME_MAJOR_STATION_MINOR, scale 0.1, missing -32768.
         TA 결측: null, sentinel -999, Hub 물리 ≤ -50℃(×10 ≤ -500), > 60℃ → -32768. 정상 음수 유지.
+        강수 결측: null/비유한, Hub ≤ -50mm, 음수, Int16 overflow → -32768. **0.0 mm는 binary 0**. TA temporal QC 없음.
         Binary URL: 과거 complete는 immutable+ETag, 오늘/미완은 no-store.
         schemaVersion 3. TA temporal QC( pack 전용 ): 1분 |ΔTA|>3℃ 또는 고립 스파이크 → -32768. manifest `qc.taTemporal`. /exact는 원천 유지.
         과거 완결일(`complete:true`)은 디스크 캐시 + immutable.
@@ -310,8 +312,8 @@ paths:
             default: TA
             example: TA
           description: |
-            기본 TA. comma로 복수 (`TA,WS`). `FULL`은 400.
-            현재 구현은 TA만. 미지원 변수는 400.
+            기본 TA. 지원 `TA,RN_15M,RN_60M,RN_12HR,RN_24HR`.
+            comma 복수 시 변수별 manifest 배열. `FULL`·미지원은 400.
         - name: force
           in: query
           required: false
@@ -989,11 +991,11 @@ components:
 
     AwsMinPackManifest:
       type: object
-      description: 1분 TA pack manifest (binary는 data.url)
+      description: 1분 변수별 pack manifest (binary는 data.url)
       properties:
         schemaVersion:
           type: integer
-          example: 1
+          example: 3
         datasetId:
           type: string
           example: aws-ta-1m-20260812-v3a1b2c3d
@@ -1002,10 +1004,17 @@ components:
           example: KMA_AWS_MIN
         variable:
           type: string
+          enum: [TA, RN_15M, RN_60M, RN_12HR, RN_24HR]
           example: TA
+        sourceField:
+          type: string
+          example: RN-60m
         unit:
           type: string
           example: degC
+        accumulation:
+          type: object
+          additionalProperties: true
         timezone:
           type: string
           example: Asia/Seoul

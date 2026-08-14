@@ -30,10 +30,12 @@ function apiRowToDbShape(parts, nameById, stnMeta) {
   const re = Number(parts[9]);
   const rn15 = Number(parts[10]);
   const rn60 = Number(parts[11]);
-  const rnDay = Number(parts[13]);
+  const rn12 = Number(parts[12]); // RN-12H
+  const rnDay = Number(parts[13]); // RN-DAY
   const hm = Number(parts[14]);
   const pa = Number(parts[15]);
   const ps = Number(parts[16]);
+  const rn60Scaled = scale10(rn60);
 
   return {
     STN_NAME: nameById[String(stnId)] == null ? null : nameById[String(stnId)],
@@ -49,13 +51,14 @@ function apiRowToDbShape(parts, nameById, stnMeta) {
     PA: scale10(pa),
     PS: scale10(ps),
     RN_YN: isMissing(re) ? null : re === 0 ? 0 : 1,
-    RN_1HR: scale10(rn60),
+    // RN_1HR is an alias of RN-60m (not a distinct Hub field). Keep for JSON consumers; pack uses RN_60M.
+    RN_1HR: rn60Scaled,
     RN_6HR: null,
-    RN_12HR: null,
+    RN_12HR: scale10(rn12),
     RN_24HR: scale10(rnDay),
     RN_48HR: null,
     RN_15M: scale10(rn15),
-    RN_60M: scale10(rn60),
+    RN_60M: rn60Scaled,
     WD_INS: scale10(wds),
     WS_INS: scale10(wss)
   };

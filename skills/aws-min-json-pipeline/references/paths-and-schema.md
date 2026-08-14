@@ -12,16 +12,20 @@
 .../aws/2026-08-12/AWS_MIN_202608121533.json
 ```
 
-Pack 출력 (변수별 일파일. 지금은 TA만):
+Pack 출력 (변수별 일파일):
 
 ```text
 {resolveBaseDir('out_data')}/aws/pack/ta/1m/{yyyyMMdd}/ta.i16le
-{resolveBaseDir('out_data')}/aws/pack/ta/1m/{yyyyMMdd}/manifest.json
+{resolveBaseDir('out_data')}/aws/pack/rn_15m/1m/{yyyyMMdd}/rn_15m.i16le
+{resolveBaseDir('out_data')}/aws/pack/rn_60m/1m/{yyyyMMdd}/rn_60m.i16le
+{resolveBaseDir('out_data')}/aws/pack/rn_12hr/1m/{yyyyMMdd}/rn_12hr.i16le
+{resolveBaseDir('out_data')}/aws/pack/rn_24hr/1m/{yyyyMMdd}/rn_24hr.i16le
+(+ 각 디렉터리 manifest.json)
 ```
 
-과거 완결일은 backfill/`warm_aws_ta_pack.js`/`main_AWS` 어제 워밍으로 미리 쓴다. `variable=FULL` 없음.
+과거 완결일은 backfill/`warm_aws_min_packs.js`/`main_AWS` 어제 워밍으로 미리 쓴다. `variable=FULL` 없음.
 
-HTTP binary: `/datasets/aws/ta/1m/{yyyyMMdd}/ta.i16le`  
+HTTP binary: `/datasets/aws/{slug}/1m/{yyyyMMdd}/{slug}.i16le`  
 override: `AWS_JSON_DIR`, `AWS_PACK_DIR`.
 
 ## JSON 항목 shape
@@ -32,6 +36,8 @@ override: `AWS_JSON_DIR`, `AWS_PACK_DIR`.
 | `STN_ID`, `TM` | TM = `YYYYMMDDHHMM` KST |
 | `LAT`, `LON`, `HT` | |
 | `TA` 등 | ×10 정수 (277 = 27.7℃) |
+| `RN_15M` / `RN_60M` / `RN_12HR` / `RN_24HR` | ×10 mm. Hub `RN-15m`/`RN-60m`/`RN-12H`/`RN-DAY` |
+| `RN_1HR` | `RN-60m` 별칭 (호환). pack 이름 아님 |
 | `LAW_ADDR_*` | **디스크에 없음**. HTTP enrich / pack stations / `/stations` |
 
 코드표:
@@ -54,10 +60,20 @@ override: `AWS_JSON_DIR`, `AWS_PACK_DIR`.
 
 `byteLength = frameCount × stationCount × 2`
 
+운영 고정 (NODE_ENV production|prod, env override 없을 때):
+
+| | 경로 |
+| --- | --- |
+| JSON 루트 | `/data/node_project/weather_data/in_data/aws` |
+| Pack 루트 | `/data/node_project/weather_server/data/weather/out_data/aws/pack` |
+| Pack 일파일 | `.../pack/{slug}/1m/{yyyyMMdd}/{slug}.i16le`, `manifest.json` |
+
+개발: `{BASE_DIR}/in_data/aws`, `{BASE_DIR}/out_data/aws/pack`. override: `AWS_JSON_DIR`, `AWS_PACK_DIR`.
+
 ## HTTP
 
 - 2분 호환·임의 구간 JSON: `/api/aws/min`, `/api/aws/min/range`
-- 1분 일 pack: `/api/aws/min/pack` (`variable=TA`, 이후 comma 복수)
+- 1분 일 pack: `/api/aws/min/pack` (`variable=TA|RN_15M|RN_60M|RN_12HR|RN_24HR`, comma 복수 가능)
 - 1분 단건: `/api/aws/min/exact`, `/api/aws/min?intervalMinutes=1`
 - 카탈로그: `/api/aws/stations`
 

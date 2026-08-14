@@ -49,16 +49,16 @@ Pack binary: `out_data/aws/pack/` → `/datasets/aws/...` (env `AWS_PACK_DIR`).
 - **권장**: `date=YYYYMMDD` (또는 `YYYY-MM-DD`) → 서버가 KST `0000–2359` 하루로 펼침
 - 레거시: `from`/`to` (YYYYMMDDHHMM)도 허용
 - 1분 exact, 최대 1440 frame
-- `variable` 기본 `TA`. `FULL` 없음. 이후 `variable=TA,WS`처럼 복수 → 요청한 변수 url만
-- 디스크: 변수별 `{var}.i16le` + 공유 `stations[]` (지금은 `ta.i16le`만)
-- 응답: pack manifest (`intervalMinutes:1`, `stations[]`, `data.url`, `sha256`, `missingTimestamps`, `complete`)
-- Binary: `GET {data.url}` → Int16 LE, scale 0.1℃, missing `-32768`, FRAME_MAJOR
-- TA 결측 정규화: `null`/비유한, sentinel `-999`, Hub 계약 물리 ≤ -50℃(×10 ≤ -500), > 60℃ → `-32768`. 정상 음수 유지
+- `variable` 기본 `TA`. 지원 `TA, RN_15M, RN_60M, RN_12HR, RN_24HR`. `FULL` 없음
+- 단일 변수 → 해당 manifest. 복수 `variable=TA,RN_60M` → `{ variables, items: [manifest...] }` (binary는 섞지 않음)
+- 디스크: `ta/1m/{day}/ta.i16le`, `rn_15m/1m/{day}/rn_15m.i16le`, `rn_60m`, `rn_12hr`, `rn_24hr`
+- Binary: `GET {data.url}` → Int16 LE, scale 0.1, missing `-32768`, FRAME_MAJOR
+- TA 결측: `null`/비유한, sentinel `-999`, Hub ≤ -50℃, > 60℃ → `-32768`. 정상 음수 유지
+- 강수 결측: `null`/비유한, Hub ≤ -50mm, 음수, Int16 overflow → `-32768`. **0.0 mm = 0**
 - Binary 캐시: 과거 `complete:true` → `Cache-Control: public, max-age=31536000, immutable` + ETag(sha256)/304. 오늘·미완 → `no-store`
 - `schemaVersion: 3` (구 pack은 재빌드)
-- Pack temporal QC: 1분 급변·고립 스파이크 → `-32768` (manifest `qc.taTemporal`). `/exact`는 원천 유지
-- 생성: backfill 종료 후, `main_AWS`가 어제 하루 워밍, 또는 `warm_aws_ta_pack.js`. 오늘은 요청 시 재빌드
-- 과거 `complete:true` → 디스크 캐시 + immutable / today → `no-store`
+- Pack temporal QC는 **TA만**. 강수는 프레임 간 재합산/QC 없음. `/exact`는 원천 유지
+- 생성: backfill 종료 후, `main_AWS`가 어제 워밍, 또는 `warm_aws_min_packs.js`. 오늘은 요청 시 재빌드
 - Binary URL도 동일 캐시 정책 (전용 route, ETag=sha256)
 - `400` (`FULL`·미지원 변수·date 누락) / `404` (원자료 전무) / `500`
 

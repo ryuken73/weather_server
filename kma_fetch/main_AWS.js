@@ -13,7 +13,8 @@ const { deriveAwsJsonDir } = require('./utils/aws_min_json');
 const {
   deriveAwsPackDir,
   warmAwsDayPack,
-  kstYmdDaysAgo
+  kstYmdDaysAgo,
+  SUPPORTED_PACK_VARIABLES
 } = require('./utils/aws_min_pack');
 
 const PROJECT_ROOT = path.join(__dirname, '..');
@@ -41,7 +42,10 @@ function scheduleYesterdayPackWarm(catalog) {
   if (yesterdayPackWarmed === yesterday || yesterdayPackWarmInFlight) return;
   yesterdayPackWarmInFlight = (async () => {
     try {
-      const result = await warmAwsDayPack(awsJsonDir, awsPackDir, yesterday, { catalog });
+      const result = await warmAwsDayPack(awsJsonDir, awsPackDir, yesterday, {
+        catalog,
+        variables: [...SUPPORTED_PACK_VARIABLES]
+      });
       const complete = Boolean(result.manifest && result.manifest.complete);
       const { hour, minute } = kstHourMinute();
       // lookback ~30분이 어제 끝분을 더 채울 수 있으면 다음 틱에 재시도
@@ -49,11 +53,13 @@ function scheduleYesterdayPackWarm(catalog) {
       if (complete || pastLookback) {
         yesterdayPackWarmed = yesterday;
       }
+      const itemSummary = (result.items || [])
+        .map((i) => `${i.variable}:${i.ok ? (i.fromCache ? 'cache' : 'built') : 'fail'}`)
+        .join(' ');
       console.log(
-        'yesterday TA pack',
+        'yesterday packs',
         yesterday,
-        result.fromCache ? 'cache' : 'built',
-        complete ? 'complete' : 'incomplete'
+        itemSummary || `${result.fromCache ? 'cache' : 'built'} ${complete ? 'complete' : 'incomplete'}`
       );
     } catch (err) {
       console.error('yesterday TA pack warm failed', yesterday, err.message || err);

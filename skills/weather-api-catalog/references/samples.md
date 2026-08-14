@@ -31,8 +31,11 @@ GET {base}/api/aws/min/exact?timestamp_kor=202608121533
 GET {base}/api/aws/min?timestamp_kor=202608121533&intervalMinutes=1
 GET {base}/api/aws/min/pack?date=20260812&variable=TA
 GET {base}/api/aws/min/pack?date=2026-08-12
+GET {base}/api/aws/min/pack?date=20260812&variable=RN_60M
+GET {base}/api/aws/min/pack?date=20260812&variable=TA,RN_15M,RN_60M,RN_12HR,RN_24HR
 GET {base}/datasets/aws/ta/1m/20260812/ta.i16le
-# 레거시: from&to=YYYYMMDDHHMM 도 허용. variable=FULL 은 400. 이후 예: variable=TA,WS
+GET {base}/datasets/aws/rn_60m/1m/20260812/rn_60m.i16le
+# 레거시: from&to=YYYYMMDDHHMM 도 허용. variable=FULL 은 400
 ```
 
 ## IR105 JSON

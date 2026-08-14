@@ -46,31 +46,22 @@ async function mapLimit(items, limit, fn) {
   return out;
 }
 
-function resolveLocalPath(baseDir, dir) {
-  return path.isAbsolute(dir) ? dir : path.resolve(baseDir, dir);
-}
+const {
+  PRODUCTION_AWS_JSON_DIR,
+  isProductionNodeEnv,
+  resolveEnvPath,
+  deriveAwsJsonDirFromBase
+} = require('./aws_paths');
 
 /**
- * main_AWS.js 와 동일: BASE_DIR 기준으로 in_data/aws
- * AWS_JSON_DIR 이 있으면 그 경로를 우선한다.
+ * main_AWS.js / backfill / server 와 동일 JSON 루트.
+ * 우선순위: AWS_JSON_DIR → 운영 고정 → BASE_DIR 파생
  */
 function deriveAwsJsonDir(projectRoot, env = process.env) {
-  if (env.AWS_JSON_DIR) {
-    return resolveLocalPath(projectRoot, env.AWS_JSON_DIR);
-  }
-
-  const base = env.BASE_DIR || './data/weather';
-  const resolved = resolveLocalPath(projectRoot, base);
-  const normalized = path.normalize(resolved);
-  const baseName = path.basename(normalized);
-
-  if (baseName === 'in_data') {
-    return path.join(normalized, 'aws');
-  }
-  if (baseName === 'out_data') {
-    return path.join(path.dirname(normalized), 'in_data', 'aws');
-  }
-  return path.join(normalized, 'in_data', 'aws');
+  const override = resolveEnvPath(projectRoot, env.AWS_JSON_DIR);
+  if (override) return override;
+  if (isProductionNodeEnv(env)) return PRODUCTION_AWS_JSON_DIR;
+  return deriveAwsJsonDirFromBase(projectRoot, env.BASE_DIR || './data/weather');
 }
 
 function folderDateFromTimestampKor(timestampKor) {

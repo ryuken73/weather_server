@@ -26,6 +26,10 @@ const fsp = require('fs/promises');
 const path = require('path');
 const axios = require('axios');
 const { DateTime } = require('luxon');
+const {
+  apiRowToDbShape,
+  parseApiText
+} = require('../kma_fetch/services/aws_apihub_min');
 
 const WORK_DIR = __dirname;
 const OUT_DIR = path.join(WORK_DIR, 'out');
@@ -36,7 +40,6 @@ const STN_CODE_PATH = path.join(WORK_DIR, '..', 'kma_fetch', 'config', 'aws_stn_
 const API_BASE = 'https://apihub-pub.kma.go.kr/api/typ01/cgi-bin/url/nph-aws2_min';
 const ZONE = 'Asia/Seoul';
 const WINDOW_MINUTES = 10;
-const MISSING_LT = -50; // 문서: -50 이하면 결측
 
 function loadDotenv() {
   try {
@@ -128,89 +131,6 @@ function sleep(ms) {
 
 function folderDateFromTm(tm) {
   return `${tm.slice(0, 4)}-${tm.slice(4, 6)}-${tm.slice(6, 8)}`;
-}
-
-function scale10(v) {
-  if (v == null || Number.isNaN(v)) return null;
-  if (v <= MISSING_LT) return null;
-  return Math.round(v * 10);
-}
-
-function scaleRain(v) {
-  // DB/내부 JSON은 정수(0.1mm 단위로 보는 편이 기존 #파일과 맞음: 1.0mm → 10)
-  return scale10(v);
-}
-
-function isMissing(v) {
-  return v == null || Number.isNaN(v) || v <= MISSING_LT;
-}
-
-/**
- * API 물리단위 → main_AWS MSSQL JSON 과 같은 스케일
- * LAT/LON/HT 는 코드표에서 보강
- */
-function apiRowToDbShape(parts, nameMap, stnMeta) {
-  // YYMMDDHHMI STN WD1 WS1 WDS WSS WD10 WS10 TA RE RN-15m RN-60m RN-12H RN-DAY HM PA PS TD
-  const tm = parts[0];
-  const stnId = Number(parts[1]);
-  const meta = stnMeta.get(String(stnId)) || {};
-  const wd1 = Number(parts[2]);
-  const ws1 = Number(parts[3]);
-  const wds = Number(parts[4]);
-  const wss = Number(parts[5]);
-  const ta = Number(parts[8]);
-  const re = Number(parts[9]);
-  const rn15 = Number(parts[10]);
-  const rn60 = Number(parts[11]);
-  const rnDay = Number(parts[13]);
-  const hm = Number(parts[14]);
-  const pa = Number(parts[15]);
-  const ps = Number(parts[16]);
-
-  return {
-    STN_NAME: nameMap[String(stnId)] == null ? null : nameMap[String(stnId)],
-    STN_ID: stnId,
-    TM: tm,
-    LAT: meta.LAT != null ? meta.LAT : null,
-    LON: meta.LON != null ? meta.LON : null,
-    HT: meta.HT != null ? meta.HT : null,
-    WD: scale10(wd1),
-    WS: scale10(ws1),
-    TA: scale10(ta),
-    HM: scale10(hm),
-    PA: scale10(pa),
-    PS: scale10(ps),
-    RN_YN: isMissing(re) ? null : (re === 0 ? 0 : 1),
-    RN_1HR: scaleRain(rn60),
-    RN_6HR: null,
-    RN_12HR: null,
-    RN_24HR: scaleRain(rnDay),
-    RN_48HR: null,
-    RN_15M: scaleRain(rn15),
-    RN_60M: scaleRain(rn60),
-    WD_INS: scale10(wds),
-    WS_INS: scale10(wss)
-  };
-}
-
-function parseApiText(text) {
-  const byTm = new Map();
-  for (const rawLine of text.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (!line || line.startsWith('#')) continue;
-    // skip header-ish
-    if (/^YYMMDDHHMI/i.test(line) || /^KST\b/i.test(line)) continue;
-
-    const parts = line.split(/[,\s]+/).filter(Boolean);
-    if (parts.length < 17) continue;
-    if (!/^\d{12}$/.test(parts[0])) continue;
-    if (!/^\d+$/.test(parts[1])) continue;
-
-    const tm = parts[0];
-    if (!byTm.has(tm)) byTm.set(tm, []);
-    byTm.get(tm).push(parts);
-  }
-  return byTm;
 }
 
 function buildWindows(fromDt, toDt) {

@@ -9,19 +9,15 @@ const fs = require('fs');
 const path = require('path');
 const dotenv = require('dotenv');
 
-const envMode = process.env.NODE_ENV || 'development';
+const envMode = process.env.NODE_ENV === 'prod' ? 'production' : (process.env.NODE_ENV || 'development');
 dotenv.config({ path: path.resolve(__dirname, `.env.${envMode}`) });
 
-const BASE_DIR = process.env.BASE_DIR || './data/weather';
+const { deriveAwsJsonDir } = require('./utils/aws_min_json');
+
+const PROJECT_ROOT = path.resolve(__dirname, '..');
 
 function resolveInDataAws() {
-  const normalized = path.normalize(
-    path.isAbsolute(BASE_DIR) ? BASE_DIR : path.resolve(__dirname, '..', BASE_DIR)
-  );
-  const baseName = path.basename(normalized);
-  if (baseName === 'in_data') return path.join(normalized, 'aws');
-  if (baseName === 'out_data') return path.join(path.dirname(normalized), 'in_data', 'aws');
-  return path.join(normalized, 'in_data', 'aws');
+  return deriveAwsJsonDir(PROJECT_ROOT);
 }
 
 function probeDisk(dayFilter) {
@@ -94,7 +90,8 @@ async function main() {
 
   const report = {
     probedAt: new Date().toISOString(),
-    BASE_DIR,
+    awsJsonDir: resolveInDataAws(),
+    BASE_DIR: process.env.BASE_DIR || null,
     disk,
     db: dbProbe,
     verdict: {

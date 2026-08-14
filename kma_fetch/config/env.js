@@ -1,8 +1,9 @@
 const dotenv = require('dotenv');
 const path = require('path');
 
-// NODE_ENV에 따라 적절한 .env 파일 로드
-const envMode = process.env.NODE_ENV || 'development'; // 기본값은 development
+// NODE_ENV에 따라 적절한 .env 파일 로드 (prod → production)
+const rawNodeEnv = process.env.NODE_ENV || 'development';
+const envMode = rawNodeEnv === 'prod' ? 'production' : rawNodeEnv;
 const envFile = `.env.${envMode}`; // 예: .env.development, .env.production
 dotenv.config({ path: path.resolve(__dirname, '../', envFile) });
 
