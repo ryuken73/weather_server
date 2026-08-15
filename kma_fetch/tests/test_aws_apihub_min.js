@@ -33,9 +33,15 @@ function main() {
       RN_60M: byId.get(530).RN_60M,
       RN_1HR: byId.get(530).RN_1HR,
       RN_12HR: byId.get(530).RN_12HR,
-      RN_24HR: byId.get(530).RN_24HR
+      RN_24HR: byId.get(530).RN_24HR,
+      WD: byId.get(42).WD,
+      WS: byId.get(42).WS,
+      WD_INS: byId.get(42).WD_INS,
+      WS_INS: byId.get(42).WS_INS,
+      HM: byId.get(42).HM,
+      TD: byId.get(42).TD
     },
-    { RN_15M: 5, RN_60M: 60, RN_1HR: 60, RN_12HR: 95, RN_24HR: 95 }
+    { RN_15M: 5, RN_60M: 60, RN_1HR: 60, RN_12HR: 95, RN_24HR: 95, WD: 410, WS: 36, WD_INS: 424, WS_INS: 40, HM: 588, TD: 208 }
   );
   assert.strictEqual(byId.get(679).RN_15M, 0);
   assert.strictEqual(byId.get(679).RN_60M, 0);

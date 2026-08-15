@@ -15,12 +15,10 @@
 Pack 출력 (변수별 일파일):
 
 ```text
-{resolveBaseDir('out_data')}/aws/pack/ta/1m/{yyyyMMdd}/ta.i16le
-{resolveBaseDir('out_data')}/aws/pack/rn_15m/1m/{yyyyMMdd}/rn_15m.i16le
-{resolveBaseDir('out_data')}/aws/pack/rn_60m/1m/{yyyyMMdd}/rn_60m.i16le
-{resolveBaseDir('out_data')}/aws/pack/rn_12hr/1m/{yyyyMMdd}/rn_12hr.i16le
-{resolveBaseDir('out_data')}/aws/pack/rn_24hr/1m/{yyyyMMdd}/rn_24hr.i16le
+{resolveBaseDir('out_data')}/aws/pack/{slug}/1m/{yyyyMMdd}/{slug}.i16le
 (+ 각 디렉터리 manifest.json)
+
+slug: ta, rn_15m, rn_60m, rn_12hr, rn_24hr, ws_ins, ws, wd_ins, wd, hm, td
 ```
 
 과거 완결일은 backfill/`warm_aws_min_packs.js`/`main_AWS` 어제 워밍으로 미리 쓴다. `variable=FULL` 없음.
@@ -37,6 +35,10 @@ override: `AWS_JSON_DIR`, `AWS_PACK_DIR`.
 | `LAT`, `LON`, `HT` | |
 | `TA` 등 | ×10 정수 (277 = 27.7℃) |
 | `RN_15M` / `RN_60M` / `RN_12HR` / `RN_24HR` | ×10 mm. Hub `RN-15m`/`RN-60m`/`RN-12H`/`RN-DAY` |
+| `WS` / `WS_INS` | ×10 m/s. Hub `WS1` / `WSS` |
+| `WD` / `WD_INS` | ×10 deg. Hub `WD1` / `WDS`. 무풍 360.0 → 3600 |
+| `HM` | ×10 %. Hub `HM` |
+| `TD` | ×10 ℃. Hub `TD`. MSSQL 조회는 `NULL AS TD` (Hub JSON만 값) |
 | `RN_1HR` | `RN-60m` 별칭 (호환). pack 이름 아님 |
 | `LAW_ADDR_*` | **디스크에 없음**. HTTP enrich / pack stations / `/stations` |
 
@@ -73,7 +75,7 @@ override: `AWS_JSON_DIR`, `AWS_PACK_DIR`.
 ## HTTP
 
 - 2분 호환·임의 구간 JSON: `/api/aws/min`, `/api/aws/min/range`
-- 1분 일 pack: `/api/aws/min/pack` (`variable=TA|RN_15M|RN_60M|RN_12HR|RN_24HR`, comma 복수 가능)
+- 1분 일 pack: `/api/aws/min/pack` (`variable=TA|RN_60M|WS_INS|...`, comma 복수 가능)
 - 1분 단건: `/api/aws/min/exact`, `/api/aws/min?intervalMinutes=1`
 - 카탈로그: `/api/aws/stations`
 

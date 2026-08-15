@@ -107,9 +107,8 @@ cd /path/to/weather_api
 
 NODE_ENV=production node kma_fetch/warm_aws_min_packs.js 20260811
 NODE_ENV=production node kma_fetch/warm_aws_ta_pack.js --yesterday   # TA wrapper
-NODE_ENV=production node kma_fetch/warm_aws_min_packs.js \
-  --from 20260801 --to 20260812 \
-  --variables TA,RN_15M,RN_60M,RN_12HR,RN_24HR --force
+NODE_ENV=production node kma_fetch/warm_aws_min_packs.js --from 20260801 --to 20260814 --force
+NODE_ENV=production node kma_fetch/warm_aws_min_packs.js --all-json --force
 ```
 
 기존 JSON에 `RN_12HR`가 없으면 Hub 재수집 후 pack:
@@ -131,7 +130,7 @@ AWS_FETCH_SOURCE=hub NODE_ENV=production node kma_fetch/backfill_aws_min.js \
 ```bash
 # manifest schemaVersion 3, qc.taTemporal(TA), accumulation(강수), complete
 curl -sS "https://weather-map.sbs.co.kr/api/aws/min/pack?date=20260811&variable=TA"
-curl -sS "https://weather-map.sbs.co.kr/api/aws/min/pack?date=20260811&variable=RN_60M"
+curl -sS "https://weather-map.sbs.co.kr/api/aws/min/pack?date=20260811&variable=RN_60M,WS_INS"
 ```
 
 `complete:true`여도 schema가 낮으면 `--force`. 오늘(미완)은 요청 시 재빌드되고 `no-store`.
@@ -209,7 +208,7 @@ NODE_ENV=production node kma_fetch/warm_aws_ta_pack.js --yesterday
 | `main_AWS.js` | 재기동 | 이후 **새 분**부터 1분 수집·STN_NAME 패치·auto/Hub |
 | `server.js` | 재기동 | `/api/aws/min/pack`, `/exact`, stations enrich, 2분 min/range |
 | `backfill_aws_min.js` | 필요 시 수동 | 과거 gap 메움 / `--refresh-fields RN_12HR` / `--force-refetch` + pack 워밍 |
-| `warm_aws_min_packs.js` | 필요 시 수동 | TA·강수 pack 생성 (`--variables`, `--force`). `warm_aws_ta_pack.js`는 TA wrapper |
+| `warm_aws_min_packs.js` | 필요 시 수동 | 전 변수 pack (`--all-json`, `--force`). `warm_aws_ta_pack.js`는 TA wrapper |
 | `patch_aws_min_stn_names.js` | 필요 시 수동 | 이미 쌓인 JSON의 STN_NAME만 (LAW는 HTTP enrich) |
 | `work/out` 복사 | 수동 | 과거 1분 파일을 `in_data`에 반영 |
 
@@ -220,11 +219,12 @@ NODE_ENV=production node kma_fetch/warm_aws_ta_pack.js --yesterday
 ## 1분 변수별 pack
 
 - Builder: `kma_fetch/utils/aws_min_pack.js` (`schemaVersion: 3`)
-- 변수별 일파일: `TA, RN_15M, RN_60M, RN_12HR, RN_24HR`. `variable=FULL` 없음
-- API: `GET /api/aws/min/pack?date=YYYYMMDD&variable=TA|RN_60M|...` (레거시 `from`/`to`, comma 복수)
+- 변수별 일파일: `TA, RN_15M, RN_60M, RN_12HR, RN_24HR, WS_INS, WS, WD_INS, WD, HM, TD`. `variable=FULL` 없음. `RN_1HR`/`RN_6HR`/`RN_48HR`/`RN_YN` 제외
+- API: `GET /api/aws/min/pack?date=YYYYMMDD&variable=TA|RN_60M|WS_INS|...` (레거시 `from`/`to`, comma 복수)
 - Binary: `/datasets/aws/{slug}/1m/{dayKey}/{slug}.i16le`
 - TA 결측 → `-32768`: `null`, sentinel `-999`, Hub 물리 ≤ -50℃(×10 ≤ -500), > 60℃. 정상 음수 유지
 - 강수 결측 → `-32768`: `null`, Hub ≤ -50mm, 음수, Int16 overflow. **0 mm는 0**. TA QC 없음
+- 풍속 0 유효. 풍향 0–360(무풍 360). 습도 0–100%. 이슬점 TA QC 없음
 - **Pack temporal QC** (TA만, 기본 on, `AWS_TA_QC=0`으로 off): 1분 |ΔTA| > 3℃ 또는 고립 스파이크 → `-32768`. `/exact`·디스크 JSON은 원천 그대로
 - Cache: 과거 complete binary/manifest → `immutable`+ETag; 오늘/미완 → `no-store`
 - 사전생성: backfill 종료, `main_AWS` 어제 워밍(전 변수), `warm_aws_min_packs.js`

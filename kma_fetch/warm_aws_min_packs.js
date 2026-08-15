@@ -1,12 +1,12 @@
 /**
  * 하루 또는 날짜 구간의 AWS 1분 pack을 디스크에 미리 만든다 (각 날 0000–2359).
  *
- *   node kma_fetch/warm_aws_min_packs.js 20260812 --variables TA,RN_15M,RN_60M,RN_12HR,RN_24HR
- *   node kma_fetch/warm_aws_min_packs.js --from 20260801 --to 20260812 --variables RN_15M,RN_60M,RN_12HR,RN_24HR --force
+ *   node kma_fetch/warm_aws_min_packs.js 20260812
+ *   node kma_fetch/warm_aws_min_packs.js --from 20260801 --to 20260814 --force
+ *   node kma_fetch/warm_aws_min_packs.js --all-json --force
  *   node kma_fetch/warm_aws_min_packs.js --yesterday
- *   node kma_fetch/warm_aws_min_packs.js --from 20260801 --to 20260812 --json-dir /data/node_project/weather_data/in_data/aws --variables RN_15M,RN_60M,RN_24HR
  *
- * --variables 생략 시 TA만 (기존 호환).
+ * --variables 생략 시 지원 변수 전부. TA만은 warm_aws_ta_pack.js.
  * env.js를 로드하므로 운영은 NODE_ENV=production. API_KEY 검사가 싫으면 USE_API=false.
  */
 const path = require('path');
@@ -31,9 +31,11 @@ function usage() {
   node kma_fetch/warm_aws_min_packs.js <YYYYMMDD|YYYY-MM-DD> [--variables LIST] [--force]
   node kma_fetch/warm_aws_min_packs.js --from <YYYYMMDD> --to <YYYYMMDD> [--variables LIST] [--force]
   node kma_fetch/warm_aws_min_packs.js --yesterday [--variables LIST] [--force]
+  node kma_fetch/warm_aws_min_packs.js --all-json [--force]
 
 Options:
-  --variables LIST  comma list. default TA. supported: ${SUPPORTED_PACK_VARIABLES.join(', ')}
+  --variables LIST  comma list. default all (${SUPPORTED_PACK_VARIABLES.join(', ')})
+  --all-json        every yyyy-MM-dd folder under JSON dir that has AWS_MIN_*.json
   --json-dir DIR    AWS_MIN JSON root
   --pack-dir DIR    pack output root
   --force           rebuild even if complete cache exists
@@ -85,16 +87,18 @@ function parseArgs(argv) {
     from: null,
     to: null,
     yesterday: false,
+    allJson: false,
     force: false,
     help: false,
     jsonDir: null,
     packDir: null,
-    variables: [ 'TA' ]
+    variables: [...SUPPORTED_PACK_VARIABLES]
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--help' || a === '-h') args.help = true;
     else if (a === '--yesterday') args.yesterday = true;
+    else if (a === '--all-json') args.allJson = true;
     else if (a === '--force') args.force = true;
     else if (a === '--from') {
       args.from = takeValue(argv, i, '--from');
@@ -123,7 +127,49 @@ function parseArgs(argv) {
   return args;
 }
 
-function resolveDays(args) {
+function listJsonDays(awsJsonDir) {
+  if (!fs.existsSync(awsJsonDir)) return [];
+  const names = fs.readdirSync(awsJsonDir);
+  const days = [];
+  for (const name of names) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(name)) continue;
+    const dayDir = path.join(awsJsonDir, name);
+    let stat;
+    try {
+      stat = fs.statSync(dayDir);
+    } catch (_) {
+      continue;
+    }
+    if (!stat.isDirectory()) continue;
+    let hasJson = false;
+    try {
+      hasJson = fs.readdirSync(dayDir).some((n) => /^AWS_MIN_\d{12}\.json$/.test(n));
+    } catch (_) {
+      continue;
+    }
+    if (hasJson) days.push(name.replace(/-/g, ''));
+  }
+  days.sort();
+  return days;
+}
+
+function resolveDays(args, awsJsonDir) {
+  if (args.allJson) {
+    if (args.yesterday || args.date) {
+      throw new Error('--all-json cannot be combined with a date or --yesterday');
+    }
+    const days = listJsonDays(awsJsonDir);
+    if (args.from != null || args.to != null) {
+      if (args.from == null || args.to == null) throw new Error('Both --from and --to are required to filter --all-json');
+      const from = parseDay(args.from);
+      const to = parseDay(args.to);
+      return days.filter((d) => d >= from && d <= to);
+    }
+    if (days.length === 0) {
+      throw new Error(`No AWS_MIN JSON day folders under ${awsJsonDir}`);
+    }
+    return days;
+  }
   if (args.yesterday) {
     if (args.date || args.from || args.to) {
       throw new Error('--yesterday cannot be combined with a date or --from/--to');
@@ -136,7 +182,7 @@ function resolveDays(args) {
     return enumerateDaysInclusive(parseDay(args.from), parseDay(args.to));
   }
   if (args.date) return [parseDay(args.date)];
-  throw new Error('Specify a date, --from/--to, or --yesterday');
+  throw new Error('Specify a date, --from/--to, --yesterday, or --all-json');
 }
 
 function describeDaySource(awsJsonDir, yyyymmdd) {
@@ -165,17 +211,17 @@ async function main() {
     process.exit(0);
   }
 
+  const awsJsonDir = resolveDir(args.jsonDir) || deriveAwsJsonDir(PROJECT_ROOT);
+  const awsPackDir = resolveDir(args.packDir) || deriveAwsPackDir(PROJECT_ROOT);
+
   let days;
   try {
-    days = resolveDays(args);
+    days = resolveDays(args, awsJsonDir);
   } catch (err) {
     console.error(err.message);
     usage();
     process.exit(1);
   }
-
-  const awsJsonDir = resolveDir(args.jsonDir) || deriveAwsJsonDir(PROJECT_ROOT);
-  const awsPackDir = resolveDir(args.packDir) || deriveAwsPackDir(PROJECT_ROOT);
   const catalog = loadStationCatalog();
   console.log('AWS JSON DIR:', awsJsonDir);
   console.log('AWS PACK DIR:', awsPackDir);

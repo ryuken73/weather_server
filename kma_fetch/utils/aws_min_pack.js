@@ -33,13 +33,20 @@ const PACK_SCHEMA_VERSION = 3;
 const TA_PHYSICAL_MISSING_MAX_C = -50;
 const TA_PHYSICAL_VALID_MAX_C = 60;
 const TA_SCALED_SENTINELS = Object.freeze(new Set([-999]));
-const RAIN_PHYSICAL_MISSING_MAX_MM = -50;
+const HUB_PHYSICAL_MISSING_MAX = -50;
+const WD_MAX_DEG = 360;
+const HM_MAX_PCT = 100;
+
+function toScaledOrNull(raw) {
+  if (raw == null || raw === '') return null;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return null;
+  return Math.round(n);
+}
 
 function encodeTaToI16(raw) {
-  if (raw == null || raw === '') return MISSING_I16;
-  const n = Number(raw);
-  if (!Number.isFinite(n)) return MISSING_I16;
-  const scaled = Math.round(n);
+  const scaled = toScaledOrNull(raw);
+  if (scaled == null) return MISSING_I16;
   if (TA_SCALED_SENTINELS.has(scaled)) return MISSING_I16;
   if (scaled <= TA_PHYSICAL_MISSING_MAX_C * 10) return MISSING_I16;
   if (scaled > TA_PHYSICAL_VALID_MAX_C * 10) return MISSING_I16;
@@ -48,18 +55,47 @@ function encodeTaToI16(raw) {
 }
 
 /**
- * Rain JSON is already ×10 mm integer.
- * 0 → 0 (valid 0.0 mm). null / non-number / Hub ≤ -50 / any negative → missing.
- * Values above Int16 max → missing (counted as overflow, not silent wrap).
+ * Rain / wind-speed JSON is already ×10. 0 is valid. Hub ≤ -50 and any negative → missing.
+ * Values above Int16 max → missing (no silent wrap).
  */
-function encodeRainToI16(raw) {
-  if (raw == null || raw === '') return MISSING_I16;
-  const n = Number(raw);
-  if (!Number.isFinite(n)) return MISSING_I16;
-  const scaled = Math.round(n);
-  if (scaled <= RAIN_PHYSICAL_MISSING_MAX_MM * 10) return MISSING_I16;
+function encodeNonNegativeToI16(raw) {
+  const scaled = toScaledOrNull(raw);
+  if (scaled == null) return MISSING_I16;
+  if (scaled <= HUB_PHYSICAL_MISSING_MAX * 10) return MISSING_I16;
   if (scaled < 0) return MISSING_I16;
   if (scaled > 32767) return MISSING_I16;
+  return scaled;
+}
+
+const encodeRainToI16 = encodeNonNegativeToI16;
+const encodeWindSpeedToI16 = encodeNonNegativeToI16;
+
+/** Wind direction ×10 deg. 0–360 inclusive; calm = 360.0 → 3600. No wrap. */
+function encodeWindDirToI16(raw) {
+  const scaled = toScaledOrNull(raw);
+  if (scaled == null) return MISSING_I16;
+  if (scaled <= HUB_PHYSICAL_MISSING_MAX * 10) return MISSING_I16;
+  if (scaled < 0 || scaled > WD_MAX_DEG * 10) return MISSING_I16;
+  return scaled;
+}
+
+/** Relative humidity ×10 %. 0 is valid. >100% → missing. */
+function encodeHumidityToI16(raw) {
+  const scaled = toScaledOrNull(raw);
+  if (scaled == null) return MISSING_I16;
+  if (TA_SCALED_SENTINELS.has(scaled)) return MISSING_I16;
+  if (scaled <= HUB_PHYSICAL_MISSING_MAX * 10) return MISSING_I16;
+  if (scaled < 0 || scaled > HM_MAX_PCT * 10) return MISSING_I16;
+  return scaled;
+}
+
+/** Dewpoint ×10 ℃. Hub ≤ -50 / -999 → missing. No TA temporal QC, no >60 clip. */
+function encodeDewpointToI16(raw) {
+  const scaled = toScaledOrNull(raw);
+  if (scaled == null) return MISSING_I16;
+  if (TA_SCALED_SENTINELS.has(scaled)) return MISSING_I16;
+  if (scaled <= HUB_PHYSICAL_MISSING_MAX * 10) return MISSING_I16;
+  if (scaled > 32767 || scaled < -32767) return MISSING_I16;
   return scaled;
 }
 
@@ -71,6 +107,7 @@ const PACK_VARIABLES = Object.freeze({
     scale: 0.1,
     source: 'KMA_AWS_MIN',
     sourceField: 'TA',
+    family: 'ta',
     encode: encodeTaToI16,
     temporalQc: 'ta'
   },
@@ -81,6 +118,7 @@ const PACK_VARIABLES = Object.freeze({
     scale: 0.1,
     source: 'KMA_APIHUB_nph-aws2_min',
     sourceField: 'RN-15m',
+    family: 'rain',
     accumulation: { type: 'rolling', windowMinutes: 15 },
     encode: encodeRainToI16
   },
@@ -91,6 +129,7 @@ const PACK_VARIABLES = Object.freeze({
     scale: 0.1,
     source: 'KMA_APIHUB_nph-aws2_min',
     sourceField: 'RN-60m',
+    family: 'rain',
     accumulation: { type: 'rolling', windowMinutes: 60 },
     encode: encodeRainToI16
   },
@@ -101,6 +140,7 @@ const PACK_VARIABLES = Object.freeze({
     scale: 0.1,
     source: 'KMA_APIHUB_nph-aws2_min',
     sourceField: 'RN-12H',
+    family: 'rain',
     accumulation: { type: 'rolling', windowMinutes: 720 },
     encode: encodeRainToI16
   },
@@ -111,12 +151,83 @@ const PACK_VARIABLES = Object.freeze({
     scale: 0.1,
     source: 'KMA_APIHUB_nph-aws2_min',
     sourceField: 'RN-DAY',
+    family: 'rain',
     accumulation: { type: 'day', timezone: 'Asia/Seoul' },
     encode: encodeRainToI16
+  },
+  WS_INS: {
+    jsonField: 'WS_INS',
+    slug: 'ws_ins',
+    unit: 'm/s',
+    scale: 0.1,
+    source: 'KMA_APIHUB_nph-aws2_min',
+    sourceField: 'WSS',
+    family: 'wind_speed',
+    encode: encodeWindSpeedToI16
+  },
+  WS: {
+    jsonField: 'WS',
+    slug: 'ws',
+    unit: 'm/s',
+    scale: 0.1,
+    source: 'KMA_APIHUB_nph-aws2_min',
+    sourceField: 'WS1',
+    family: 'wind_speed',
+    encode: encodeWindSpeedToI16
+  },
+  WD_INS: {
+    jsonField: 'WD_INS',
+    slug: 'wd_ins',
+    unit: 'deg',
+    scale: 0.1,
+    source: 'KMA_APIHUB_nph-aws2_min',
+    sourceField: 'WDS',
+    family: 'wind_dir',
+    encode: encodeWindDirToI16
+  },
+  WD: {
+    jsonField: 'WD',
+    slug: 'wd',
+    unit: 'deg',
+    scale: 0.1,
+    source: 'KMA_APIHUB_nph-aws2_min',
+    sourceField: 'WD1',
+    family: 'wind_dir',
+    encode: encodeWindDirToI16
+  },
+  HM: {
+    jsonField: 'HM',
+    slug: 'hm',
+    unit: 'pct',
+    scale: 0.1,
+    source: 'KMA_APIHUB_nph-aws2_min',
+    sourceField: 'HM',
+    family: 'humidity',
+    encode: encodeHumidityToI16
+  },
+  TD: {
+    jsonField: 'TD',
+    slug: 'td',
+    unit: 'degC',
+    scale: 0.1,
+    source: 'KMA_APIHUB_nph-aws2_min',
+    sourceField: 'TD',
+    family: 'dewpoint',
+    encode: encodeDewpointToI16
   }
 });
 
+const REQUIRED_PACK_VARIABLES = Object.freeze([
+  'TA',
+  'RN_15M',
+  'RN_60M',
+  'RN_12HR',
+  'RN_24HR',
+  'WS_INS'
+]);
 const SUPPORTED_PACK_VARIABLES = Object.freeze(Object.keys(PACK_VARIABLES));
+const EXCLUDED_PACK_ALIASES = Object.freeze({ RN_1HR: 'RN_60M' });
+const EXCLUDED_PACK_FIELDS = Object.freeze(['RN_6HR', 'RN_48HR', 'RN_YN']);
 const PACK_SLUG_TO_VARIABLE = Object.freeze(
   Object.fromEntries(SUPPORTED_PACK_VARIABLES.map((name) => [PACK_VARIABLES[name].slug, name]))
 );
@@ -322,6 +433,12 @@ function parsePackVariables(raw) {
         `variable=FULL is not supported. Request variables separately (e.g. variable=TA or variable=${SUPPORTED_PACK_VARIABLES.join(',')}).`
       );
     }
+    if (EXCLUDED_PACK_ALIASES[v]) {
+      fail(`${v} is an alias of ${EXCLUDED_PACK_ALIASES[v]} and is not a pack variable. Use variable=${EXCLUDED_PACK_ALIASES[v]}.`);
+    }
+    if (EXCLUDED_PACK_FIELDS.includes(v)) {
+      fail(`${v} is not packed. Supported: ${SUPPORTED_PACK_VARIABLES.join(', ')}`);
+    }
     if (!PACK_VARIABLES[v]) {
       fail(`Unsupported pack variable: ${v}. Supported: ${SUPPORTED_PACK_VARIABLES.join(', ')}`);
     }
@@ -413,12 +530,12 @@ async function buildAwsVariablePack(awsJsonDir, fromKor, toKor, variable, option
       const row = byId.get(stationIds[si]);
       if (!row) continue;
       const raw = row[jsonField];
-      if (spec.encode === encodeRainToI16 && raw != null && raw !== '') {
+      if (spec.family === 'rain' && raw != null && raw !== '') {
         const n = Number(raw);
         if (Number.isFinite(n)) {
           const scaled = Math.round(n);
           if (scaled > 32767) overflowCount += 1;
-          else if (scaled < 0 && scaled > RAIN_PHYSICAL_MISSING_MAX_MM * 10) negativeRainCount += 1;
+          else if (scaled < 0 && scaled > HUB_PHYSICAL_MISSING_MAX * 10) negativeRainCount += 1;
         }
       }
       int16[fi * stationCount + si] = spec.encode(raw);
@@ -583,14 +700,14 @@ async function getOrBuildAwsTaPack(awsJsonDir, packRoot, fromKor, toKor, options
 
 /**
  * 완료된 KST 하루(0000–2359) pack을 디스크에 만든다.
- * options.variables 기본 ['TA']. 복수면 items[]로 개별 성공/실패.
- * TA-only 호출은 기존처럼 { manifest, fromCache } 를 유지한다.
+ * options.variables 기본 = 지원 변수 전부. 복수면 items[]로 개별 성공/실패.
+ * TA만 쓰려면 variables: ['TA']. TA-only 호출은 { manifest, fromCache } 를 유지한다.
  */
 async function warmAwsDayPack(awsJsonDir, packRoot, yyyymmdd, options = {}) {
   const { from, to } = packDayBounds(yyyymmdd);
   const variables = options.variables
     ? parsePackVariables(Array.isArray(options.variables) ? options.variables.join(',') : options.variables)
-    : [VARIABLE_TA];
+    : [...SUPPORTED_PACK_VARIABLES];
 
   const items = [];
   for (const variable of variables) {
@@ -652,6 +769,7 @@ module.exports = {
   PACK_SCHEMA_VERSION,
   VARIABLE_TA,
   PACK_VARIABLES,
+  REQUIRED_PACK_VARIABLES,
   SUPPORTED_PACK_VARIABLES,
   PACK_SLUG_TO_VARIABLE,
   TA_PHYSICAL_MISSING_MAX_C,
@@ -659,6 +777,10 @@ module.exports = {
   deriveAwsPackDir,
   encodeTaToI16,
   encodeRainToI16,
+  encodeWindSpeedToI16,
+  encodeWindDirToI16,
+  encodeHumidityToI16,
+  encodeDewpointToI16,
   readTaQcConfig,
   applyTaTemporalQc,
   getPackVariableSpec,

@@ -65,13 +65,12 @@ JSON으로 넣을 때 (`work/fetch_aws_apihub.js`):
 | YYMMDDHHMI | `TM` | |
 | WD1 / WS1 | `WD` / `WS` | ×10 round |
 | WDS / WSS | `WD_INS` / `WS_INS` | ×10 |
-| TA / HM / PA / PS | 동일 | ×10 |
-| RE | `RN_YN` | 0/1 |
+| TA / HM / PA / PS / TD | 동일 | ×10. TD는 `parts[17]` |
+| RE | `RN_YN` | 0/1. 음수/≤-50 → null. pack 대상 아님 |
 | RN-15m | `RN_15M` | ×10 |
 | RN-60m | `RN_60M` (+ 호환 별칭 `RN_1HR`, 원본 변수가 아님) | ×10 |
 | RN-12H (`parts[12]`) | `RN_12HR` | ×10 |
 | RN-DAY | `RN_24HR` | ×10 |
-| RE | `RN_YN` | 0/1. 음수/≤-50 → null. pack 대상 아님 |
 | (없음) | `LAT`,`LON`,`HT`,`STN_NAME` | 코드표 |
 
 강수 pack (`encodeRainToI16`, schemaVersion 3, TA QC 없음):
@@ -86,3 +85,7 @@ JSON으로 넣을 때 (`work/fetch_aws_apihub.js`):
 | `> 32767` | `-32768` + manifest warning |
 
 일반 사용자 도메인 `apihub.kma.go.kr`는 기업 키로 **403**이 날 수 있다 → 반드시 `apihub-pub`.
+
+풍향 pack (`encodeWindDirToI16`): JSON ×10 deg, **0과 360.0(무풍, 3600)은 유효**. 범위 밖·Hub ≤ -50 → `-32768`.
+풍속 pack: 강수와 같이 **0은 유효**, 음수/Hub sentinel → 결측.
+습도: 0–100%(×10 0–1000). 이슬점: TA temporal QC 없음, >60℃ clip 없음.

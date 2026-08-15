@@ -14,8 +14,8 @@
  *   --dry-run          조회/저장 없이 대상 목록만 출력
  *   --sleep N          저장 성공 후 대기 ms (기본 200)
  *   --skip-pack        pack 워밍 생략
- *   --variables LIST   종료 후 워밍할 pack 변수 (기본 TA)
- *   --refresh-fields F 기존 JSON이 있어도 필드가 null이면 Hub 재수집 (예: RN_12HR)
+ *   --variables LIST   종료 후 워밍할 pack 변수 (기본: 지원 변수 전부)
+ *   --refresh-fields F 기존 JSON이 있어도 필드가 null이면 Hub 재수집 (예: RN_12HR,TD)
  *   --force-refetch    기존 JSON을 Hub 응답으로 atomic 교체
  *
  * env AWS_FETCH_SOURCE=auto|db|hub (기본 auto: DB 후 Hub)
@@ -46,7 +46,7 @@ const PATTERN_BASE = 'AWS_MIN_';
 const INTERVAL_MINUTES = 1;
 const SLOTS_PER_DAY = (24 * 60) / INTERVAL_MINUTES;
 const AWS_FETCH_SOURCE = (process.env.AWS_FETCH_SOURCE || 'auto').toLowerCase();
-const REFRESHABLE_FIELDS = Object.freeze(['RN_12HR']);
+const REFRESHABLE_FIELDS = Object.freeze(['RN_12HR', 'TD']);
 
 async function fetchRowsForTm(tm, pool, stnCatalog, source) {
   if (source === 'hub') {
@@ -76,8 +76,8 @@ Options:
   --dry-run
   --sleep ms
   --skip-pack
-  --variables TA,RN_15M,RN_60M,RN_12HR,RN_24HR   (default TA)
-  --refresh-fields RN_12HR
+  --variables TA,RN_15M,RN_60M,RN_12HR,RN_24HR   (default: all)
+  --refresh-fields RN_12HR,TD
   --force-refetch
 
 JSON: ${awsJsonDir}/{yyyy-MM-dd}/AWS_MIN_{yyyyMMddHHmm}.json
@@ -102,7 +102,7 @@ function parseArgs(argv) {
     skipPack: false,
     forceRefetch: false,
     refreshFields: [],
-    variables: [ 'TA' ],
+    variables: [...SUPPORTED_PACK_VARIABLES],
     sleepMs: 200,
     help: false
   };

@@ -35,6 +35,7 @@ function apiRowToDbShape(parts, nameById, stnMeta) {
   const hm = Number(parts[14]);
   const pa = Number(parts[15]);
   const ps = Number(parts[16]);
+  const td = parts.length > 17 ? Number(parts[17]) : NaN;
   const rn60Scaled = scale10(rn60);
 
   return {
@@ -50,6 +51,7 @@ function apiRowToDbShape(parts, nameById, stnMeta) {
     HM: scale10(hm),
     PA: scale10(pa),
     PS: scale10(ps),
+    TD: scale10(td),
     RN_YN: isMissing(re) ? null : re === 0 ? 0 : 1,
     // RN_1HR is an alias of RN-60m (not a distinct Hub field). Keep for JSON consumers; pack uses RN_60M.
     RN_1HR: rn60Scaled,

@@ -12,14 +12,21 @@ const {
   buildAwsTaPack,
   buildAwsVariablePack,
   publishAwsTaPack,
+  warmAwsDayPack,
   encodeTaToI16,
   encodeRainToI16,
+  encodeWindSpeedToI16,
+  encodeWindDirToI16,
+  encodeHumidityToI16,
+  encodeDewpointToI16,
   parsePackVariables,
   packDayBounds,
   isPackImmutableCacheable,
   packManifestCacheHeaders,
   PACK_SCHEMA_VERSION,
-  MISSING_I16
+  MISSING_I16,
+  SUPPORTED_PACK_VARIABLES,
+  REQUIRED_PACK_VARIABLES
 } = require('../utils/aws_min_pack');
 const { parseApiText, apiRowToDbShape } = require('../services/aws_apihub_min');
 
@@ -51,9 +58,14 @@ async function main() {
     to: '202608112359'
   });
   assert.throws(() => parsePackVariables('FULL'), /FULL is not supported/);
-  assert.throws(() => parsePackVariables('WS'), /Unsupported pack variable: WS/);
-  assert.throws(() => parsePackVariables('TA,WS'), /Unsupported pack variable: WS/);
+  assert.throws(() => parsePackVariables('PA'), /Unsupported pack variable: PA/);
+  assert.throws(() => parsePackVariables('TA,PA'), /Unsupported pack variable: PA/);
   assert.deepStrictEqual(parsePackVariables('TA,RN_60M,rn_15m'), ['TA', 'RN_60M', 'RN_15M']);
+  assert.throws(() => parsePackVariables('RN_1HR'), /alias of RN_60M/);
+  assert.throws(() => parsePackVariables('RN_YN'), /not packed/);
+  assert.deepStrictEqual(REQUIRED_PACK_VARIABLES, ['TA', 'RN_15M', 'RN_60M', 'RN_12HR', 'RN_24HR', 'WS_INS']);
+  assert.ok(SUPPORTED_PACK_VARIABLES.includes('WS_INS'));
+  assert.ok(SUPPORTED_PACK_VARIABLES.includes('TD'));
 
   assert.strictEqual(encodeRainToI16(0), 0);
   assert.strictEqual(encodeRainToI16(15), 15);
@@ -65,6 +77,21 @@ async function main() {
   assert.strictEqual(encodeRainToI16(-1), MISSING_I16); // negative rain invalid
   assert.strictEqual(encodeRainToI16(-500), MISSING_I16);
   assert.strictEqual(encodeRainToI16(32768), MISSING_I16); // Int16 overflow → missing
+
+  assert.strictEqual(encodeWindSpeedToI16(0), 0);
+  assert.strictEqual(encodeWindSpeedToI16(40), 40);
+  assert.strictEqual(encodeWindSpeedToI16(-1), MISSING_I16);
+  assert.strictEqual(encodeWindDirToI16(0), 0);
+  assert.strictEqual(encodeWindDirToI16(3600), 3600); // calm 360.0
+  assert.strictEqual(encodeWindDirToI16(3601), MISSING_I16);
+  assert.strictEqual(encodeWindDirToI16(-10), MISSING_I16);
+  assert.strictEqual(encodeHumidityToI16(0), 0);
+  assert.strictEqual(encodeHumidityToI16(1000), 1000);
+  assert.strictEqual(encodeHumidityToI16(1001), MISSING_I16);
+  assert.strictEqual(encodeDewpointToI16(208), 208);
+  assert.strictEqual(encodeDewpointToI16(-150), -150);
+  assert.strictEqual(encodeDewpointToI16(-999), MISSING_I16);
+  assert.strictEqual(encodeDewpointToI16(601), 601); // no TA >60 clip
 
   assert.strictEqual(isPackImmutableCacheable({ complete: true, schemaVersion: PACK_SCHEMA_VERSION }), true);
   assert.strictEqual(isPackImmutableCacheable({ complete: true, schemaVersion: 1 }), false);
@@ -255,6 +282,29 @@ async function main() {
     rn15.manifest.stations.map((s) => s.STN_ID)
   );
 
+  const wsIns = await buildAwsVariablePack(rainRoot, '202608131200', '202608131200', 'WS_INS', {
+    catalog: rainCatalog
+  });
+  const wd = await buildAwsVariablePack(rainRoot, '202608131200', '202608131200', 'WD', {
+    catalog: rainCatalog
+  });
+  const hm = await buildAwsVariablePack(rainRoot, '202608131200', '202608131200', 'HM', {
+    catalog: rainCatalog
+  });
+  const td = await buildAwsVariablePack(rainRoot, '202608131200', '202608131200', 'TD', {
+    catalog: rainCatalog
+  });
+  const vWsIns = new Int16Array(wsIns.binary.buffer, wsIns.binary.byteOffset, wsIns.binary.length / 2);
+  const vWd = new Int16Array(wd.binary.buffer, wd.binary.byteOffset, wd.binary.length / 2);
+  const vHm = new Int16Array(hm.binary.buffer, hm.binary.byteOffset, hm.binary.length / 2);
+  const vTd = new Int16Array(td.binary.buffer, td.binary.byteOffset, td.binary.length / 2);
+  assert.strictEqual(wsIns.manifest.sourceField, 'WSS');
+  assert.ok(!wsIns.manifest.qc || !wsIns.manifest.qc.taTemporal);
+  assert.strictEqual(vWsIns[stationIndex.get(42)], 40);
+  assert.strictEqual(vWd[stationIndex.get(42)], 410);
+  assert.strictEqual(vHm[stationIndex.get(42)], 588);
+  assert.strictEqual(vTd[stationIndex.get(42)], 208);
+
   // rain must not use TA temporal QC even on huge 1-min jumps
   const spikeRoot = path.join(tmp, 'aws-rain-spike');
   await writeFrame(spikeRoot, '202608121000', [{ STN_ID: 1, RN_60M: 0, TA: 200 }]);
@@ -265,6 +315,25 @@ async function main() {
   const sv = new Int16Array(spikePack.binary.buffer, spikePack.binary.byteOffset, spikePack.binary.length / 2);
   assert.strictEqual(sv[0], 0);
   assert.strictEqual(sv[1], 80);
+
+  const warmRoot = path.join(tmp, 'pack-all');
+  const warmJson = path.join(tmp, 'aws-warm');
+  await writeFrame(warmJson, '202608141000', [
+    { STN_ID: 1, TA: 200, RN_15M: 1, RN_60M: 2, RN_12HR: 3, RN_24HR: 4 }
+  ]);
+  const warmed = await warmAwsDayPack(warmJson, warmRoot, '20260814', {
+    catalog: { byId: new Map(), stations: [{ STN_ID: 1 }] }
+  });
+  assert.deepStrictEqual(
+    (warmed.items || []).map((i) => i.variable),
+    [...SUPPORTED_PACK_VARIABLES]
+  );
+  for (const v of SUPPORTED_PACK_VARIABLES) {
+    const item = warmed.items.find((i) => i.variable === v);
+    assert.ok(item && item.ok, `${v} pack should succeed`);
+    const slug = v.toLowerCase();
+    assert.ok(fs.existsSync(path.join(warmRoot, slug, '1m', '20260814', `${slug}.i16le`)), slug);
+  }
 
   console.log('OK test_aws_min_pack');
   await fsp.rm(tmp, { recursive: true, force: true });

@@ -56,7 +56,8 @@ description: weather_api 서버가 노출하는 HTTP API 카탈로그(producer).
 | 지점명·시도/구군 lookup | `GET /api/aws/stations` |
 | 하루 기온 재생, 일최고/최저, 임계 돌파 (1분) | `GET /api/aws/min/pack?date={YYYYMMDD}&variable=TA` 후 `data.url` binary |
 | 하루 강수 누적 (15분/60분/12시간/당일) | `GET /api/aws/min/pack?date={YYYYMMDD}&variable=RN_60M` (또는 `RN_15M`,`RN_12HR`,`RN_24HR`) |
-| 여러 변수 하루 timeline | 같은 pack, `variable=TA,RN_60M` → `{variables, items[]}` (binary는 변수별). `FULL` 없음 |
+| 하루 순간풍속 | `variable=WS_INS` (`WS`/`WD`/`WD_INS`/`HM`/`TD` 동일) |
+| 여러 변수 하루 timeline | 같은 pack, `variable=TA,RN_60M,WS_INS` → `{variables, items[]}` (binary는 변수별). `FULL` 없음 |
 | 임의 시각 구간, 전 변수 표/JSON, 2분 호환 | `GET /api/aws/min/range?from=&to=` (max 12h) |
 | 한 시각 전 지점 JSON | `GET /api/aws/min?timestamp_kor=` (기본 2분 snap) |
 | pack 값 vs 원본 1분 대조 | `GET /api/aws/min/exact` 또는 `intervalMinutes=1` |
@@ -65,8 +66,8 @@ description: weather_api 서버가 노출하는 HTTP API 카탈로그(producer).
 
 Pack binary 계약 (consumer):
 
-- 결측은 모두 Int16 `-32768`. TA: `null`/`-999`/Hub ≤ -50℃/temporal QC. 강수: `null`/음수/Hub ≤ -50mm. **0 mm는 0**. 통계에서 sentinel 제외
-- Temporal QC는 **TA pack만**. 강수 pack에는 적용하지 않음. `/exact`·디스크 JSON은 원천 그대로
+- 결측은 모두 Int16 `-32768`. TA: `null`/`-999`/Hub ≤ -50℃/temporal QC. 강수: `null`/음수/Hub ≤ -50mm. **0 mm는 0**. 풍향 0–360(무풍 360). 통계에서 sentinel 제외
+- Temporal QC는 **TA pack만**. 강수·바람·습도·이슬점 pack에는 적용하지 않음. `/exact`·디스크 JSON은 원천 그대로
 - 과거 `complete:true` manifest·binary → `Cache-Control: public, max-age=31536000, immutable` + ETag. 오늘/미완 → `no-store`
 - `schemaVersion: 3`
 

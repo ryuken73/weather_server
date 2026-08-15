@@ -53,7 +53,7 @@ function scheduleYesterdayPackWarm(catalog) {
       if (complete || pastLookback) {
         yesterdayPackWarmed = yesterday;
       }
-      const itemSummary = (result.items || [])
+        const itemSummary = (result.items || [])
         .map((i) => `${i.variable}:${i.ok ? (i.fromCache ? 'cache' : 'built') : 'fail'}`)
         .join(' ');
       console.log(
@@ -61,6 +61,11 @@ function scheduleYesterdayPackWarm(catalog) {
         yesterday,
         itemSummary || `${result.fromCache ? 'cache' : 'built'} ${complete ? 'complete' : 'incomplete'}`
       );
+      for (const item of result.items || []) {
+        if (!item.ok) {
+          console.error('yesterday pack FAILED', yesterday, item.variable, item.message);
+        }
+      }
     } catch (err) {
       console.error('yesterday TA pack warm failed', yesterday, err.message || err);
       const { hour, minute } = kstHourMinute();

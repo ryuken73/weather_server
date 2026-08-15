@@ -49,15 +49,16 @@ Pack binary: `out_data/aws/pack/` → `/datasets/aws/...` (env `AWS_PACK_DIR`).
 - **권장**: `date=YYYYMMDD` (또는 `YYYY-MM-DD`) → 서버가 KST `0000–2359` 하루로 펼침
 - 레거시: `from`/`to` (YYYYMMDDHHMM)도 허용
 - 1분 exact, 최대 1440 frame
-- `variable` 기본 `TA`. 지원 `TA, RN_15M, RN_60M, RN_12HR, RN_24HR`. `FULL` 없음
-- 단일 변수 → 해당 manifest. 복수 `variable=TA,RN_60M` → `{ variables, items: [manifest...] }` (binary는 섞지 않음)
-- 디스크: `ta/1m/{day}/ta.i16le`, `rn_15m/1m/{day}/rn_15m.i16le`, `rn_60m`, `rn_12hr`, `rn_24hr`
+- `variable` 기본 `TA`. 지원 `TA, RN_15M, RN_60M, RN_12HR, RN_24HR, WS_INS, WS, WD_INS, WD, HM, TD`. `FULL` 없음. `RN_1HR`는 `RN_60M` 별칭
+- 단일 변수 → 해당 manifest. 복수 `variable=TA,RN_60M,WS_INS` → `{ variables, items: [manifest...] }` (binary는 섞지 않음)
+- 디스크: `{slug}/1m/{day}/{slug}.i16le` (`ta`, `rn_60m`, `ws_ins`, `wd`, `hm`, `td` 등)
 - Binary: `GET {data.url}` → Int16 LE, scale 0.1, missing `-32768`, FRAME_MAJOR
 - TA 결측: `null`/비유한, sentinel `-999`, Hub ≤ -50℃, > 60℃ → `-32768`. 정상 음수 유지
 - 강수 결측: `null`/비유한, Hub ≤ -50mm, 음수, Int16 overflow → `-32768`. **0.0 mm = 0**
+- 풍속 0 유효. 풍향 0–360(무풍 360). 습도 0–100%. 이슬점 TA QC 없음
 - Binary 캐시: 과거 `complete:true` → `Cache-Control: public, max-age=31536000, immutable` + ETag(sha256)/304. 오늘·미완 → `no-store`
 - `schemaVersion: 3` (구 pack은 재빌드)
-- Pack temporal QC는 **TA만**. 강수는 프레임 간 재합산/QC 없음. `/exact`는 원천 유지
+- Pack temporal QC는 **TA만**. 강수·바람·습도·이슬점은 프레임 간 보정 없음. `/exact`는 원천 유지
 - 생성: backfill 종료 후, `main_AWS`가 어제 워밍, 또는 `warm_aws_min_packs.js`. 오늘은 요청 시 재빌드
 - Binary URL도 동일 캐시 정책 (전용 route, ETag=sha256)
 - `400` (`FULL`·미지원 변수·date 누락) / `404` (원자료 전무) / `500`
