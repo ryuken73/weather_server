@@ -28,7 +28,7 @@ description: AWS_MIN station JSON 수집·누락 복구·과거 backfill·1분 �
 
 - 저장 경로: `{resolveBaseDir(in_data)}/aws/{yyyy-MM-dd}/AWS_MIN_{yyyyMMddHHmm}.json`
 - 수집 주기는 **1분** (홀수분 포함). 기존 `/api/aws/min`·`/range`는 **2분 snap**으로 호환 유지.
-- `AWS_FETCH_SOURCE=auto|db|hub` (기본 auto = **DB 후 Hub**). Hub에는 `API_KEY` 필요.
+- `AWS_FETCH_SOURCE=auto|db|hub` (기본 auto = **DB 후, RN_12HR/TD가 전부 없으면 같은 TM Hub 1회 merge**). Hub에는 `API_KEY` 필요.
 - `USE_API=true`(기본)이면 env 로드 시 `API_KEY` 필수. DB-only면 `USE_API=false` + `AWS_FETCH_SOURCE=db`.
 - lookback: `candidateMinute:1`, `candiateCount:30`, 최신 2개 drop
 - 기업용 API 허브: `apihub-pub.kma.go.kr` / `nph-aws2_min` / `stn=0` 최대 10분 창
@@ -45,7 +45,7 @@ description: AWS_MIN station JSON 수집·누락 복구·과거 backfill·1분 �
 ## 관련 원천
 
 - 실시간: `kma_fetch/main_AWS.js`
-- Backfill: `kma_fetch/backfill_aws_min.js` (1440 slots/day, `--refresh-fields RN_12HR` / `--force-refetch`)
+- Backfill: `kma_fetch/backfill_aws_min.js` (1440 slots/day, `--refresh-fields RN_12HR,TD` 는 Hub merge, 빈/부분 Hub로 덮어쓰지 않음)
 - Hub client: `kma_fetch/services/aws_apihub_min.js`
 - Pack: `kma_fetch/utils/aws_min_pack.js`, `kma_fetch/warm_aws_min_packs.js` (`warm_aws_ta_pack.js`는 TA wrapper)
 - HTTP: `server.js` + `aws_min_json.js` + `aws_stn_catalog.js`

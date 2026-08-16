@@ -11,6 +11,10 @@ const { patchAwsRowsForSave, loadStationCatalog } = require('./utils/aws_stn_cat
 const { fetchAwsMinRowsFromHub } = require('./services/aws_apihub_min');
 const { deriveAwsJsonDir } = require('./utils/aws_min_json');
 const {
+  supplementDbRowsFromHub,
+  logHubSupplementWarning
+} = require('./utils/aws_hub_fill');
+const {
   deriveAwsPackDir,
   warmAwsDayPack,
   kstYmdDaysAgo,
@@ -83,7 +87,7 @@ const AWS_FILE_OPTIONS = { dataRoot: AWS_DATA_ROOT };
 
 /**
  * AWS_FETCH_SOURCE:
- *   auto (기본) — DB 조회 후 비면 API Hub
+ *   auto (기본) — DB 후, RN_12HR/TD가 전부 없으면 같은 TM Hub 1회 merge
  *   db — MSSQL만
  *   hub — API Hub만
  */
@@ -106,36 +110,42 @@ const downloadConfigs = [
 
 async function fetchRowsForTm(tm, pool, stnCatalog) {
   const source = AWS_FETCH_SOURCE;
+  const fetchHub = () => fetchAwsMinRowsFromHub(tm, { catalog: stnCatalog });
 
   if (source === 'hub') {
-    return fetchAwsMinRowsFromHub(tm, { catalog: stnCatalog });
+    return fetchHub();
   }
 
-  if (source === 'db' || source === 'auto') {
-    if (pool) {
-      const result = await pool
-        .request()
-        .input('tm', sql.VarChar, tm)
-        .query(db.sqls.queryAwsMin);
-      if (result.recordset && result.recordset.length > 0) {
-        return result.recordset;
+  let dbRows = [];
+  if (pool && (source === 'db' || source === 'auto')) {
+    const result = await pool
+      .request()
+      .input('tm', sql.VarChar, tm)
+      .query(db.sqls.queryAwsMin);
+    if (result.recordset && result.recordset.length > 0) {
+      dbRows = result.recordset;
+    }
+  }
+
+  if (source === 'db') {
+    return dbRows;
+  }
+
+  if (dbRows.length === 0) {
+    try {
+      return await fetchHub();
+    } catch (err) {
+      if (err.code === 'NO_API_KEY') {
+        console.warn('Hub fallback skipped (no API_KEY) for', tm);
+        return [];
       }
-    }
-    if (source === 'db') {
-      return [];
+      throw err;
     }
   }
 
-  // auto: DB empty → Hub
-  try {
-    return await fetchAwsMinRowsFromHub(tm, { catalog: stnCatalog });
-  } catch (err) {
-    if (err.code === 'NO_API_KEY') {
-      console.warn('Hub fallback skipped (no API_KEY) for', tm);
-      return [];
-    }
-    throw err;
-  }
+  const filled = await supplementDbRowsFromHub({ tm, dbRows, fetchHub });
+  logHubSupplementWarning(filled.warning);
+  return filled.rows;
 }
 
 async function downloadLatestData(config) {

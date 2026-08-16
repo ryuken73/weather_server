@@ -38,7 +38,7 @@ override: `AWS_JSON_DIR`, `AWS_PACK_DIR`.
 | `WS` / `WS_INS` | ×10 m/s. Hub `WS1` / `WSS` |
 | `WD` / `WD_INS` | ×10 deg. Hub `WD1` / `WDS`. 무풍 360.0 → 3600 |
 | `HM` | ×10 %. Hub `HM` |
-| `TD` | ×10 ℃. Hub `TD`. MSSQL 조회는 `NULL AS TD` (Hub JSON만 값) |
+| `TD` | ×10 ℃. Hub `TD`. MSSQL은 `NULL AS TD` → `auto`는 Hub merge로 채움 |
 | `RN_1HR` | `RN-60m` 별칭 (호환). pack 이름 아님 |
 | `LAW_ADDR_*` | **디스크에 없음**. HTTP enrich / pack stations / `/stations` |
 

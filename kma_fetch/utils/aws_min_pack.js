@@ -460,6 +460,22 @@ function countSamples(int16) {
   return { validSampleCount: valid, missingSampleCount: missing };
 }
 
+const COVERAGE_OK_MIN_RATIO = 0.8;
+
+function assessPackCoverage(validSampleCount, missingSampleCount) {
+  const total = validSampleCount + missingSampleCount;
+  const validRatio = total === 0 ? 0 : validSampleCount / total;
+  let status = 'ok';
+  if (validSampleCount === 0) status = 'empty';
+  else if (validRatio < COVERAGE_OK_MIN_RATIO) status = 'degraded';
+  return {
+    validSampleCount,
+    missingSampleCount,
+    validRatio: Number(validRatio.toFixed(4)),
+    status
+  };
+}
+
 async function readDayFrames(awsJsonDir, timestamps, catalog) {
   const frames = [];
   const missingTimestamps = [];
@@ -523,6 +539,7 @@ async function buildAwsVariablePack(awsJsonDir, fromKor, toKor, variable, option
   let negativeRainCount = 0;
   const jsonField = spec.jsonField;
 
+  let jsonPresentCount = 0;
   for (let fi = 0; fi < frameCount; fi++) {
     const byId = frames[fi];
     if (!byId) continue;
@@ -530,6 +547,7 @@ async function buildAwsVariablePack(awsJsonDir, fromKor, toKor, variable, option
       const row = byId.get(stationIds[si]);
       if (!row) continue;
       const raw = row[jsonField];
+      if (raw != null && raw !== '') jsonPresentCount += 1;
       if (spec.family === 'rain' && raw != null && raw !== '') {
         const n = Number(raw);
         if (Number.isFinite(n)) {
@@ -550,6 +568,9 @@ async function buildAwsVariablePack(awsJsonDir, fromKor, toKor, variable, option
   }
 
   const { validSampleCount, missingSampleCount } = countSamples(int16);
+  const coverage = assessPackCoverage(validSampleCount, missingSampleCount);
+  coverage.jsonPresentCount = jsonPresentCount;
+  const dataComplete = coverage.status === 'ok';
   const binary = Buffer.from(int16.buffer, int16.byteOffset, int16.byteLength);
   const sha256 = crypto.createHash('sha256').update(binary).digest('hex');
   const dayKey = dayKeyFromRange(from, to);
@@ -569,6 +590,18 @@ async function buildAwsVariablePack(awsJsonDir, fromKor, toKor, variable, option
   if (negativeRainCount > 0) {
     warnings.push(`Negative ${name} excluded ${negativeRainCount} samples`);
   }
+  if (coverage.status === 'empty') {
+    warnings.push(`${name} has no valid samples (all missing)`);
+  } else if (coverage.status === 'degraded') {
+    warnings.push(
+      `${name} coverage ${(coverage.validRatio * 100).toFixed(1)}% is abnormally low (status=degraded)`
+    );
+  }
+  if (jsonPresentCount === 0) {
+    warnings.push(
+      `JSON field ${jsonField} is missing for the whole day (likely DB-only source without Hub fill)`
+    );
+  }
 
   const manifest = {
     schemaVersion: PACK_SCHEMA_VERSION,
@@ -584,6 +617,7 @@ async function buildAwsVariablePack(awsJsonDir, fromKor, toKor, variable, option
     frameCount,
     stationCount,
     complete,
+    dataComplete,
     generatedAt: new Date().toISOString(),
     stationOrder: 'STN_ID_ASC',
     stations,
@@ -601,6 +635,8 @@ async function buildAwsVariablePack(awsJsonDir, fromKor, toKor, variable, option
     missingTimestamps,
     validSampleCount,
     missingSampleCount,
+    validRatio: coverage.validRatio,
+    coverage,
     qc: {},
     warnings
   };
@@ -666,6 +702,21 @@ async function loadCachedManifest(packRoot, dayKey, variable = VARIABLE_TA) {
   }
 }
 
+function isReusableCachedManifest(cached, name, from, to) {
+  return Boolean(
+    cached &&
+      cached.complete === true &&
+      cached.schemaVersion === PACK_SCHEMA_VERSION &&
+      cached.variable === name &&
+      cached.from === from &&
+      cached.to === to &&
+      cached.sourceField != null &&
+      typeof cached.validSampleCount === 'number' &&
+      cached.coverage &&
+      cached.coverage.status
+  );
+}
+
 async function getOrBuildAwsVariablePack(awsJsonDir, packRoot, fromKor, toKor, variable, options = {}) {
   const { name } = getPackVariableSpec(variable);
   const from = parseTimestampKorStrict(fromKor);
@@ -677,14 +728,7 @@ async function getOrBuildAwsVariablePack(awsJsonDir, packRoot, fromKor, toKor, v
 
   if (!force && !isToday && isFullPastDay(from, to)) {
     const cached = await loadCachedManifest(packRoot, dayKey, name);
-    if (
-      cached &&
-      cached.complete &&
-      cached.schemaVersion === PACK_SCHEMA_VERSION &&
-      cached.variable === name &&
-      cached.from === from &&
-      cached.to === to
-    ) {
+    if (isReusableCachedManifest(cached, name, from, to)) {
       return { manifest: cached, fromCache: true, variable: name };
     }
   }
@@ -781,6 +825,8 @@ module.exports = {
   encodeWindDirToI16,
   encodeHumidityToI16,
   encodeDewpointToI16,
+  assessPackCoverage,
+  isReusableCachedManifest,
   readTaQcConfig,
   applyTaTemporalQc,
   getPackVariableSpec,

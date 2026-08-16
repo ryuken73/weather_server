@@ -276,8 +276,10 @@ paths:
         풍속 0은 유효. 풍향 0–360도(무풍 360) 유지. 습도 0–100%. 이슬점은 TA QC/60℃ clip 없음.
         Binary URL: 과거 complete는 immutable+ETag, 오늘/미완은 no-store.
         schemaVersion 3. TA temporal QC( pack 전용 ): 1분 |ΔTA|>3℃ 또는 고립 스파이크 → -32768. manifest `qc.taTemporal`. /exact는 원천 유지.
-        과거 완결일(`complete:true`)은 디스크 캐시 + immutable.
+        과거 완결일(`complete:true`)은 1,440개 timestamp 파일 존재. 값 coverage는 `coverage.status` (`ok|degraded|empty`)와 `dataComplete`.
+        `complete:true`여도 전부 결측이면 `coverage.status=empty` + warnings. 구 pack(sourceField/coverage 없음)은 캐시하지 않고 재빌드.
         오늘(미완)은 요청 시 재빌드, `no-store`.
+        `AWS_FETCH_SOURCE=auto`는 DB row가 있어도 RN_12HR/TD가 전부 없으면 같은 TM Hub를 1회 merge한다.
         일 pack은 backfill 종료 후·어제 워밍으로 미리 생성한다.
         임의 구간·전 변수 JSON은 `/api/aws/min/range` (2분).
       operationId: getAwsMinPack
@@ -1033,6 +1035,30 @@ components:
           type: integer
         complete:
           type: boolean
+          description: 과거 하루 1,440개 timestamp JSON 존재 여부 (값 coverage와 별개)
+        dataComplete:
+          type: boolean
+          description: coverage.status === ok
+        validSampleCount:
+          type: integer
+        missingSampleCount:
+          type: integer
+        validRatio:
+          type: number
+        coverage:
+          type: object
+          properties:
+            status:
+              type: string
+              enum: [ok, degraded, empty]
+            validSampleCount:
+              type: integer
+            missingSampleCount:
+              type: integer
+            validRatio:
+              type: number
+            jsonPresentCount:
+              type: integer
         generatedAt:
           type: string
           format: date-time
@@ -1092,6 +1118,12 @@ components:
         - stations
         - data
         - complete
+        - dataComplete
+        - sourceField
+        - validSampleCount
+        - missingSampleCount
+        - coverage
+        - warnings
         - missingTimestamps
 
     AwsMinResponse:

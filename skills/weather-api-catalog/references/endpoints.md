@@ -56,8 +56,11 @@ Pack binary: `out_data/aws/pack/` → `/datasets/aws/...` (env `AWS_PACK_DIR`).
 - TA 결측: `null`/비유한, sentinel `-999`, Hub ≤ -50℃, > 60℃ → `-32768`. 정상 음수 유지
 - 강수 결측: `null`/비유한, Hub ≤ -50mm, 음수, Int16 overflow → `-32768`. **0.0 mm = 0**
 - 풍속 0 유효. 풍향 0–360(무풍 360). 습도 0–100%. 이슬점 TA QC 없음
-- Binary 캐시: 과거 `complete:true` → `Cache-Control: public, max-age=31536000, immutable` + ETag(sha256)/304. 오늘·미완 → `no-store`
-- `schemaVersion: 3` (구 pack은 재빌드)
+- `complete`: 과거 하루 **1,440개 timestamp 파일** 존재. 값 coverage와 별개
+- `dataComplete` / `coverage.status`: `ok` (≥80% 유효) | `degraded` | `empty` (validSampleCount=0). 전부 결측이면 warnings
+- 항상 `sourceField`, `validSampleCount`, `missingSampleCount`, `validRatio`, `warnings`
+- Binary 캐시: 과거 `complete:true` **그리고** coverage 필드가 있는 pack → `immutable`+ETag. 구 TA pack(sourceField 없음)은 재빌드
+- `schemaVersion: 3`
 - Pack temporal QC는 **TA만**. 강수·바람·습도·이슬점은 프레임 간 보정 없음. `/exact`는 원천 유지
 - 생성: backfill 종료 후, `main_AWS`가 어제 워밍, 또는 `warm_aws_min_packs.js`. 오늘은 요청 시 재빌드
 - Binary URL도 동일 캐시 정책 (전용 route, ETag=sha256)

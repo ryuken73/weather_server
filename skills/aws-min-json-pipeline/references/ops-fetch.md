@@ -4,7 +4,7 @@
 
 | 변수 | 역할 |
 | --- | --- |
-| `AWS_FETCH_SOURCE` | `auto`(기본): **DB → 비면 Hub**. `db`: DB만. `hub`: Hub만 |
+| `AWS_FETCH_SOURCE` | `auto`(기본): DB 후 **RN_12HR/TD가 전부 없으면 같은 TM Hub 1회 merge**. 비면 Hub. `db`: DB만. `hub`: Hub만 |
 | `API_KEY` | Hub(`nph-aws2_min`) 호출용. `auto`/`hub`에서 fallback·Hub 전용 시 필요 |
 | `USE_API` | `kma_fetch/config/env.js` 기동 검사. 기본 `true`이면 **`API_KEY` 없으면 프로세스 기동 실패**. Hub를 안 쓰고 DB만이면 `USE_API=false` + `AWS_FETCH_SOURCE=db` 가능 |
 | `BASE_DIR` | `in_data` / `out_data` resolve 기준 |
@@ -44,7 +44,7 @@ JSON은 `weather_data`, pack은 `weather_server` repo 아래 `data/weather/out_d
 | --- | --- |
 | 운영 `in_data/aws`에 그날 파일이 일부만 있음 (DB/Hub로 gap 메움) | **A.** `backfill_aws_min.js` (끝나면 그날 pack 자동 워밍) |
 | 과거 여러 날을 Hub에서 통째로 받을 때 | **B.** `fetch_aws_apihub.js` → `in_data/aws` 복사 → pack |
-| JSON은 이미 있고 pack만 만들거나 schema v3로 다시 쓸 때 | **C.** `warm_aws_ta_pack.js` (`--force`면 재빌드) |
+| JSON은 이미 있고 pack만 만들거나 coverage/schema 재빌드 | **C.** `warm_aws_min_packs.js --force` |
 
 날짜는 KST. `backfill_aws_min.js`는 **하루 단위**(1440 슬롯). 여러 날은 날짜를 바꿔 반복하거나 B를 쓴다.
 
@@ -59,7 +59,7 @@ NODE_ENV=production node kma_fetch/backfill_aws_min.js 20260811 --dry-run
 # 2) 홀수분 존재 여부
 USE_API=false NODE_ENV=production node kma_fetch/probe_aws_min_cadence.js --day 2026-08-11
 
-# 3) 채우기. auto = DB 후 비면 Hub. 끝나면 그날 TA pack 워밍
+# 3) 채우기. auto = DB + RN_12HR/TD Hub merge. 끝나면 전 변수 pack 워밍
 AWS_FETCH_SOURCE=auto NODE_ENV=production node kma_fetch/backfill_aws_min.js 20260811
 
 # pack만 나중에: --skip-pack 후 C
@@ -111,14 +111,21 @@ NODE_ENV=production node kma_fetch/warm_aws_min_packs.js --from 20260801 --to 20
 NODE_ENV=production node kma_fetch/warm_aws_min_packs.js --all-json --force
 ```
 
-기존 JSON에 `RN_12HR`가 없으면 Hub 재수집 후 pack:
+기존 JSON에 `RN_12HR`/`TD` coverage가 낮으면 Hub **merge** (TA/풍속 유지, 빈 Hub는 파일 유지):
 
 ```bash
 AWS_FETCH_SOURCE=hub NODE_ENV=production node kma_fetch/backfill_aws_min.js \
-  --from 20260801 --to 20260813 \
-  --refresh-fields RN_12HR \
-  --variables RN_15M,RN_60M,RN_12HR,RN_24HR
+  --from 20260801 \
+  --to 20260815 \
+  --refresh-fields RN_12HR,TD
+
+NODE_ENV=production node kma_fetch/warm_aws_min_packs.js \
+  --from 20260801 \
+  --to 20260815 \
+  --force
 ```
+
+`--refresh-fields`는 필드 coverage < 80%일 때만 Hub 값을 기존 JSON에 merge한다. `--force-refetch`는 통째 교체이며 빈/부분 Hub(< 기존 지점의 50%)는 거부한다.
 
 산출:
 
@@ -128,12 +135,13 @@ AWS_FETCH_SOURCE=hub NODE_ENV=production node kma_fetch/backfill_aws_min.js \
 확인:
 
 ```bash
-# manifest schemaVersion 3, qc.taTemporal(TA), accumulation(강수), complete
-curl -sS "https://weather-map.sbs.co.kr/api/aws/min/pack?date=20260811&variable=TA"
-curl -sS "https://weather-map.sbs.co.kr/api/aws/min/pack?date=20260811&variable=RN_60M,WS_INS"
+curl -sS "https://weather-map.sbs.co.kr/api/aws/min/exact?timestamp_kor=202608151200" | python -c "import sys,json; d=json.load(sys.stdin); print('TD null', sum(1 for r in d['data'] if r.get('TD') is None), '/', len(d['data']))"
+curl -sS "https://weather-map.sbs.co.kr/api/aws/min/pack?date=20260812&variable=TD"
+curl -sS "https://weather-map.sbs.co.kr/api/aws/min/pack?date=20260812&variable=RN_12HR"
+curl -sS "https://weather-map.sbs.co.kr/api/aws/min/pack?date=20260812&variable=TA,RN_60M,WS_INS,TD"
 ```
 
-`complete:true`여도 schema가 낮으면 `--force`. 오늘(미완)은 요청 시 재빌드되고 `no-store`.
+`complete`는 1,440 파일. `coverage.status`/`dataComplete`는 값 유효비율. 전부 결측이면 `empty` + warnings. `sourceField`/sample count 없는 구 pack은 캐시하지 않고 재빌드.
 
 ## Gate0: 홀수분(1분) 존재 probe
 
@@ -207,7 +215,7 @@ NODE_ENV=production node kma_fetch/warm_aws_ta_pack.js --yesterday
 | --- | --- | --- |
 | `main_AWS.js` | 재기동 | 이후 **새 분**부터 1분 수집·STN_NAME 패치·auto/Hub |
 | `server.js` | 재기동 | `/api/aws/min/pack`, `/exact`, stations enrich, 2분 min/range |
-| `backfill_aws_min.js` | 필요 시 수동 | 과거 gap 메움 / `--refresh-fields RN_12HR` / `--force-refetch` + pack 워밍 |
+| `backfill_aws_min.js` | 필요 시 수동 | 과거 gap / `--refresh-fields RN_12HR,TD` (Hub merge) / `--force-refetch` |
 | `warm_aws_min_packs.js` | 필요 시 수동 | 전 변수 pack (`--all-json`, `--force`). `warm_aws_ta_pack.js`는 TA wrapper |
 | `patch_aws_min_stn_names.js` | 필요 시 수동 | 이미 쌓인 JSON의 STN_NAME만 (LAW는 HTTP enrich) |
 | `work/out` 복사 | 수동 | 과거 1분 파일을 `in_data`에 반영 |
@@ -226,9 +234,10 @@ NODE_ENV=production node kma_fetch/warm_aws_ta_pack.js --yesterday
 - 강수 결측 → `-32768`: `null`, Hub ≤ -50mm, 음수, Int16 overflow. **0 mm는 0**. TA QC 없음
 - 풍속 0 유효. 풍향 0–360(무풍 360). 습도 0–100%. 이슬점 TA QC 없음
 - **Pack temporal QC** (TA만, 기본 on, `AWS_TA_QC=0`으로 off): 1분 |ΔTA| > 3℃ 또는 고립 스파이크 → `-32768`. `/exact`·디스크 JSON은 원천 그대로
-- Cache: 과거 complete binary/manifest → `immutable`+ETag; 오늘/미완 → `no-store`
+- Cache: 과거 complete **이고** `sourceField`+`coverage` 있는 pack → `immutable`+ETag; 구 pack은 재빌드. 오늘/미완 → `no-store`
+- `complete` = 1,440 JSON. `coverage.status`/`dataComplete` = 값 유효비율 (`ok`≥80%, `degraded`, `empty`)
 - 사전생성: backfill 종료, `main_AWS` 어제 워밍(전 변수), `warm_aws_min_packs.js`
-- 기존 JSON의 `RN_12HR` null → `--refresh-fields RN_12HR` (Hub). 15/60분 합산으로 12시간을 만들지 말 것
+- 기존 JSON의 `RN_12HR`/`TD` 누락 → `--refresh-fields RN_12HR,TD` (Hub merge). 15/60분 합산으로 12시간을 만들지 말 것
 - 임의 구간·전 변수 JSON은 range 유지
 - Debug: `GET /api/aws/min/exact?timestamp_kor=`
 - 원천 1분 파일이 없으면 홀수 peak를 pack이 살릴 수 없다

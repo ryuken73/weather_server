@@ -19,6 +19,8 @@ const {
   encodeWindDirToI16,
   encodeHumidityToI16,
   encodeDewpointToI16,
+  assessPackCoverage,
+  isReusableCachedManifest,
   parsePackVariables,
   packDayBounds,
   isPackImmutableCacheable,
@@ -180,6 +182,11 @@ async function main() {
   assert.strictEqual(view[3 * 2 + 1], MISSING_I16);
   assert.ok(!Array.from(view).includes(-999));
   assert.strictEqual(manifest.schemaVersion, PACK_SCHEMA_VERSION);
+  assert.strictEqual(manifest.sourceField, 'TA');
+  assert.ok(typeof manifest.validSampleCount === 'number');
+  assert.ok(typeof manifest.missingSampleCount === 'number');
+  assert.ok(manifest.coverage && manifest.coverage.status);
+  assert.strictEqual(manifest.validRatio, manifest.coverage.validRatio);
   assert.strictEqual(manifest.data.sha256.length, 64);
   assert.ok(manifest.qc && manifest.qc.taTemporal);
 
@@ -304,6 +311,14 @@ async function main() {
   assert.strictEqual(vWd[stationIndex.get(42)], 410);
   assert.strictEqual(vHm[stationIndex.get(42)], 588);
   assert.strictEqual(vTd[stationIndex.get(42)], 208);
+  assert.strictEqual(rn60.manifest.validSampleCount, 712);
+  assert.ok(rn60.manifest.coverage.status === 'ok');
+  assert.ok(rn12.manifest.validSampleCount > 0);
+  assert.ok(rn12.manifest.validRatio >= 0.9, 'RN_12HR fixture coverage should match other rain vars');
+  assert.strictEqual(rn12.manifest.sourceField, 'RN-12H');
+  assert.strictEqual(td.manifest.sourceField, 'TD');
+  assert.ok(td.manifest.validSampleCount > 0);
+  assert.ok(td.manifest.coverage.status === 'ok');
 
   // rain must not use TA temporal QC even on huge 1-min jumps
   const spikeRoot = path.join(tmp, 'aws-rain-spike');
@@ -332,8 +347,58 @@ async function main() {
     const item = warmed.items.find((i) => i.variable === v);
     assert.ok(item && item.ok, `${v} pack should succeed`);
     const slug = v.toLowerCase();
-    assert.ok(fs.existsSync(path.join(warmRoot, slug, '1m', '20260814', `${slug}.i16le`)), slug);
+    assert.ok(item.manifest.sourceField, `${v} sourceField`);
+    assert.ok(typeof item.manifest.validSampleCount === 'number', `${v} validSampleCount`);
+    assert.ok(item.manifest.coverage && item.manifest.coverage.status, `${v} coverage`);
   }
+
+  const emptyTd = await buildAwsVariablePack(warmJson, '202608141000', '202608141000', 'TD', {
+    catalog: { byId: new Map(), stations: [{ STN_ID: 1 }] }
+  });
+  assert.strictEqual(emptyTd.manifest.validSampleCount, 0);
+  assert.strictEqual(emptyTd.manifest.coverage.status, 'empty');
+  assert.strictEqual(emptyTd.manifest.dataComplete, false);
+  assert.ok(emptyTd.manifest.warnings.some((w) => /no valid samples/.test(w)));
+  assert.ok(emptyTd.manifest.warnings.some((w) => /JSON field TD is missing/.test(w)));
+
+  assert.deepStrictEqual(assessPackCoverage(0, 100).status, 'empty');
+  assert.deepStrictEqual(assessPackCoverage(10, 90).status, 'degraded');
+  assert.strictEqual(assessPackCoverage(90, 10).status, 'ok');
+  assert.strictEqual(
+    isReusableCachedManifest(
+      { complete: true, schemaVersion: PACK_SCHEMA_VERSION, variable: 'TA', from: 'a', to: 'b' },
+      'TA',
+      'a',
+      'b'
+    ),
+    false
+  );
+  assert.strictEqual(
+    isReusableCachedManifest(
+      {
+        complete: true,
+        schemaVersion: PACK_SCHEMA_VERSION,
+        variable: 'TA',
+        from: 'a',
+        to: 'b',
+        sourceField: 'TA',
+        validSampleCount: 1,
+        coverage: { status: 'ok' }
+      },
+      'TA',
+      'a',
+      'b'
+    ),
+    true
+  );
+
+  const headers = packManifestCacheHeaders({
+    complete: true,
+    schemaVersion: PACK_SCHEMA_VERSION,
+    datasetId: 'aws-ta-1m-x'
+  });
+  assert.ok(headers['Cache-Control'].includes('immutable'));
+  assert.ok(headers.ETag);
 
   console.log('OK test_aws_min_pack');
   await fsp.rm(tmp, { recursive: true, force: true });

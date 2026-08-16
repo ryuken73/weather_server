@@ -15,11 +15,11 @@
  *   --sleep N          저장 성공 후 대기 ms (기본 200)
  *   --skip-pack        pack 워밍 생략
  *   --variables LIST   종료 후 워밍할 pack 변수 (기본: 지원 변수 전부)
- *   --refresh-fields F 기존 JSON이 있어도 필드가 null이면 Hub 재수집 (예: RN_12HR,TD)
- *   --force-refetch    기존 JSON을 Hub 응답으로 atomic 교체
+ *   --refresh-fields F 기존 JSON 필드 coverage가 낮으면 Hub 값을 merge (예: RN_12HR,TD). 빈/부분 Hub로 덮어쓰지 않음
+ *   --force-refetch    기존 JSON을 Hub 응답으로 atomic 교체. 빈/부분 Hub는 거부
  *
- * env AWS_FETCH_SOURCE=auto|db|hub (기본 auto: DB 후 Hub)
- * --refresh-fields / --force-refetch 는 Hub만 사용한다.
+ * env AWS_FETCH_SOURCE=auto|db|hub (기본 auto: DB 후 RN_12HR/TD Hub merge)
+ * --refresh-fields / --force-refetch 는 Hub를 사용한다.
  */
 
 const path = require('path');
@@ -33,6 +33,13 @@ const { TIMEZONE } = env;
 const { patchAwsRowsForSave, loadStationCatalog } = require('./utils/aws_stn_catalog');
 const { fetchAwsMinRowsFromHub } = require('./services/aws_apihub_min');
 const { deriveAwsJsonDir } = require('./utils/aws_min_json');
+const {
+  rowsNeedFieldRefresh,
+  mergeHubSupplement,
+  shouldRejectHubReplace,
+  supplementDbRowsFromHub,
+  logHubSupplementWarning
+} = require('./utils/aws_hub_fill');
 const {
   deriveAwsPackDir,
   warmAwsDayPack,
@@ -49,20 +56,27 @@ const AWS_FETCH_SOURCE = (process.env.AWS_FETCH_SOURCE || 'auto').toLowerCase();
 const REFRESHABLE_FIELDS = Object.freeze(['RN_12HR', 'TD']);
 
 async function fetchRowsForTm(tm, pool, stnCatalog, source) {
+  const fetchHub = () => fetchAwsMinRowsFromHub(tm, { catalog: stnCatalog });
   if (source === 'hub') {
-    return fetchAwsMinRowsFromHub(tm, { catalog: stnCatalog });
+    return fetchHub();
   }
+  let dbRows = [];
   if (pool && (source === 'db' || source === 'auto')) {
     const result = await pool.request().input('tm', sql.VarChar, tm).query(db.sqls.queryAwsMin);
-    if (result.recordset && result.recordset.length > 0) return result.recordset;
-    if (source === 'db') return [];
+    if (result.recordset && result.recordset.length > 0) dbRows = result.recordset;
   }
-  try {
-    return await fetchAwsMinRowsFromHub(tm, { catalog: stnCatalog });
-  } catch (err) {
-    if (err.code === 'NO_API_KEY') return [];
-    throw err;
+  if (source === 'db') return dbRows;
+  if (dbRows.length === 0) {
+    try {
+      return await fetchHub();
+    } catch (err) {
+      if (err.code === 'NO_API_KEY') return [];
+      throw err;
+    }
   }
+  const filled = await supplementDbRowsFromHub({ tm, dbRows, fetchHub });
+  logHubSupplementWarning(filled.warning);
+  return filled.rows;
 }
 
 function usage() {
@@ -240,12 +254,7 @@ async function atomicWriteJson(filePath, data) {
 }
 
 function hasValidField(rows, field) {
-  if (!Array.isArray(rows) || rows.length === 0) return false;
-  return rows.some((row) => {
-    if (!row || row[field] == null || row[field] === '') return false;
-    const n = Number(row[field]);
-    return Number.isFinite(n) && n >= 0;
-  });
+  return !rowsNeedFieldRefresh(rows, [field]);
 }
 
 async function readExistingRows(filePath) {
@@ -312,6 +321,7 @@ async function main() {
     refreshed: 0,
     skippedExists: 0,
     skippedFresh: 0,
+    skippedUnsafe: 0,
     noData: 0,
     errors: 0
   };
@@ -383,6 +393,29 @@ async function main() {
             totals.noData += 1;
             continue;
           }
+
+          if (exists && !args.forceRefetch && args.refreshFields.length > 0) {
+            const merged = mergeHubSupplement(existingRows, jsonData, args.refreshFields);
+            await atomicWriteJson(filePath, merged.rows);
+            console.log('File merged!', filePath, 'filled=', merged.filled);
+            totals.refreshed += 1;
+            if (args.sleepMs > 0) await sleep(args.sleepMs);
+            continue;
+          }
+
+          if (exists && args.forceRefetch) {
+            const guard = shouldRejectHubReplace(existingRows, jsonData);
+            if (guard.reject) {
+              console.warn(
+                'skip unsafe Hub replace',
+                tm,
+                JSON.stringify(guard)
+              );
+              totals.skippedUnsafe += 1;
+              continue;
+            }
+          }
+
           await atomicWriteJson(filePath, jsonData);
           console.log(exists ? 'File refreshed!' : 'File saved!', filePath);
           if (exists) totals.refreshed += 1;
