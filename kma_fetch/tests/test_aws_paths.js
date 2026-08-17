@@ -28,6 +28,15 @@ function main() {
     deriveAwsPackDir(ROOT, { NODE_ENV: 'production' }),
     PRODUCTION_AWS_PACK_DIR
   );
+  assert.strictEqual(
+    PRODUCTION_AWS_PACK_DIR,
+    '/data/node_project/weather_data/out_data/aws/pack'
+  );
+  assert.ok(
+    deriveAwsPackDirFromBase(ROOT, '/data/node_project/weather_data')
+      .replace(/\\/g, '/')
+      .endsWith('/data/node_project/weather_data/out_data/aws/pack')
+  );
 
   const customJson = '/tmp/custom/aws';
   assert.strictEqual(

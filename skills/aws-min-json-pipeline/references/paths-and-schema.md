@@ -67,7 +67,7 @@ override: `AWS_JSON_DIR`, `AWS_PACK_DIR`.
 | | 경로 |
 | --- | --- |
 | JSON 루트 | `/data/node_project/weather_data/in_data/aws` |
-| Pack 루트 | `/data/node_project/weather_server/data/weather/out_data/aws/pack` |
+| Pack 루트 | `/data/node_project/weather_data/out_data/aws/pack` |
 | Pack 일파일 | `.../pack/{slug}/1m/{yyyyMMdd}/{slug}.i16le`, `manifest.json` |
 
 개발: `{BASE_DIR}/in_data/aws`, `{BASE_DIR}/out_data/aws/pack`. override: `AWS_JSON_DIR`, `AWS_PACK_DIR`.

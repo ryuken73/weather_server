@@ -3,9 +3,9 @@ const path = require('path');
 /** 운영 고정: AWS_MIN JSON (fetch / backfill) */
 const PRODUCTION_AWS_JSON_DIR = '/data/node_project/weather_data/in_data/aws';
 
-/** 운영 고정: TA pack (server static /datasets/aws/...) */
+/** 운영 고정: pack (server.js /datasets/aws/...). JSON과 같이 weather_data 트리 */
 const PRODUCTION_AWS_PACK_DIR =
-  '/data/node_project/weather_server/data/weather/out_data/aws/pack';
+  '/data/node_project/weather_data/out_data/aws/pack';
 
 function isProductionNodeEnv(env = process.env) {
   const mode = String(env.NODE_ENV || '').toLowerCase();

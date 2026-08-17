@@ -32,9 +32,9 @@ AWS_FETCH_SOURCE=auto   # 생략 가능
 | 용도 | 경로 |
 | --- | --- |
 | fetch / backfill JSON | `/data/node_project/weather_data/in_data/aws/{yyyy-MM-dd}/AWS_MIN_{YYYYMMDDHHMM}.json` |
-| TA pack | `/data/node_project/weather_server/data/weather/out_data/aws/pack/ta/1m/{YYYYMMDD}/` |
+| pack | `/data/node_project/weather_data/out_data/aws/pack/{slug}/1m/{YYYYMMDD}/` |
 
-JSON은 `weather_data`, pack은 `weather_server` repo 아래 `data/weather/out_data`에 둔다. override는 env `AWS_JSON_DIR`, `AWS_PACK_DIR`.
+JSON과 pack 모두 `weather_data` 아래 (`in_data/aws`, `out_data/aws/pack`). `server.js`와 `warm_aws_min_packs.js`가 같은 기본값을 쓴다. override는 env `AWS_JSON_DIR`, `AWS_PACK_DIR`.
 
 ## 수작업 runbook: backfill + pack
 
@@ -130,7 +130,7 @@ NODE_ENV=production node kma_fetch/warm_aws_min_packs.js \
 산출:
 
 - JSON: `/data/node_project/weather_data/in_data/aws/{yyyy-MM-dd}/AWS_MIN_*.json`
-- Pack: `/data/node_project/weather_server/data/weather/out_data/aws/pack/{slug}/1m/{YYYYMMDD}/`
+- Pack: `/data/node_project/weather_data/out_data/aws/pack/{slug}/1m/{YYYYMMDD}/`
 
 확인:
 
