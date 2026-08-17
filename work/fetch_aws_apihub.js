@@ -1,18 +1,22 @@
 /**
- * 일회성: 기상청 API허브 AWS 매분자료 → work/out/{yyyy-MM-dd}/AWS_MIN_{tm}.json
+ * 일회성: 기상청 API허브 AWS 매분자료 → AWS JSON (main_AWS / backfill 과 동일 경로)
  *
  * API:
  *   https://apihub-pub.kma.go.kr/api/typ01/cgi-bin/url/nph-aws2_min
  *   stn=0(전체)일 때 구간 최대 10분 → 10분 창으로 순회
  *
+ * 출력 경로 (main_AWS / backfill / server 와 동일):
+ *   AWS_JSON_DIR → 운영 고정(NODE_ENV=production) → BASE_DIR/in_data/aws
+ *   운영 기본: /data/node_project/weather_data/in_data/aws/{yyyy-MM-dd}/AWS_MIN_{tm}.json
+ *
  * 사용:
- *   set API_KEY=...   (또는 kma_fetch/.env.production 에 API_KEY)
- *   node work/fetch_aws_apihub.js --from 20260712 --to 20260803
- *   node work/fetch_aws_apihub.js --from 2026-07-12 --to 2026-08-03 --sleep 300
+ *   NODE_ENV=production node work/fetch_aws_apihub.js --from 20260712 --to 20260803
+ *   node work/fetch_aws_apihub.js --from 20260712 --to 20260803 --out-dir work/out
  *   node work/fetch_aws_apihub.js --from 202607120000 --to 202607120029 --dry-run
  *
  * 옵션:
  *   --from / --to   YYYYMMDD | YYYY-MM-DD | YYYYMMDDHHmm
+ *   --out-dir PATH  JSON 루트 override (미지정 시 AWS_JSON_DIR / 운영 / BASE_DIR 규칙)
  *   --sleep N       호출 간격 ms (기본 300)
  *   --even-only     짝수분만 저장
  *   --all-minutes   모든 분 저장 (기본)
@@ -30,9 +34,10 @@ const {
   apiRowToDbShape,
   parseApiText
 } = require('../kma_fetch/services/aws_apihub_min');
+const { deriveAwsJsonDir } = require('../kma_fetch/utils/aws_min_json');
 
 const WORK_DIR = __dirname;
-const OUT_DIR = path.join(WORK_DIR, 'out');
+const REPO_ROOT = path.join(WORK_DIR, '..');
 const RAW_DIR = path.join(WORK_DIR, 'in', 'apihub');
 const NAME_MAP_PATH = path.join(WORK_DIR, '..', 'kma_fetch', 'config', 'aws_stn_name_map_20260811.json');
 const STN_CODE_PATH = path.join(WORK_DIR, '..', 'kma_fetch', 'config', 'aws_stn_code_20260811.json');
@@ -63,9 +68,17 @@ function usage() {
   node work/fetch_aws_apihub.js --from <date> --to <date> [options]
 
 Examples:
-  node work/fetch_aws_apihub.js --from 20260712 --to 20260803
+  NODE_ENV=production node work/fetch_aws_apihub.js --from 20260712 --to 20260803
+  node work/fetch_aws_apihub.js --from 20260712 --to 20260803 --out-dir work/out
   node work/fetch_aws_apihub.js --from 2026-07-12T00:00 --to 2026-07-12T00:29 --sleep 200 --save-raw
 `);
+}
+
+function resolveOutDir(outDirArg) {
+  if (outDirArg) {
+    return path.isAbsolute(outDirArg) ? outDirArg : path.resolve(REPO_ROOT, outDirArg);
+  }
+  return deriveAwsJsonDir(REPO_ROOT, process.env);
 }
 
 function parseArgs(argv) {
@@ -74,6 +87,7 @@ function parseArgs(argv) {
     to: null,
     sleepMs: 300,
     evenOnly: false,
+    outDir: null,
     saveRaw: false,
     force: false,
     dryRun: false,
@@ -94,6 +108,8 @@ function parseArgs(argv) {
     else if (a.startsWith('--sleep=')) args.sleepMs = Number(a.slice('--sleep='.length));
     else if (a === '--all-minutes') args.evenOnly = false;
     else if (a === '--even-only') args.evenOnly = true;
+    else if (a === '--out-dir') args.outDir = next();
+    else if (a.startsWith('--out-dir=')) args.outDir = a.slice('--out-dir='.length);
     else if (a === '--save-raw') args.saveRaw = true;
     else if (a === '--force') args.force = true;
     else if (a === '--dry-run') args.dryRun = true;
@@ -210,6 +226,7 @@ async function main() {
     (codeDoc.stations || []).map((s) => [String(s.STN_ID), s])
   );
 
+  const outDir = resolveOutDir(args.outDir);
   const windows = buildWindows(fromDt, toDt);
   console.log('=== fetch AWS API Hub → JSON ===');
   console.log('from      :', fromDt.toISO());
@@ -217,7 +234,7 @@ async function main() {
   console.log('windows   :', windows.length, `(${WINDOW_MINUTES} min each)`);
   console.log('evenOnly  :', args.evenOnly);
   console.log('sleepMs   :', args.sleepMs);
-  console.log('out       :', OUT_DIR);
+  console.log('out       :', outDir);
   console.log('dryRun    :', args.dryRun);
   console.log('est.calls :', windows.length);
 
@@ -276,8 +293,8 @@ async function main() {
         summary.skippedOdd += 1;
         continue;
       }
-      const outDir = path.join(OUT_DIR, folderDateFromTm(tm));
-      const outPath = path.join(outDir, `AWS_MIN_${tm}.json`);
+      const dayDir = path.join(outDir, folderDateFromTm(tm));
+      const outPath = path.join(dayDir, `AWS_MIN_${tm}.json`);
       if (!args.force && fs.existsSync(outPath)) {
         summary.skippedExists += 1;
         continue;
@@ -287,7 +304,7 @@ async function main() {
         summary.emptyTm += 1;
         continue;
       }
-      await fsp.mkdir(outDir, { recursive: true });
+      await fsp.mkdir(dayDir, { recursive: true });
       await fsp.writeFile(outPath, JSON.stringify(rows), 'utf8');
       summary.saved += 1;
       savedInWin += 1;
