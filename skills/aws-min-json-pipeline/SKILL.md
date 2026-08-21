@@ -57,9 +57,10 @@ description: AWS_MIN station JSON 수집·누락 복구·과거 backfill·1분 �
 - **legacy URL `/datasets/aws/rn_24hr/...` 를 rolling으로 쓰지 말 것** (과거 day-total immutable cache). 새 pack은 반드시 `rn_24hr_rolling`.
 - JSON의 `RN_24HR` 필드는 마이그레이션용 **일 누적 mirror**일 뿐. pack `RN_24HR`에 그대로 넣지 않는다.
 - `RN_12HR` 두 값 합산·`RN_60M` 반복 합산으로 24h를 만들지 않는다 (window 중복).
+- **Hub RN-DAY는 00:01에 reset**되는 경우가 많다. pack은 **00:00 프레임을 0으로 정규화**한다 (결측은 결측 유지). RN_24HR derive의 당일/전일 00:00에도 동일 적용.
 - 결측/counter 감소/음수/overflow → `-32768`. 0으로 clamp·carry-forward 금지.
 - 전일 JSON 없으면 해당 날짜 `RN_24HR`만 `dependency-missing` (다른 변수 성공분 유지).
-- `schemaVersion: 4`, `contractRevision: 2`. 구 day-total `RN_24HR` pack은 `--force` 재워밍.
+- `schemaVersion: 4`, `contractRevision: 3`. 구 day-total/`contractRevision<3` pack은 `--force` 재워밍.
 
 워밍 예:
 

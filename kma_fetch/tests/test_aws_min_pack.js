@@ -26,6 +26,7 @@ const {
   isPackImmutableCacheable,
   packManifestCacheHeaders,
   deriveRolling24hScaled,
+  normalizeRnDayScaledAtHhmm,
   PACK_SCHEMA_VERSION,
   PACK_CONTRACT_REVISION,
   PACK_VARIABLES,
@@ -95,6 +96,9 @@ async function main() {
   assert.strictEqual(deriveRolling24hScaled(10, 30, 40).reason, 'counter_decrease');
   assert.strictEqual(deriveRolling24hScaled(-20, 10, 5).reason, 'negative');
   assert.strictEqual(deriveRolling24hScaled(1, 32767, 0).reason, 'overflow');
+  assert.strictEqual(normalizeRnDayScaledAtHhmm(3245, '0000'), 0);
+  assert.strictEqual(normalizeRnDayScaledAtHhmm(5, '0001'), 5);
+  assert.strictEqual(normalizeRnDayScaledAtHhmm(null, '0000'), null);
 
   assert.strictEqual(encodeRainToI16(0), 0);
   assert.strictEqual(encodeRainToI16(15), 15);
@@ -440,10 +444,10 @@ async function main() {
     rnDayMidnight.binary.length / 2
   );
   const mIdx = new Map(rnDayMidnight.manifest.stations.map((s, i) => [s.STN_ID, i]));
-  // RN_DAY resets near 0 at midnight
+  // Hub may leave residual at 00:00; pack forces 0 for day semantics
   assert.strictEqual(mDay[mIdx.get(1)], 0);
-  assert.strictEqual(mDay[mIdx.get(2)], 1);
-  // Write prev 0000 then rebuild rolling at midnight
+  assert.strictEqual(mDay[mIdx.get(2)], 0);
+  // Write prev 0000 (stale Hub-like values) then rebuild rolling at midnight
   await writeFrame(rollRoot, '202608160000', [
     { STN_ID: 1, RN_24HR: 5 },
     { STN_ID: 2, RN_DAY: 2 }
@@ -457,10 +461,61 @@ async function main() {
     midnightPack2.binary.length / 2
   );
   const mIdx2 = new Map(midnightPack2.manifest.stations.map((s, i) => [s.STN_ID, i]));
-  // 0 + 100 - 5 = 95; 1 + 80 - 2 = 79 — not ~0 reset
-  assert.strictEqual(m24b[mIdx2.get(1)], 95);
-  assert.strictEqual(m24b[mIdx2.get(2)], 79);
+  // today 0000→0, prev 0000→0 ⇒ RN_24HR = prev 23:59
+  assert.strictEqual(m24b[mIdx2.get(1)], 100);
+  assert.strictEqual(m24b[mIdx2.get(2)], 80);
   assert.notStrictEqual(m24b[mIdx2.get(1)], mDay[mIdx.get(1)]);
+
+  // Hub stale 00:00: 23:59→00:00→00:01 continuity + midnight not period max
+  const hubRoot = path.join(tmp, 'aws-hub-midnight');
+  const hubCatalog = { byId: new Map(), stations: [{ STN_ID: 1 }] };
+  // Prev day: stale-looking 00:00, small 00:01, end 3245 (=324.5mm)
+  await writeFrame(hubRoot, '202608160000', [{ STN_ID: 1, RN_DAY: 3000 }]);
+  await writeFrame(hubRoot, '202608160001', [{ STN_ID: 1, RN_DAY: 5 }]);
+  await writeFrame(hubRoot, '202608162359', [{ STN_ID: 1, RN_DAY: 3245 }]);
+  // Today: Hub still shows yesterday total at 00:00; reset at 00:01; midday peak
+  await writeFrame(hubRoot, '202608170000', [{ STN_ID: 1, RN_DAY: 3245 }]);
+  await writeFrame(hubRoot, '202608170001', [{ STN_ID: 1, RN_DAY: 5 }]);
+  await writeFrame(hubRoot, '202608171200', [{ STN_ID: 1, RN_DAY: 500 }]);
+
+  const hubDay = await buildAwsVariablePack(hubRoot, '202608170000', '202608171200', 'RN_DAY', {
+    catalog: hubCatalog
+  });
+  const hub24 = await buildAwsVariablePack(hubRoot, '202608170000', '202608171200', 'RN_24HR', {
+    catalog: hubCatalog
+  });
+  const hd = new Int16Array(hubDay.binary.buffer, hubDay.binary.byteOffset, hubDay.binary.length / 2);
+  const h24 = new Int16Array(hub24.binary.buffer, hub24.binary.byteOffset, hub24.binary.length / 2);
+  assert.strictEqual(hubDay.manifest.from, '202608170000');
+  assert.strictEqual(hubDay.manifest.to, '202608171200');
+  const i0000 = 0;
+  const i0001 = 1;
+  const i1200 = 12 * 60;
+  assert.strictEqual(hd[i0000], 0); // normalized, not 3245
+  assert.strictEqual(hd[i0001], 5);
+  assert.strictEqual(hd[i1200], 500);
+  // RN_24HR(0000)=0+3245-0=3245; (0001)=5+3245-5=3245 — continuous across midnight
+  assert.strictEqual(h24[i0000], 3245);
+  assert.strictEqual(h24[i0001], 3245);
+  assert.ok(hubDay.manifest.qc.midnightRnDay.forcedZeroAt0000 >= 1);
+  assert.ok(hub24.manifest.qc.midnightRnDay.forcedZeroAt0000 >= 1);
+
+  // Period max / rank: midnight must not win because of Hub stale total
+  let dayMax = { v: -1, fi: -1 };
+  let r24Max = { v: -1, fi: -1 };
+  for (let fi = 0; fi < hubDay.manifest.frameCount; fi++) {
+    const dv = hd[fi];
+    const rv = h24[fi];
+    if (dv !== MISSING_I16 && dv > dayMax.v) dayMax = { v: dv, fi };
+    if (rv !== MISSING_I16 && rv > r24Max.v) r24Max = { v: rv, fi };
+  }
+  assert.strictEqual(dayMax.v, 500);
+  assert.strictEqual(dayMax.fi, i1200);
+  assert.notStrictEqual(dayMax.fi, i0000);
+  // rolling at 00:00 equals prev-day end, not 2× stale Hub total
+  assert.ok(h24[i0000] < 3245 * 2);
+  assert.strictEqual(h24[i0000], h24[i0001]);
+  void r24Max;
 
   // Legacy RN_DAY field fallback: row with only RN_24HR
   const legacyDay = await buildAwsVariablePack(rollRoot, '202608162359', '202608162359', 'RN_DAY', {

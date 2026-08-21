@@ -63,7 +63,8 @@ Pack binary: `out_data/aws/pack/` → `/datasets/aws/...` (env `AWS_PACK_DIR`).
 - `dataComplete` / `coverage.status`: `ok` (≥80% 유효) | `degraded` | `empty` (validSampleCount=0). 전부 결측이면 warnings
 - 항상 `sourceField`, `validSampleCount`, `missingSampleCount`, `validRatio`, `warnings`
 - Binary 캐시: 과거 `complete:true` **그리고** coverage 필드가 있는 pack → `immutable`+ETag. 구 TA pack(sourceField 없음)은 재빌드
-- `schemaVersion: 4` (`contractRevision: 2`). 구 pack은 producer가 `--force` 재워밍. RN_24HR은 `rn_24hr_rolling` URL만 사용.
+- `schemaVersion: 4` (`contractRevision: 3`). 구 pack은 producer가 `--force` 재워밍. RN_24HR은 `rn_24hr_rolling` URL만 사용.
+- Hub RN-DAY 00:00 잔여(전일 총량)는 pack에서 **0으로 정규화** (실제 reset은 보통 00:01). RN_24HR derive도 동일.
 - Pack temporal QC는 **TA만**. 강수·바람·습도·이슬점은 프레임 간 보정 없음. `/exact`는 원천 유지
 - 생성: backfill 종료 후, `main_AWS`가 어제 워밍, 또는 `warm_aws_min_packs.js`. 오늘은 요청 시 재빌드
 - Binary URL도 동일 캐시 정책 (전용 route, ETag=sha256)

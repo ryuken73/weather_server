@@ -58,7 +58,7 @@ override: `AWS_JSON_DIR`, `AWS_PACK_DIR`.
 | dtype | int16 LE |
 | scale | 0.1 ℃ |
 | missing | -32768 (`null`, `-999`, 물리 ≤ -50℃ / ×10 ≤ -500, > 60℃, pack temporal QC) |
-| schema | `schemaVersion: 4` + `contractRevision: 2`. 구 pack(특히 legacy `rn_24hr` day-total)은 `--force` 재워밍 |
+| schema | `schemaVersion: 4` + `contractRevision: 3`. 구 pack(특히 legacy `rn_24hr` day-total·자정 미정규화)은 `--force` 재워밍 |
 | order | FRAME_MAJOR_STATION_MINOR |
 | index | `frameIndex * stationCount + stationIndex` |
 | stations | STN_ID ASC (범위 union) |
