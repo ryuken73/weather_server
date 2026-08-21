@@ -25,7 +25,10 @@ const {
   packDayBounds,
   isPackImmutableCacheable,
   packManifestCacheHeaders,
+  deriveRolling24hScaled,
   PACK_SCHEMA_VERSION,
+  PACK_CONTRACT_REVISION,
+  PACK_VARIABLES,
   MISSING_I16,
   SUPPORTED_PACK_VARIABLES,
   REQUIRED_PACK_VARIABLES
@@ -65,9 +68,33 @@ async function main() {
   assert.deepStrictEqual(parsePackVariables('TA,RN_60M,rn_15m'), ['TA', 'RN_60M', 'RN_15M']);
   assert.throws(() => parsePackVariables('RN_1HR'), /alias of RN_60M/);
   assert.throws(() => parsePackVariables('RN_YN'), /not packed/);
-  assert.deepStrictEqual(REQUIRED_PACK_VARIABLES, ['TA', 'RN_15M', 'RN_60M', 'RN_12HR', 'RN_24HR', 'WS_INS']);
+  assert.deepStrictEqual(REQUIRED_PACK_VARIABLES, [
+    'TA',
+    'RN_15M',
+    'RN_60M',
+    'RN_12HR',
+    'RN_24HR',
+    'RN_DAY',
+    'WS_INS'
+  ]);
   assert.ok(SUPPORTED_PACK_VARIABLES.includes('WS_INS'));
   assert.ok(SUPPORTED_PACK_VARIABLES.includes('TD'));
+  assert.ok(SUPPORTED_PACK_VARIABLES.includes('RN_DAY'));
+  assert.strictEqual(PACK_VARIABLES.RN_24HR.slug, 'rn_24hr_rolling');
+  assert.strictEqual(PACK_VARIABLES.RN_24HR.accumulation.type, 'rolling');
+  assert.strictEqual(PACK_VARIABLES.RN_24HR.accumulation.windowMinutes, 1440);
+  assert.strictEqual(PACK_VARIABLES.RN_DAY.slug, 'rn_day');
+  assert.strictEqual(PACK_VARIABLES.RN_DAY.accumulation.type, 'day');
+
+  // Pure derive unit checks
+  assert.deepStrictEqual(deriveRolling24hScaled(10, 100, 40), { value: 70, reason: null });
+  assert.deepStrictEqual(deriveRolling24hScaled(0, 0, 0), { value: 0, reason: null }); // dry 24h
+  assert.strictEqual(deriveRolling24hScaled(null, 100, 40).reason, 'missing_today');
+  assert.strictEqual(deriveRolling24hScaled(10, null, 40).reason, 'missing_prev_end');
+  assert.strictEqual(deriveRolling24hScaled(10, 100, null).reason, 'missing_prev_same');
+  assert.strictEqual(deriveRolling24hScaled(10, 30, 40).reason, 'counter_decrease');
+  assert.strictEqual(deriveRolling24hScaled(-20, 10, 5).reason, 'negative');
+  assert.strictEqual(deriveRolling24hScaled(1, 32767, 0).reason, 'overflow');
 
   assert.strictEqual(encodeRainToI16(0), 0);
   assert.strictEqual(encodeRainToI16(15), 15);
@@ -273,20 +300,31 @@ async function main() {
   const rn12 = await buildAwsVariablePack(rainRoot, '202608131200', '202608131200', 'RN_12HR', {
     catalog: rainCatalog
   });
-  const rn24 = await buildAwsVariablePack(rainRoot, '202608131200', '202608131200', 'RN_24HR', {
+  const rnDay = await buildAwsVariablePack(rainRoot, '202608131200', '202608131200', 'RN_DAY', {
     catalog: rainCatalog
   });
   const v15 = new Int16Array(rn15.binary.buffer, rn15.binary.byteOffset, rn15.binary.length / 2);
   const v12 = new Int16Array(rn12.binary.buffer, rn12.binary.byteOffset, rn12.binary.length / 2);
-  const v24 = new Int16Array(rn24.binary.buffer, rn24.binary.byteOffset, rn24.binary.length / 2);
+  const vDay = new Int16Array(rnDay.binary.buffer, rnDay.binary.byteOffset, rnDay.binary.length / 2);
   assert.strictEqual(v15[stationIndex.get(530)], 5);
   assert.strictEqual(v12[stationIndex.get(530)], 95);
-  assert.strictEqual(v24[stationIndex.get(530)], 95);
+  assert.strictEqual(vDay[stationIndex.get(530)], 95);
   assert.strictEqual(v12[stationIndex.get(679)], 245);
-  assert.strictEqual(v24[stationIndex.get(679)], 245);
+  assert.strictEqual(vDay[stationIndex.get(679)], 245);
+  assert.strictEqual(rnDay.manifest.variable, 'RN_DAY');
+  assert.strictEqual(rnDay.manifest.sourceField, 'RN-DAY');
+  assert.strictEqual(rnDay.manifest.accumulation.type, 'day');
+  assert.strictEqual(rnDay.manifest.accumulation.timezone, 'Asia/Seoul');
+  assert.ok(String(rnDay.manifest.data.url).includes('/rn_day/'));
   assert.deepStrictEqual(
     rn60.manifest.stations.map((s) => s.STN_ID),
     rn15.manifest.stations.map((s) => s.STN_ID)
+  );
+
+  // RN_24HR without previous day → dependency-missing
+  await assert.rejects(
+    () => buildAwsVariablePack(rainRoot, '202608131200', '202608131200', 'RN_24HR', { catalog: rainCatalog }),
+    (err) => err && err.code === 'DEPENDENCY_MISSING'
   );
 
   const wsIns = await buildAwsVariablePack(rainRoot, '202608131200', '202608131200', 'WS_INS', {
@@ -331,11 +369,119 @@ async function main() {
   assert.strictEqual(sv[0], 0);
   assert.strictEqual(sv[1], 80);
 
+  // Rolling RN_24HR from day counters + RN_DAY midnight reset vs rolling continuity
+  const rollRoot = path.join(tmp, 'aws-roll');
+  const rollCatalog = { byId: new Map(), stations: [{ STN_ID: 1 }, { STN_ID: 2 }] };
+  // Prev day: at 1200 counter=40, at 2359 counter=100 (legacy RN_24HR field only on one station)
+  await writeFrame(rollRoot, '202608161200', [
+    { STN_ID: 1, RN_24HR: 40, RN_12HR: 30 },
+    { STN_ID: 2, RN_DAY: 50, RN_12HR: 20 }
+  ]);
+  await writeFrame(rollRoot, '202608162359', [
+    { STN_ID: 1, RN_24HR: 100, RN_12HR: 40 },
+    { STN_ID: 2, RN_DAY: 80, RN_12HR: 25 }
+  ]);
+  // Today just after midnight: day counter resets; rolling must not reset to ~0
+  await writeFrame(rollRoot, '202608170000', [
+    { STN_ID: 1, RN_DAY: 0, RN_12HR: 40 },
+    { STN_ID: 2, RN_DAY: 1, RN_12HR: 25 }
+  ]);
+  await writeFrame(rollRoot, '202608171200', [
+    { STN_ID: 1, RN_DAY: 25, RN_12HR: 20 },
+    { STN_ID: 2, RN_DAY: 10, RN_12HR: 5 }
+  ]);
+  // Counter decrease fixture station (prev end < prev same) → missing
+  await writeFrame(rollRoot, '202608161200', [
+    { STN_ID: 1, RN_24HR: 40, RN_12HR: 30 },
+    { STN_ID: 2, RN_DAY: 50, RN_12HR: 20 },
+    { STN_ID: 3, RN_DAY: 90, RN_12HR: 10 }
+  ]);
+  await writeFrame(rollRoot, '202608162359', [
+    { STN_ID: 1, RN_24HR: 100, RN_12HR: 40 },
+    { STN_ID: 2, RN_DAY: 80, RN_12HR: 25 },
+    { STN_ID: 3, RN_DAY: 70, RN_12HR: 10 }
+  ]);
+  await writeFrame(rollRoot, '202608171200', [
+    { STN_ID: 1, RN_DAY: 25, RN_12HR: 20 },
+    { STN_ID: 2, RN_DAY: 10, RN_12HR: 5 },
+    { STN_ID: 3, RN_DAY: 5, RN_12HR: 1 }
+  ]);
+  const rollCatalog3 = { byId: new Map(), stations: [{ STN_ID: 1 }, { STN_ID: 2 }, { STN_ID: 3 }] };
+
+  const rn24Pack = await buildAwsVariablePack(rollRoot, '202608171200', '202608171200', 'RN_24HR', {
+    catalog: rollCatalog3
+  });
+  assert.strictEqual(rn24Pack.manifest.variable, 'RN_24HR');
+  assert.strictEqual(rn24Pack.manifest.accumulation.type, 'rolling');
+  assert.strictEqual(rn24Pack.manifest.accumulation.windowMinutes, 1440);
+  assert.strictEqual(rn24Pack.manifest.sourceField, 'derived:RN-DAY');
+  assert.ok(String(rn24Pack.manifest.data.url).includes('rn_24hr_rolling'));
+  assert.ok(!String(rn24Pack.manifest.data.url).includes('/rn_24hr/1m/'));
+  const r24 = new Int16Array(
+    rn24Pack.binary.buffer,
+    rn24Pack.binary.byteOffset,
+    rn24Pack.binary.length / 2
+  );
+  const rollIdx = new Map(rn24Pack.manifest.stations.map((s, i) => [s.STN_ID, i]));
+  // 25 + 100 - 40 = 85
+  assert.strictEqual(r24[rollIdx.get(1)], 85);
+  // 10 + 80 - 50 = 40
+  assert.strictEqual(r24[rollIdx.get(2)], 40);
+  // counter decrease 70 < 90 → missing
+  assert.strictEqual(r24[rollIdx.get(3)], MISSING_I16);
+  assert.ok(rn24Pack.manifest.qc.rolling24h.counterDecrease >= 1);
+
+  const rnDayMidnight = await buildAwsVariablePack(rollRoot, '202608170000', '202608170000', 'RN_DAY', {
+    catalog: rollCatalog
+  });
+  const mDay = new Int16Array(
+    rnDayMidnight.binary.buffer,
+    rnDayMidnight.binary.byteOffset,
+    rnDayMidnight.binary.length / 2
+  );
+  const mIdx = new Map(rnDayMidnight.manifest.stations.map((s, i) => [s.STN_ID, i]));
+  // RN_DAY resets near 0 at midnight
+  assert.strictEqual(mDay[mIdx.get(1)], 0);
+  assert.strictEqual(mDay[mIdx.get(2)], 1);
+  // Write prev 0000 then rebuild rolling at midnight
+  await writeFrame(rollRoot, '202608160000', [
+    { STN_ID: 1, RN_24HR: 5 },
+    { STN_ID: 2, RN_DAY: 2 }
+  ]);
+  const midnightPack2 = await buildAwsVariablePack(rollRoot, '202608170000', '202608170000', 'RN_24HR', {
+    catalog: rollCatalog
+  });
+  const m24b = new Int16Array(
+    midnightPack2.binary.buffer,
+    midnightPack2.binary.byteOffset,
+    midnightPack2.binary.length / 2
+  );
+  const mIdx2 = new Map(midnightPack2.manifest.stations.map((s, i) => [s.STN_ID, i]));
+  // 0 + 100 - 5 = 95; 1 + 80 - 2 = 79 — not ~0 reset
+  assert.strictEqual(m24b[mIdx2.get(1)], 95);
+  assert.strictEqual(m24b[mIdx2.get(2)], 79);
+  assert.notStrictEqual(m24b[mIdx2.get(1)], mDay[mIdx.get(1)]);
+
+  // Legacy RN_DAY field fallback: row with only RN_24HR
+  const legacyDay = await buildAwsVariablePack(rollRoot, '202608162359', '202608162359', 'RN_DAY', {
+    catalog: rollCatalog
+  });
+  const ld = new Int16Array(
+    legacyDay.binary.buffer,
+    legacyDay.binary.byteOffset,
+    legacyDay.binary.length / 2
+  );
+  const ldIdx = new Map(legacyDay.manifest.stations.map((s, i) => [s.STN_ID, i]));
+  assert.strictEqual(ld[ldIdx.get(1)], 100);
+
   const warmRoot = path.join(tmp, 'pack-all');
   const warmJson = path.join(tmp, 'aws-warm');
   await writeFrame(warmJson, '202608141000', [
-    { STN_ID: 1, TA: 200, RN_15M: 1, RN_60M: 2, RN_12HR: 3, RN_24HR: 4 }
+    { STN_ID: 1, TA: 200, RN_15M: 1, RN_60M: 2, RN_12HR: 3, RN_24HR: 4, RN_DAY: 4 }
   ]);
+  // Prev day for RN_24HR warm
+  await writeFrame(warmJson, '202608131000', [{ STN_ID: 1, RN_DAY: 1 }]);
+  await writeFrame(warmJson, '202608132359', [{ STN_ID: 1, RN_DAY: 9 }]);
   const warmed = await warmAwsDayPack(warmJson, warmRoot, '20260814', {
     catalog: { byId: new Map(), stations: [{ STN_ID: 1 }] }
   });
@@ -346,11 +492,14 @@ async function main() {
   for (const v of SUPPORTED_PACK_VARIABLES) {
     const item = warmed.items.find((i) => i.variable === v);
     assert.ok(item && item.ok, `${v} pack should succeed`);
-    const slug = v.toLowerCase();
     assert.ok(item.manifest.sourceField, `${v} sourceField`);
     assert.ok(typeof item.manifest.validSampleCount === 'number', `${v} validSampleCount`);
     assert.ok(item.manifest.coverage && item.manifest.coverage.status, `${v} coverage`);
   }
+  const warmRn24 = warmed.items.find((i) => i.variable === 'RN_24HR');
+  assert.ok(String(warmRn24.manifest.data.url).includes('rn_24hr_rolling'));
+  assert.strictEqual(warmRn24.manifest.schemaVersion, PACK_SCHEMA_VERSION);
+  assert.strictEqual(warmRn24.manifest.contractRevision, PACK_CONTRACT_REVISION);
 
   const emptyTd = await buildAwsVariablePack(warmJson, '202608141000', '202608141000', 'TD', {
     catalog: { byId: new Map(), stations: [{ STN_ID: 1 }] }
@@ -378,6 +527,7 @@ async function main() {
       {
         complete: true,
         schemaVersion: PACK_SCHEMA_VERSION,
+        contractRevision: PACK_CONTRACT_REVISION,
         variable: 'TA',
         from: 'a',
         to: 'b',
@@ -386,6 +536,49 @@ async function main() {
         coverage: { status: 'ok' }
       },
       'TA',
+      'a',
+      'b'
+    ),
+    true
+  );
+  // Legacy day-accumulation RN_24HR must not be reused as rolling
+  assert.strictEqual(
+    isReusableCachedManifest(
+      {
+        complete: true,
+        schemaVersion: PACK_SCHEMA_VERSION,
+        contractRevision: PACK_CONTRACT_REVISION,
+        variable: 'RN_24HR',
+        from: 'a',
+        to: 'b',
+        sourceField: 'RN-DAY',
+        accumulation: { type: 'day', timezone: 'Asia/Seoul' },
+        validSampleCount: 1,
+        coverage: { status: 'ok' },
+        data: { url: '/datasets/aws/rn_24hr/1m/x/rn_24hr.i16le' }
+      },
+      'RN_24HR',
+      'a',
+      'b'
+    ),
+    false
+  );
+  assert.strictEqual(
+    isReusableCachedManifest(
+      {
+        complete: true,
+        schemaVersion: PACK_SCHEMA_VERSION,
+        contractRevision: PACK_CONTRACT_REVISION,
+        variable: 'RN_24HR',
+        from: 'a',
+        to: 'b',
+        sourceField: 'derived:RN-DAY',
+        accumulation: { type: 'rolling', windowMinutes: 1440 },
+        validSampleCount: 1,
+        coverage: { status: 'ok' },
+        data: { url: '/datasets/aws/rn_24hr_rolling/1m/x/rn_24hr_rolling.i16le' }
+      },
+      'RN_24HR',
       'a',
       'b'
     ),

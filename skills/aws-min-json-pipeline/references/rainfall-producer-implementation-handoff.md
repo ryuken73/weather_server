@@ -1,5 +1,9 @@
 # AWS 강수 1분 pack Producer 구현 요청서
 
+> **업데이트 (2026-08-21):** `RN_24HR`을 true rolling 24h로 재정의하고 `RN_DAY`를 분리했다.
+> 최신 계약은 `docs/rainfall-producer-rn24-rnday-change-request.md`를 본다.
+> 아래 표의 `RN-DAY → RN_24HR`(당일 누적) 매핑은 **legacy**이며, 현재는 `RN-DAY → RN_DAY`(day) + 파생 `RN_24HR`(rolling)이다.
+
 작성일: 2026-08-13 KST  
 대상 저장소: `weather_api`  
 요청 프로젝트: `weather-bars-instanced`
@@ -13,7 +17,7 @@
 | `RN-15m` | `RN_15M` | `RN_15M` | 최근 15분 누적강수량 | mm |
 | `RN-60m` | `RN_60M` | `RN_60M` | 최근 60분 누적강수량 | mm |
 | `RN-12H` | `RN_12HR` | `RN_12HR` | 최근 12시간 누적강수량 | mm |
-| `RN-DAY` | `RN_24HR` | `RN_24HR` | 당일 누적강수량 | mm |
+| `RN-DAY` | `RN_DAY` (+ legacy `RN_24HR`) | `RN_DAY` / 파생 `RN_24HR` | 당일 누적 / rolling 24h | mm |
 
 `RE`/`RN_YN`은 pack 대상에서 제외한다. 확인한 APIHUB 샘플에서는 736개 관측소 모두 `RE=-99.9`였으므로 강수 여부를 판단하는 필수 신호로 사용할 수 없다.
 

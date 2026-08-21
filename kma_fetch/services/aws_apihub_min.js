@@ -57,6 +57,9 @@ function apiRowToDbShape(parts, nameById, stnMeta) {
     RN_1HR: rn60Scaled,
     RN_6HR: null,
     RN_12HR: scale10(rn12),
+    // RN-DAY → RN_DAY (canonical). RN_24HR keeps the same day-total for legacy JSON consumers;
+    // pack RN_24HR is derived rolling and must not use this field as rolling source.
+    RN_DAY: scale10(rnDay),
     RN_24HR: scale10(rnDay),
     RN_48HR: null,
     RN_15M: scale10(rn15),

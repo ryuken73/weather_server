@@ -22,8 +22,13 @@ const MISSING_I16 = -32768;
 const PACK_INTERVAL_MINUTES = 1;
 const PACK_MAX_FRAMES = 1440;
 const VARIABLE_TA = 'TA';
-/** TA QC + rain missing rules. Binary layout unchanged → keep v3. */
-const PACK_SCHEMA_VERSION = 3;
+/**
+ * v4: RN_24HR = true rolling 24h (derived from RN-DAY counters, slug rn_24hr_rolling);
+ * RN_DAY = KST day accumulation. Legacy day-total under rn_24hr/ must not be reused.
+ */
+const PACK_SCHEMA_VERSION = 4;
+/** Bump when pack meaning/URL contract changes for cache reuse checks. */
+const PACK_CONTRACT_REVISION = 2;
 
 /**
  * Hub nph-aws2_min: 물리기온 ≤ -50℃ 결측.
@@ -145,14 +150,28 @@ const PACK_VARIABLES = Object.freeze({
     encode: encodeRainToI16
   },
   RN_24HR: {
-    jsonField: 'RN_24HR',
-    slug: 'rn_24hr',
+    jsonField: null,
+    slug: 'rn_24hr_rolling',
+    unit: 'mm',
+    scale: 0.1,
+    source: 'KMA_APIHUB_nph-aws2_min',
+    sourceField: 'derived:RN-DAY',
+    family: 'rain',
+    accumulation: { type: 'rolling', windowMinutes: 1440 },
+    dependency: { sourceVariable: 'RN_DAY', requiresPreviousDay: true },
+    derive: 'rolling24hFromDayCounters',
+    encode: encodeRainToI16
+  },
+  RN_DAY: {
+    // Prefer RN_DAY; fall back to legacy JSON field that stored day-total as RN_24HR.
+    jsonField: ['RN_DAY', 'RN_24HR'],
+    slug: 'rn_day',
     unit: 'mm',
     scale: 0.1,
     source: 'KMA_APIHUB_nph-aws2_min',
     sourceField: 'RN-DAY',
     family: 'rain',
-    accumulation: { type: 'day', timezone: 'Asia/Seoul' },
+    accumulation: { type: 'day', timezone: 'Asia/Seoul', resetTime: '00:00' },
     encode: encodeRainToI16
   },
   WS_INS: {
@@ -223,6 +242,7 @@ const REQUIRED_PACK_VARIABLES = Object.freeze([
   'RN_60M',
   'RN_12HR',
   'RN_24HR',
+  'RN_DAY',
   'WS_INS'
 ]);
 const SUPPORTED_PACK_VARIABLES = Object.freeze(Object.keys(PACK_VARIABLES));
@@ -513,6 +533,142 @@ async function readDayFrames(awsJsonDir, timestamps, catalog) {
 }
 
 /**
+ * Read scaled rain day-counter from a JSON row.
+ * Prefer RN_DAY; legacy files stored the same value as RN_24HR.
+ */
+function readRnDayRaw(row) {
+  if (row == null) return null;
+  if (row.RN_DAY != null && row.RN_DAY !== '') return row.RN_DAY;
+  if (row.RN_24HR != null && row.RN_24HR !== '') return row.RN_24HR;
+  return null;
+}
+
+function readJsonFieldRaw(row, jsonField) {
+  if (row == null || jsonField == null) return null;
+  if (Array.isArray(jsonField)) {
+    for (const key of jsonField) {
+      if (key === 'RN_DAY' || key === 'RN_24HR') {
+        // Use shared day-counter reader so order in the array still prefers RN_DAY.
+        const v = key === 'RN_DAY' ? (row.RN_DAY != null && row.RN_DAY !== '' ? row.RN_DAY : null)
+          : (row.RN_24HR != null && row.RN_24HR !== '' ? row.RN_24HR : null);
+        if (v != null) return v;
+        continue;
+      }
+      if (row[key] != null && row[key] !== '') return row[key];
+    }
+    return null;
+  }
+  const raw = row[jsonField];
+  return raw != null && raw !== '' ? raw : null;
+}
+
+function jsonFieldLabel(jsonField) {
+  if (jsonField == null) return '(derived)';
+  if (Array.isArray(jsonField)) return jsonField.join('|');
+  return String(jsonField);
+}
+
+function prevYmd(yyyymmdd) {
+  const y = Number(yyyymmdd.slice(0, 4));
+  const m = Number(yyyymmdd.slice(4, 6));
+  const d = Number(yyyymmdd.slice(6, 8));
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  dt.setUTCDate(dt.getUTCDate() - 1);
+  const yy = dt.getUTCFullYear();
+  const mm = String(dt.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(dt.getUTCDate()).padStart(2, '0');
+  return `${yy}${mm}${dd}`;
+}
+
+/**
+ * Scaled day-counter validity for rolling arithmetic (null = missing input).
+ * Does not treat 0 as missing.
+ */
+function scaledRnDayOrNull(raw) {
+  const scaled = toScaledOrNull(raw);
+  if (scaled == null) return null;
+  if (scaled <= HUB_PHYSICAL_MISSING_MAX * 10) return null;
+  if (scaled < 0) return null;
+  return scaled;
+}
+
+/**
+ * RN_24HR(D,t) = RN_DAY(D,t) + RN_DAY(D-1,23:59) - RN_DAY(D-1,t)
+ * Window ends at (D,t) inclusive and excludes (D-1,t) minute (no double-count).
+ */
+function deriveRolling24hScaled(todayScaled, prevEndScaled, prevSameScaled) {
+  if (todayScaled == null) return { value: null, reason: 'missing_today' };
+  if (prevEndScaled == null) return { value: null, reason: 'missing_prev_end' };
+  if (prevSameScaled == null) return { value: null, reason: 'missing_prev_same' };
+  if (prevEndScaled < prevSameScaled) return { value: null, reason: 'counter_decrease' };
+  const rolling = todayScaled + prevEndScaled - prevSameScaled;
+  if (rolling < 0) return { value: null, reason: 'negative' };
+  if (rolling > 32767) return { value: null, reason: 'overflow' };
+  return { value: rolling, reason: null };
+}
+
+/**
+ * Index previous KST day RN_DAY counters: byId@HHMM and end-of-day @2359.
+ * Throws DEPENDENCY_MISSING if the previous-day folder has no JSON at all.
+ */
+async function loadPrevDayRnDayIndex(awsJsonDir, dayYmd) {
+  const prevDay = prevYmd(dayYmd);
+  const from = `${prevDay}0000`;
+  const to = `${prevDay}2359`;
+  const timestamps = enumerateTimestamps(from, to, PACK_INTERVAL_MINUTES, PACK_MAX_FRAMES);
+  const byTm = new Map();
+  let presentCount = 0;
+  const stationSet = new Set();
+
+  for (const tm of timestamps) {
+    const { missing, rows } = await readFrameRows(awsJsonDir, tm);
+    if (missing) {
+      byTm.set(tm.slice(8, 12), null);
+      continue;
+    }
+    presentCount += 1;
+    const byId = new Map();
+    for (const row of rows) {
+      if (row == null || row.STN_ID == null) continue;
+      const id = Number(row.STN_ID);
+      stationSet.add(id);
+      byId.set(id, scaledRnDayOrNull(readRnDayRaw(row)));
+    }
+    byTm.set(tm.slice(8, 12), byId);
+  }
+
+  if (presentCount === 0) {
+    const err = new Error(
+      `RN_24HR dependency missing: no AWS JSON for previous day ${prevDay} (required for rolling 24h)`
+    );
+    err.code = 'DEPENDENCY_MISSING';
+    err.prevDay = prevDay;
+    throw err;
+  }
+
+  return {
+    prevDay,
+    byTm,
+    endById: byTm.get('2359'),
+    stationSet,
+    presentCount,
+    expectedCount: timestamps.length
+  };
+}
+
+function emptyRollingQcCounts() {
+  return {
+    missingToday: 0,
+    missingPrevEnd: 0,
+    missingPrevSame: 0,
+    counterDecrease: 0,
+    negative: 0,
+    overflow: 0,
+    stationMismatch: 0
+  };
+}
+
+/**
  * @returns {Promise<{ manifest: object, binary: Buffer, dayKey: string, datasetId: string, revision: string, variable: string }>}
  */
 async function buildAwsVariablePack(awsJsonDir, fromKor, toKor, variable, options = {}) {
@@ -538,25 +694,87 @@ async function buildAwsVariablePack(awsJsonDir, fromKor, toKor, variable, option
   let overflowCount = 0;
   let negativeRainCount = 0;
   const jsonField = spec.jsonField;
-
+  const fieldLabel = jsonFieldLabel(jsonField);
   let jsonPresentCount = 0;
-  for (let fi = 0; fi < frameCount; fi++) {
-    const byId = frames[fi];
-    if (!byId) continue;
-    for (let si = 0; si < stationCount; si++) {
-      const row = byId.get(stationIds[si]);
-      if (!row) continue;
-      const raw = row[jsonField];
-      if (raw != null && raw !== '') jsonPresentCount += 1;
-      if (spec.family === 'rain' && raw != null && raw !== '') {
-        const n = Number(raw);
-        if (Number.isFinite(n)) {
-          const scaled = Math.round(n);
-          if (scaled > 32767) overflowCount += 1;
-          else if (scaled < 0 && scaled > HUB_PHYSICAL_MISSING_MAX * 10) negativeRainCount += 1;
+  let prevDayIndex = null;
+  const rollingQc = emptyRollingQcCounts();
+
+  if (spec.derive === 'rolling24hFromDayCounters') {
+    const dayYmd = from.slice(0, 8);
+    if (to.slice(0, 8) !== dayYmd) {
+      const err = new Error('RN_24HR rolling derive requires a single KST day range');
+      err.code = 'BAD_QUERY';
+      throw err;
+    }
+    prevDayIndex = await loadPrevDayRnDayIndex(awsJsonDir, dayYmd);
+    const prevStations = prevDayIndex.stationSet;
+    const endById = prevDayIndex.endById;
+
+    for (let fi = 0; fi < frameCount; fi++) {
+      const byId = frames[fi];
+      if (!byId) continue;
+      const hhmm = timestamps[fi].slice(8, 12);
+      const prevSameById = prevDayIndex.byTm.get(hhmm);
+
+      for (let si = 0; si < stationCount; si++) {
+        const stnId = stationIds[si];
+        const row = byId.get(stnId);
+        if (!row) {
+          rollingQc.stationMismatch += 1;
+          continue;
         }
+        if (!prevStations.has(stnId)) {
+          rollingQc.stationMismatch += 1;
+          continue;
+        }
+
+        const todayScaled = scaledRnDayOrNull(readRnDayRaw(row));
+        if (todayScaled != null) jsonPresentCount += 1;
+
+        const prevEndScaled = endById ? endById.get(stnId) : null;
+        const prevSameScaled =
+          prevSameById && typeof prevSameById.get === 'function' ? prevSameById.get(stnId) : null;
+
+        // null Map entry or missing frame → treat as missing scaled
+        const endVal = endById == null ? null : prevEndScaled === undefined ? null : prevEndScaled;
+        const sameVal =
+          prevSameById == null ? null : prevSameScaled === undefined ? null : prevSameScaled;
+
+        const derived = deriveRolling24hScaled(todayScaled, endVal, sameVal);
+        if (derived.reason) {
+          if (derived.reason === 'missing_today') rollingQc.missingToday += 1;
+          else if (derived.reason === 'missing_prev_end') rollingQc.missingPrevEnd += 1;
+          else if (derived.reason === 'missing_prev_same') rollingQc.missingPrevSame += 1;
+          else if (derived.reason === 'counter_decrease') rollingQc.counterDecrease += 1;
+          else if (derived.reason === 'negative') rollingQc.negative += 1;
+          else if (derived.reason === 'overflow') {
+            rollingQc.overflow += 1;
+            overflowCount += 1;
+          }
+          continue;
+        }
+        int16[fi * stationCount + si] = derived.value;
       }
-      int16[fi * stationCount + si] = spec.encode(raw);
+    }
+  } else {
+    for (let fi = 0; fi < frameCount; fi++) {
+      const byId = frames[fi];
+      if (!byId) continue;
+      for (let si = 0; si < stationCount; si++) {
+        const row = byId.get(stationIds[si]);
+        if (!row) continue;
+        const raw = readJsonFieldRaw(row, jsonField);
+        if (raw != null && raw !== '') jsonPresentCount += 1;
+        if (spec.family === 'rain' && raw != null && raw !== '') {
+          const n = Number(raw);
+          if (Number.isFinite(n)) {
+            const scaled = Math.round(n);
+            if (scaled > 32767) overflowCount += 1;
+            else if (scaled < 0 && scaled > HUB_PHYSICAL_MISSING_MAX * 10) negativeRainCount += 1;
+          }
+        }
+        int16[fi * stationCount + si] = spec.encode(raw);
+      }
     }
   }
 
@@ -590,6 +808,27 @@ async function buildAwsVariablePack(awsJsonDir, fromKor, toKor, variable, option
   if (negativeRainCount > 0) {
     warnings.push(`Negative ${name} excluded ${negativeRainCount} samples`);
   }
+  if (spec.derive === 'rolling24hFromDayCounters') {
+    const qcTotal =
+      rollingQc.missingToday +
+      rollingQc.missingPrevEnd +
+      rollingQc.missingPrevSame +
+      rollingQc.counterDecrease +
+      rollingQc.negative +
+      rollingQc.overflow +
+      rollingQc.stationMismatch;
+    if (rollingQc.counterDecrease > 0) {
+      warnings.push(
+        `RN_24HR counter decrease (prev 23:59 < prev same time) → missing for ${rollingQc.counterDecrease} samples`
+      );
+    }
+    if (rollingQc.negative > 0) {
+      warnings.push(`RN_24HR negative derive → missing for ${rollingQc.negative} samples`);
+    }
+    if (qcTotal > 0) {
+      warnings.push(`RN_24HR rolling QC missing reasons totaling ${qcTotal} sample slots`);
+    }
+  }
   if (coverage.status === 'empty') {
     warnings.push(`${name} has no valid samples (all missing)`);
   } else if (coverage.status === 'degraded') {
@@ -597,14 +836,18 @@ async function buildAwsVariablePack(awsJsonDir, fromKor, toKor, variable, option
       `${name} coverage ${(coverage.validRatio * 100).toFixed(1)}% is abnormally low (status=degraded)`
     );
   }
-  if (jsonPresentCount === 0) {
+  if (jsonPresentCount === 0 && spec.derive !== 'rolling24hFromDayCounters') {
     warnings.push(
-      `JSON field ${jsonField} is missing for the whole day (likely DB-only source without Hub fill)`
+      `JSON field ${fieldLabel} is missing for the whole day (likely DB-only source without Hub fill)`
     );
+  }
+  if (jsonPresentCount === 0 && spec.derive === 'rolling24hFromDayCounters') {
+    warnings.push('RN_DAY source (RN_DAY|legacy RN_24HR) missing for the whole day');
   }
 
   const manifest = {
     schemaVersion: PACK_SCHEMA_VERSION,
+    contractRevision: PACK_CONTRACT_REVISION,
     datasetId,
     source: spec.source,
     variable: name,
@@ -644,6 +887,12 @@ async function buildAwsVariablePack(awsJsonDir, fromKor, toKor, variable, option
   if (spec.accumulation) {
     manifest.accumulation = { ...spec.accumulation };
   }
+  if (spec.dependency) {
+    manifest.dependency = {
+      ...spec.dependency,
+      previousDay: prevDayIndex ? prevDayIndex.prevDay : undefined
+    };
+  }
   if (spec.temporalQc === 'ta' && taQcConfig) {
     manifest.qc.taTemporal = {
       enabled: taQcConfig.enabled,
@@ -658,6 +907,9 @@ async function buildAwsVariablePack(awsJsonDir, fromKor, toKor, variable, option
       overflowExcluded: overflowCount,
       negativeExcluded: negativeRainCount
     };
+  }
+  if (spec.derive === 'rolling24hFromDayCounters') {
+    manifest.qc.rolling24h = { ...rollingQc };
   }
 
   return { manifest, binary, dayKey, datasetId, revision, variable: name };
@@ -703,10 +955,12 @@ async function loadCachedManifest(packRoot, dayKey, variable = VARIABLE_TA) {
 }
 
 function isReusableCachedManifest(cached, name, from, to) {
-  return Boolean(
-    cached &&
+  if (
+    !(
+      cached &&
       cached.complete === true &&
       cached.schemaVersion === PACK_SCHEMA_VERSION &&
+      cached.contractRevision === PACK_CONTRACT_REVISION &&
       cached.variable === name &&
       cached.from === from &&
       cached.to === to &&
@@ -714,7 +968,24 @@ function isReusableCachedManifest(cached, name, from, to) {
       typeof cached.validSampleCount === 'number' &&
       cached.coverage &&
       cached.coverage.status
-  );
+    )
+  ) {
+    return false;
+  }
+  // Reject legacy day-accumulation RN_24HR packs (slug rn_24hr / accumulation.type=day).
+  if (name === 'RN_24HR') {
+    const acc = cached.accumulation;
+    if (!acc || acc.type !== 'rolling' || acc.windowMinutes !== 1440) return false;
+    if (cached.sourceField !== 'derived:RN-DAY') return false;
+    if (!cached.data || !cached.data.url || !String(cached.data.url).includes('rn_24hr_rolling')) {
+      return false;
+    }
+  }
+  if (name === 'RN_DAY') {
+    const acc = cached.accumulation;
+    if (!acc || acc.type !== 'day') return false;
+  }
+  return true;
 }
 
 async function getOrBuildAwsVariablePack(awsJsonDir, packRoot, fromKor, toKor, variable, options = {}) {
@@ -811,6 +1082,7 @@ module.exports = {
   PACK_INTERVAL_MINUTES,
   PACK_MAX_FRAMES,
   PACK_SCHEMA_VERSION,
+  PACK_CONTRACT_REVISION,
   VARIABLE_TA,
   PACK_VARIABLES,
   REQUIRED_PACK_VARIABLES,
@@ -830,6 +1102,9 @@ module.exports = {
   readTaQcConfig,
   applyTaTemporalQc,
   getPackVariableSpec,
+  readRnDayRaw,
+  deriveRolling24hScaled,
+  prevYmd,
   buildAwsVariablePack,
   buildAwsTaPack,
   publishAwsVariablePack,

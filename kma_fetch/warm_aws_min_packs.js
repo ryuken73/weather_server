@@ -234,11 +234,20 @@ async function main() {
     built: 0,
     complete: 0,
     incomplete: 0,
+    dependencyMissing: 0,
     errors: 0,
     byVariable: {}
   };
   for (const v of args.variables) {
-    summary.byVariable[v] = { ok: 0, cache: 0, built: 0, complete: 0, incomplete: 0, errors: 0 };
+    summary.byVariable[v] = {
+      ok: 0,
+      cache: 0,
+      built: 0,
+      complete: 0,
+      incomplete: 0,
+      dependencyMissing: 0,
+      errors: 0
+    };
   }
 
   for (const yyyymmdd of days) {
@@ -250,16 +259,23 @@ async function main() {
       });
       for (const item of result.items || []) {
         const bucket = summary.byVariable[item.variable] || (summary.byVariable[item.variable] = {
-          ok: 0, cache: 0, built: 0, complete: 0, incomplete: 0, errors: 0
+          ok: 0, cache: 0, built: 0, complete: 0, incomplete: 0, dependencyMissing: 0, errors: 0
         });
         if (!item.ok) {
-          summary.errors += 1;
-          bucket.errors += 1;
-          const hint =
-            item.error && item.error.code === 'NOT_FOUND'
-              ? ` — checked ${describeDaySource(awsJsonDir, yyyymmdd)}`
-              : '';
-          console.error(yyyymmdd, item.variable, 'FAILED', (item.message || '') + hint);
+          const depMissing = item.error && item.error.code === 'DEPENDENCY_MISSING';
+          if (depMissing) {
+            summary.dependencyMissing += 1;
+            bucket.dependencyMissing += 1;
+            console.error(yyyymmdd, item.variable, 'dependency-missing', item.message || '');
+          } else {
+            summary.errors += 1;
+            bucket.errors += 1;
+            const hint =
+              item.error && item.error.code === 'NOT_FOUND'
+                ? ` — checked ${describeDaySource(awsJsonDir, yyyymmdd)}`
+                : '';
+            console.error(yyyymmdd, item.variable, 'FAILED', (item.message || '') + hint);
+          }
           continue;
         }
         summary.ok += 1;
@@ -295,7 +311,7 @@ async function main() {
 
   console.log('=== summary ===');
   console.log(summary);
-  if (summary.errors > 0) process.exitCode = 2;
+  if (summary.errors > 0 || summary.dependencyMissing > 0) process.exitCode = 2;
 }
 
 main().catch((err) => {

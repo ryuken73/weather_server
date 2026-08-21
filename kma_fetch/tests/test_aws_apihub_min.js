@@ -33,6 +33,7 @@ function main() {
       RN_60M: byId.get(530).RN_60M,
       RN_1HR: byId.get(530).RN_1HR,
       RN_12HR: byId.get(530).RN_12HR,
+      RN_DAY: byId.get(530).RN_DAY,
       RN_24HR: byId.get(530).RN_24HR,
       WD: byId.get(42).WD,
       WS: byId.get(42).WS,
@@ -41,21 +42,38 @@ function main() {
       HM: byId.get(42).HM,
       TD: byId.get(42).TD
     },
-    { RN_15M: 5, RN_60M: 60, RN_1HR: 60, RN_12HR: 95, RN_24HR: 95, WD: 410, WS: 36, WD_INS: 424, WS_INS: 40, HM: 588, TD: 208 }
+    {
+      RN_15M: 5,
+      RN_60M: 60,
+      RN_1HR: 60,
+      RN_12HR: 95,
+      RN_DAY: 95,
+      RN_24HR: 95,
+      WD: 410,
+      WS: 36,
+      WD_INS: 424,
+      WS_INS: 40,
+      HM: 588,
+      TD: 208
+    }
   );
   assert.strictEqual(byId.get(679).RN_15M, 0);
   assert.strictEqual(byId.get(679).RN_60M, 0);
   assert.strictEqual(byId.get(679).RN_12HR, 245);
+  assert.strictEqual(byId.get(679).RN_DAY, 245);
   assert.strictEqual(byId.get(679).RN_24HR, 245);
   assert.strictEqual(byId.get(793).RN_15M, 10);
   assert.strictEqual(byId.get(793).RN_60M, 10);
   assert.strictEqual(byId.get(793).RN_1HR, 10);
   assert.strictEqual(byId.get(793).RN_12HR, 10);
+  assert.strictEqual(byId.get(793).RN_DAY, 10);
   assert.strictEqual(byId.get(793).RN_24HR, 10);
 
   // RN_1HR is RN-60m alias, not a distinct Hub field
   for (const row of rows) {
     assert.strictEqual(row.RN_1HR, row.RN_60M);
+    // Migration: RN_DAY canonical, RN_24HR legacy mirror of day total
+    assert.strictEqual(row.RN_DAY, row.RN_24HR);
   }
 
   const rainValid = rows.filter((r) => r.RN_15M != null).length;
@@ -68,17 +86,17 @@ function main() {
   let max15 = { v: -1, id: null };
   let max60 = { v: -1, id: null };
   let max12 = { v: -1, id: null };
-  let max24 = { v: -1, id: null };
+  let maxDay = { v: -1, id: null };
   for (const row of rows) {
     if (row.RN_15M != null && row.RN_15M > max15.v) max15 = { v: row.RN_15M, id: row.STN_ID };
     if (row.RN_60M != null && row.RN_60M > max60.v) max60 = { v: row.RN_60M, id: row.STN_ID };
     if (row.RN_12HR != null && row.RN_12HR > max12.v) max12 = { v: row.RN_12HR, id: row.STN_ID };
-    if (row.RN_24HR != null && row.RN_24HR > max24.v) max24 = { v: row.RN_24HR, id: row.STN_ID };
+    if (row.RN_DAY != null && row.RN_DAY > maxDay.v) maxDay = { v: row.RN_DAY, id: row.STN_ID };
   }
   assert.deepStrictEqual(max15, { v: 10, id: 793 });
   assert.deepStrictEqual(max60, { v: 60, id: 530 });
   assert.deepStrictEqual(max12, { v: 245, id: 679 });
-  assert.deepStrictEqual(max24, { v: 245, id: 679 });
+  assert.deepStrictEqual(maxDay, { v: 245, id: 679 });
 
   console.log('OK test_aws_apihub_min');
 }

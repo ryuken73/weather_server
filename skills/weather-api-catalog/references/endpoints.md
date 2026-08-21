@@ -49,9 +49,12 @@ Pack binary: `out_data/aws/pack/` → `/datasets/aws/...` (env `AWS_PACK_DIR`).
 - **권장**: `date=YYYYMMDD` (또는 `YYYY-MM-DD`) → 서버가 KST `0000–2359` 하루로 펼침
 - 레거시: `from`/`to` (YYYYMMDDHHMM)도 허용
 - 1분 exact, 최대 1440 frame
-- `variable` 기본 `TA`. 지원 `TA, RN_15M, RN_60M, RN_12HR, RN_24HR, WS_INS, WS, WD_INS, WD, HM, TD`. `FULL` 없음. `RN_1HR`는 `RN_60M` 별칭
+- `variable` 기본 `TA`. 지원 `TA, RN_15M, RN_60M, RN_12HR, RN_24HR, RN_DAY, WS_INS, WS, WD_INS, WD, HM, TD`. `FULL` 없음. `RN_1HR`는 `RN_60M` 별칭
+- `RN_24HR`: rolling 24h (`accumulation.type=rolling`, `windowMinutes=1440`, binary slug `rn_24hr_rolling`)
+- `RN_DAY`: KST day accumulation (`accumulation.type=day`, slug `rn_day`)
+- **금지**: legacy `/datasets/aws/rn_24hr/...` (구 day-total immutable). rolling은 **`rn_24hr_rolling`만**
 - 단일 변수 → 해당 manifest. 복수 `variable=TA,RN_60M,WS_INS` → `{ variables, items: [manifest...] }` (binary는 섞지 않음)
-- 디스크: `{slug}/1m/{day}/{slug}.i16le` (`ta`, `rn_60m`, `ws_ins`, `wd`, `hm`, `td` 등)
+- 디스크: `{slug}/1m/{day}/{slug}.i16le` (`ta`, `rn_60m`, `rn_24hr_rolling`, `rn_day`, `ws_ins` 등)
 - Binary: `GET {data.url}` → Int16 LE, scale 0.1, missing `-32768`, FRAME_MAJOR
 - TA 결측: `null`/비유한, sentinel `-999`, Hub ≤ -50℃, > 60℃ → `-32768`. 정상 음수 유지
 - 강수 결측: `null`/비유한, Hub ≤ -50mm, 음수, Int16 overflow → `-32768`. **0.0 mm = 0**
@@ -60,7 +63,7 @@ Pack binary: `out_data/aws/pack/` → `/datasets/aws/...` (env `AWS_PACK_DIR`).
 - `dataComplete` / `coverage.status`: `ok` (≥80% 유효) | `degraded` | `empty` (validSampleCount=0). 전부 결측이면 warnings
 - 항상 `sourceField`, `validSampleCount`, `missingSampleCount`, `validRatio`, `warnings`
 - Binary 캐시: 과거 `complete:true` **그리고** coverage 필드가 있는 pack → `immutable`+ETag. 구 TA pack(sourceField 없음)은 재빌드
-- `schemaVersion: 3`
+- `schemaVersion: 4` (`contractRevision: 2`). 구 pack은 producer가 `--force` 재워밍. RN_24HR은 `rn_24hr_rolling` URL만 사용.
 - Pack temporal QC는 **TA만**. 강수·바람·습도·이슬점은 프레임 간 보정 없음. `/exact`는 원천 유지
 - 생성: backfill 종료 후, `main_AWS`가 어제 워밍, 또는 `warm_aws_min_packs.js`. 오늘은 요청 시 재빌드
 - Binary URL도 동일 캐시 정책 (전용 route, ETag=sha256)

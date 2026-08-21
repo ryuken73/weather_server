@@ -45,7 +45,7 @@ YYMMDDHHMI STN WD1 WS1 WDS WSS WD10 WS10 TA RE RN-15m RN-60m RN-12H RN-DAY HM PA
 `skills/aws-min-json-pipeline/assets/nph-aws2_min_202608131200.txt`  
 (`#START7777` + 필드 설명 + 컬럼 헤더 + 지점 데이터 + `#7777END`. 운영 fetch는 `help=0`. `--save-raw` 시 `work/in/apihub/`에도 쌓이지만 gitignore.)
 
-Pack binary로 넣을 때 (`encodeTaToI16` 후 temporal QC, schemaVersion 3):
+Pack binary로 넣을 때 (`encodeTaToI16` 후 temporal QC, schemaVersion 4):
 
 | 원천 (JSON ×10) | pack Int16 |
 | --- | --- |
@@ -70,10 +70,19 @@ JSON으로 넣을 때 (`work/fetch_aws_apihub.js`):
 | RN-15m | `RN_15M` | ×10 |
 | RN-60m | `RN_60M` (+ 호환 별칭 `RN_1HR`, 원본 변수가 아님) | ×10 |
 | RN-12H (`parts[12]`) | `RN_12HR` | ×10 |
-| RN-DAY | `RN_24HR` | ×10 |
+| RN-DAY | `RN_DAY` (+ legacy mirror `RN_24HR`) | ×10 |
 | (없음) | `LAT`,`LON`,`HT`,`STN_NAME` | 코드표 |
 
-강수 pack (`encodeRainToI16`, schemaVersion 3, TA QC 없음):
+강수 pack (`encodeRainToI16`, schemaVersion 4, TA QC 없음):
+
+| pack 변수 | 의미 | accumulation | slug |
+| --- | --- | --- | --- |
+| `RN_15M` / `RN_60M` / `RN_12HR` | rolling window | `rolling` + windowMinutes | `rn_15m` 등 |
+| `RN_24HR` | 직전 24시간 (RN-DAY 카운터 파생) | `rolling`, 1440 | `rn_24hr_rolling` |
+| `RN_DAY` | KST 당일 00시~현재 | `day`, Asia/Seoul | `rn_day` |
+
+`RN_24HR` 계산: `RN_DAY(D,t) + RN_DAY(D-1,23:59) - RN_DAY(D-1,t)`. 결측/음수/counter 감소는 `-32768`, 0으로 clamp하지 않음.
+legacy `/datasets/aws/rn_24hr/` URL은 과거 day-total이므로 rolling으로 쓰지 말 것. 변경 요청: `docs/rainfall-producer-rn24-rnday-change-request.md`.
 
 | 원천 (JSON ×10 mm) | pack Int16 |
 | --- | --- |

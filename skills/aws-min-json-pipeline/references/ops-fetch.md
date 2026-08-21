@@ -226,22 +226,26 @@ NODE_ENV=production node kma_fetch/warm_aws_ta_pack.js --yesterday
 
 ## 1분 변수별 pack
 
-- Builder: `kma_fetch/utils/aws_min_pack.js` (`schemaVersion: 3`)
-- 변수별 일파일: `TA, RN_15M, RN_60M, RN_12HR, RN_24HR, WS_INS, WS, WD_INS, WD, HM, TD`. `variable=FULL` 없음. `RN_1HR`/`RN_6HR`/`RN_48HR`/`RN_YN` 제외
-- API: `GET /api/aws/min/pack?date=YYYYMMDD&variable=TA|RN_60M|WS_INS|...` (레거시 `from`/`to`, comma 복수)
+- Builder: `kma_fetch/utils/aws_min_pack.js` (`schemaVersion: 4`, `contractRevision: 2`)
+- 변수별 일파일: `TA, RN_15M, RN_60M, RN_12HR, RN_24HR, RN_DAY, WS_INS, WS, WD_INS, WD, HM, TD`. `variable=FULL` 없음. `RN_1HR`/`RN_6HR`/`RN_48HR`/`RN_YN` 제외
+- API: `GET /api/aws/min/pack?date=YYYYMMDD&variable=TA|RN_60M|RN_24HR|RN_DAY|WS_INS|...` (레거시 `from`/`to`, comma 복수)
+- `RN_24HR` rolling 생성 시 전일 JSON 필요. 없으면 `dependency-missing`
 - Binary: `/datasets/aws/{slug}/1m/{dayKey}/{slug}.i16le`
+  - `RN_24HR` → **`rn_24hr_rolling`만** (legacy `rn_24hr/` day-total URL 재사용 금지)
+  - `RN_DAY` → `rn_day`
 - TA 결측 → `-32768`: `null`, sentinel `-999`, Hub 물리 ≤ -50℃(×10 ≤ -500), > 60℃. 정상 음수 유지
 - 강수 결측 → `-32768`: `null`, Hub ≤ -50mm, 음수, Int16 overflow. **0 mm는 0**. TA QC 없음
 - 풍속 0 유효. 풍향 0–360(무풍 360). 습도 0–100%. 이슬점 TA QC 없음
 - **Pack temporal QC** (TA만, 기본 on, `AWS_TA_QC=0`으로 off): 1분 |ΔTA| > 3℃ 또는 고립 스파이크 → `-32768`. `/exact`·디스크 JSON은 원천 그대로
-- Cache: 과거 complete **이고** `sourceField`+`coverage` 있는 pack → `immutable`+ETag; 구 pack은 재빌드. 오늘/미완 → `no-store`
+- Cache: 과거 complete **이고** `sourceField`+`coverage`+`contractRevision` 맞는 pack → `immutable`+ETag; 구 pack·legacy day-total RN_24HR은 재빌드. 오늘/미완 → `no-store`
 - `complete` = 1,440 JSON. `coverage.status`/`dataComplete` = 값 유효비율 (`ok`≥80%, `degraded`, `empty`)
 - 사전생성: backfill 종료, `main_AWS` 어제 워밍(전 변수), `warm_aws_min_packs.js`
+- RN_24HR/RN_DAY 재워밍 예: `node kma_fetch/warm_aws_min_packs.js --from YYYYMMDD --to YYYYMMDD --variables RN_24HR,RN_DAY --force` (첫날 전일 JSON 필요)
 - 기존 JSON의 `RN_12HR`/`TD` 누락 → `--refresh-fields RN_12HR,TD` (Hub merge). 15/60분 합산으로 12시간을 만들지 말 것
 - 임의 구간·전 변수 JSON은 range 유지
 - Debug: `GET /api/aws/min/exact?timestamp_kor=`
 - 원천 1분 파일이 없으면 홀수 peak를 pack이 살릴 수 없다
-- 구 pack(`schemaVersion < 3`)은 다음 워밍/요청 시 재빌드 (캐시 무시)
+- 구 pack(`schemaVersion < 4` 또는 legacy `rn_24hr` day-total)은 `--force` 워밍/요청 시 재빌드 (캐시 무시)
 
 ## 누락 진단 체크리스트
 

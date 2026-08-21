@@ -18,10 +18,11 @@ Pack 출력 (변수별 일파일):
 {resolveBaseDir('out_data')}/aws/pack/{slug}/1m/{yyyyMMdd}/{slug}.i16le
 (+ 각 디렉터리 manifest.json)
 
-slug: ta, rn_15m, rn_60m, rn_12hr, rn_24hr, ws_ins, ws, wd_ins, wd, hm, td
+slug: ta, rn_15m, rn_60m, rn_12hr, rn_24hr_rolling, rn_day, ws_ins, ws, wd_ins, wd, hm, td
 ```
 
 과거 완결일은 backfill/`warm_aws_min_packs.js`/`main_AWS` 어제 워밍으로 미리 쓴다. `variable=FULL` 없음.
+`RN_24HR`은 legacy `rn_24hr/` URL을 쓰지 않는다 (immutable cache 충돌 방지).
 
 HTTP binary: `/datasets/aws/{slug}/1m/{yyyyMMdd}/{slug}.i16le`  
 override: `AWS_JSON_DIR`, `AWS_PACK_DIR`.
@@ -34,7 +35,9 @@ override: `AWS_JSON_DIR`, `AWS_PACK_DIR`.
 | `STN_ID`, `TM` | TM = `YYYYMMDDHHMM` KST |
 | `LAT`, `LON`, `HT` | |
 | `TA` 등 | ×10 정수 (277 = 27.7℃) |
-| `RN_15M` / `RN_60M` / `RN_12HR` / `RN_24HR` | ×10 mm. Hub `RN-15m`/`RN-60m`/`RN-12H`/`RN-DAY` |
+| `RN_15M` / `RN_60M` / `RN_12HR` | ×10 mm. Hub `RN-15m`/`RN-60m`/`RN-12H` |
+| `RN_DAY` | ×10 mm. Hub `RN-DAY` (KST 당일 누적). pack `RN_DAY` |
+| `RN_24HR` | JSON legacy mirror of `RN_DAY`. pack `RN_24HR`은 파생 rolling (이 필드를 그대로 쓰지 않음) |
 | `WS` / `WS_INS` | ×10 m/s. Hub `WS1` / `WSS` |
 | `WD` / `WD_INS` | ×10 deg. Hub `WD1` / `WDS`. 무풍 360.0 → 3600 |
 | `HM` | ×10 %. Hub `HM` |
@@ -55,7 +58,7 @@ override: `AWS_JSON_DIR`, `AWS_PACK_DIR`.
 | dtype | int16 LE |
 | scale | 0.1 ℃ |
 | missing | -32768 (`null`, `-999`, 물리 ≤ -50℃ / ×10 ≤ -500, > 60℃, pack temporal QC) |
-| schema | `schemaVersion: 3`. 구 pack은 `--force` 재워밍 |
+| schema | `schemaVersion: 4` + `contractRevision: 2`. 구 pack(특히 legacy `rn_24hr` day-total)은 `--force` 재워밍 |
 | order | FRAME_MAJOR_STATION_MINOR |
 | index | `frameIndex * stationCount + stationIndex` |
 | stations | STN_ID ASC (범위 union) |

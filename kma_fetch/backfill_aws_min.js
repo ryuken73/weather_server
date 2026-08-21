@@ -90,7 +90,7 @@ Options:
   --dry-run
   --sleep ms
   --skip-pack
-  --variables TA,RN_15M,RN_60M,RN_12HR,RN_24HR   (default: all)
+  --variables TA,RN_15M,RN_60M,RN_12HR,RN_24HR,RN_DAY   (default: all)
   --refresh-fields RN_12HR,TD
   --force-refetch
 

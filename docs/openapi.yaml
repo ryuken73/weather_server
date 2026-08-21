@@ -266,16 +266,18 @@ paths:
         KST **하루** 1분 timeline의 변수별 Int16 LE pack manifest.
         권장 query: `date=YYYYMMDD` (또는 YYYY-MM-DD) → 서버가 `0000–2359`로 펼친다.
         레거시: `from`/`to` (YYYYMMDDHHMM)도 허용.
-        `variable` 기본 `TA`. 지원: `TA, RN_15M, RN_60M, RN_12HR, RN_24HR, WS_INS, WS, WD_INS, WD, HM, TD`. `FULL` 없음.
+        `variable` 기본 `TA`. 지원: `TA, RN_15M, RN_60M, RN_12HR, RN_24HR, RN_DAY, WS_INS, WS, WD_INS, WD, HM, TD`. `FULL` 없음.
         `RN_1HR`는 `RN_60M` 별칭이라 pack 불가. `RN_6HR`/`RN_48HR`/`RN_YN` 제외.
+        `RN_24HR`은 RN-DAY 시계열에서 파생한 **rolling 24시간** (`accumulation.type=rolling`, slug `rn_24hr_rolling`).
+        `RN_DAY`는 KST 당일 00시부터 누적 (`accumulation.type=day`).
         단일 변수는 기존과 같이 해당 manifest. 복수는 `{ variables, items: [manifest...] }` (binary는 섞지 않음).
-        Binary는 변수별 파일 (`data.url`, 예: `/datasets/aws/ta/1m/{day}/ta.i16le`, `/datasets/aws/ws_ins/1m/{day}/ws_ins.i16le`).
+        Binary는 변수별 파일 (`data.url`, 예: `/datasets/aws/ta/1m/{day}/ta.i16le`, `/datasets/aws/rn_24hr_rolling/1m/{day}/rn_24hr_rolling.i16le`).
         layout: FRAME_MAJOR_STATION_MINOR, scale 0.1, missing -32768.
         TA 결측: null, sentinel -999, Hub 물리 ≤ -50℃(×10 ≤ -500), > 60℃ → -32768. 정상 음수 유지.
         강수 결측: null/비유한, Hub ≤ -50mm, 음수, Int16 overflow → -32768. **0.0 mm는 binary 0**. TA temporal QC 없음.
         풍속 0은 유효. 풍향 0–360도(무풍 360) 유지. 습도 0–100%. 이슬점은 TA QC/60℃ clip 없음.
         Binary URL: 과거 complete는 immutable+ETag, 오늘/미완은 no-store.
-        schemaVersion 3. TA temporal QC( pack 전용 ): 1분 |ΔTA|>3℃ 또는 고립 스파이크 → -32768. manifest `qc.taTemporal`. /exact는 원천 유지.
+        schemaVersion 4. TA temporal QC( pack 전용 ): 1분 |ΔTA|>3℃ 또는 고립 스파이크 → -32768. manifest `qc.taTemporal`. /exact는 원천 유지.
         과거 완결일(`complete:true`)은 1,440개 timestamp 파일 존재. 값 coverage는 `coverage.status` (`ok|degraded|empty`)와 `dataComplete`.
         `complete:true`여도 전부 결측이면 `coverage.status=empty` + warnings. 구 pack(sourceField/coverage 없음)은 캐시하지 않고 재빌드.
         오늘(미완)은 요청 시 재빌드, `no-store`.
@@ -316,7 +318,7 @@ paths:
             default: TA
             example: TA,RN_60M,WS_INS
           description: |
-            기본 TA. 지원 `TA,RN_15M,RN_60M,RN_12HR,RN_24HR,WS_INS,WS,WD_INS,WD,HM,TD`.
+            기본 TA. 지원 `TA,RN_15M,RN_60M,RN_12HR,RN_24HR,RN_DAY,WS_INS,WS,WD_INS,WD,HM,TD`.
             comma 복수 시 변수별 manifest 배열. `FULL`·`RN_1HR`·미지원은 400.
         - name: force
           in: query
@@ -929,6 +931,11 @@ components:
         RN_24HR:
           type: number
           nullable: true
+          description: Legacy JSON day-total mirror of RN-DAY (×10). Pack RN_24HR is derived rolling, not this field.
+        RN_DAY:
+          type: number
+          nullable: true
+          description: KST day accumulation from APIHUB RN-DAY (×10 mm)
         WD_INS:
           type: number
           nullable: true
@@ -1008,7 +1015,7 @@ components:
           example: KMA_AWS_MIN
         variable:
           type: string
-          enum: [TA, RN_15M, RN_60M, RN_12HR, RN_24HR, WS_INS, WS, WD_INS, WD, HM, TD]
+          enum: [TA, RN_15M, RN_60M, RN_12HR, RN_24HR, RN_DAY, WS_INS, WS, WD_INS, WD, HM, TD]
           example: TA
         sourceField:
           type: string
