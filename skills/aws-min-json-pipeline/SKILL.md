@@ -58,10 +58,10 @@ description: AWS_MIN station JSON 수집·누락 복구·과거 backfill·1분 �
 - JSON의 `RN_24HR` 필드는 마이그레이션용 **일 누적 mirror**일 뿐. pack `RN_24HR`에 그대로 넣지 않는다.
 - `RN_12HR` 두 값 합산·`RN_60M` 반복 합산으로 24h를 만들지 않는다 (window 중복).
 - **Hub RN-DAY는 00:01에 reset**되는 경우가 많다. pack은 **00:00 프레임을 0으로 정규화**한다 (결측은 결측 유지). RN_24HR derive의 당일/전일 00:00에도 동일 적용.
-- **날짜 중간 RN_DAY 감소**는 counter-regression → `-32768` (running max 유지, 0 clamp/stitching 금지). 회복 시 `v >= runningMax`이면 다시 유효. RN_24HR은 QC된 RN_DAY만 사용.
+- **날짜 중간 RN_DAY 감소**는 counter-regression. **RN_DAY pack은 missing**, RN_24HR 계산은 **직전 accepted RN_DAY로 대체** (원천 결측은 fill 금지). offset stitching 없음.
 - 결측/counter 감소/음수/overflow → `-32768`. 0으로 clamp·carry-forward 금지.
 - 전일 JSON 없으면 해당 날짜 `RN_24HR`만 `dependency-missing` (다른 변수 성공분 유지).
-- `schemaVersion: 4`, `contractRevision: 4`. 구 pack은 `--force` 재워밍.
+- `schemaVersion: 4`, `contractRevision: 5`. 구 pack은 `--force` 재워밍.
 
 워밍 예:
 

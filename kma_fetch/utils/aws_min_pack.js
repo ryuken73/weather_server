@@ -28,7 +28,7 @@ const VARIABLE_TA = 'TA';
  */
 const PACK_SCHEMA_VERSION = 4;
 /** Bump when pack meaning/URL contract changes for cache reuse checks. */
-const PACK_CONTRACT_REVISION = 4;
+const PACK_CONTRACT_REVISION = 5;
 
 /**
  * Hub nph-aws2_min: 물리기온 ≤ -50℃ 결측.
@@ -610,24 +610,26 @@ function scaledRnDayFromRow(row, hhmm) {
 }
 
 /**
- * Per-station running-max tracker for KST day accumulation.
- * Decreases after the first valid sample are counter-regression → missing (max kept).
+ * Per-station accepted RN_DAY tracker for KST day accumulation.
+ * Pack: mid-day decreases → missing. Rolling: hold last accepted (no source-missing fill).
  */
 function createRnDayRunningMaxTracker() {
-  let runningMax = null;
+  let acceptedRnDay = null;
   let hadRegression = false;
   return {
     push(scaled) {
-      if (scaled == null) return { value: null, reason: 'source_missing' };
-      if (runningMax == null || scaled >= runningMax) {
-        runningMax = scaled;
-        return { value: scaled, reason: null };
+      if (scaled == null) {
+        return { packValue: null, forRolling: null, reason: 'source_missing' };
       }
-      hadRegression = true;
-      return { value: null, reason: 'counterRegression' };
+      if (acceptedRnDay != null && scaled < acceptedRnDay) {
+        hadRegression = true;
+        return { packValue: null, forRolling: acceptedRnDay, reason: 'counterRegression' };
+      }
+      acceptedRnDay = scaled;
+      return { packValue: scaled, forRolling: scaled, reason: null };
     },
-    get runningMax() {
-      return runningMax;
+    get acceptedRnDay() {
+      return acceptedRnDay;
     },
     get hadRegression() {
       return hadRegression;
@@ -639,15 +641,19 @@ function emptyRnDayRegressionStats() {
   return {
     regressionSampleCount: 0,
     regressionStationCount: 0,
-    byReason: { counterRegression: 0 }
+    counterRegressionFilledSampleCount: 0,
+    sourceMissingSampleCount: 0,
+    byReason: { counterRegression: 0, sourceMissing: 0 }
   };
 }
 
 /**
- * Apply counter-regression QC to a FRAME_MAJOR scaled grid (null = missing).
- * Mutates `scaledGrid` in place (regression → null).
+ * Apply QC to midnight-normalized FRAME_MAJOR scaled grid.
+ * @returns {{ packGrid: Array, rollingGrid: Array, stats: object }}
  */
 function applyRnDayCounterRegression(scaledGrid, frameCount, stationCount) {
+  const packGrid = new Array(frameCount * stationCount);
+  const rollingGrid = new Array(frameCount * stationCount);
   const stats = emptyRnDayRegressionStats();
   const stationHadRegression = new Uint8Array(stationCount);
 
@@ -656,22 +662,26 @@ function applyRnDayCounterRegression(scaledGrid, frameCount, stationCount) {
     for (let fi = 0; fi < frameCount; fi++) {
       const idx = fi * stationCount + si;
       const result = tracker.push(scaledGrid[idx]);
-      scaledGrid[idx] = result.value;
+      packGrid[idx] = result.packValue;
+      rollingGrid[idx] = result.forRolling;
       if (result.reason === 'counterRegression') {
         stats.regressionSampleCount += 1;
+        stats.counterRegressionFilledSampleCount += 1;
         stats.byReason.counterRegression += 1;
         stationHadRegression[si] = 1;
+      } else if (result.reason === 'source_missing') {
+        stats.sourceMissingSampleCount += 1;
+        stats.byReason.sourceMissing += 1;
       }
     }
     if (stationHadRegression[si]) stats.regressionStationCount += 1;
   }
 
-  return stats;
+  return { packGrid, rollingGrid, stats };
 }
 
 /**
- * Build midnight-normalized + counter-regression QC'd RN_DAY scaled grid
- * from day frames. Grid entries are number|null.
+ * Build midnight-normalized + dual QC grids (pack missing on regression; rolling holds accepted).
  */
 function buildQcRnDayScaledGrid(frames, timestamps, stationIds) {
   const frameCount = timestamps.length;
@@ -701,14 +711,24 @@ function buildQcRnDayScaledGrid(frames, timestamps, stationIds) {
     }
   }
 
-  const regression = applyRnDayCounterRegression(scaledGrid, frameCount, stationCount);
-  return { scaledGrid, midnightNormalizedCount, jsonPresentCount, regression };
+  const { packGrid, rollingGrid, stats: regression } = applyRnDayCounterRegression(
+    scaledGrid,
+    frameCount,
+    stationCount
+  );
+  return {
+    packGrid,
+    rollingGrid,
+    scaledGrid: packGrid,
+    midnightNormalizedCount,
+    jsonPresentCount,
+    regression
+  };
 }
 
 /**
  * RN_24HR(D,t) = RN_DAY(D,t) + RN_DAY(D-1,23:59) - RN_DAY(D-1,t)
- * Window ends at (D,t) inclusive and excludes (D-1,t) minute (no double-count).
- * Callers must pass midnight-normalized + regression-QC'd RN_DAY scaled values.
+ * Uses rnDayForRolling (regression holds last accepted; source missing stays missing).
  */
 function deriveRolling24hScaled(todayScaled, prevEndScaled, prevSameScaled) {
   if (todayScaled == null) return { value: null, reason: 'missing_today' };
@@ -779,25 +799,38 @@ async function loadPrevDayRnDayIndex(awsJsonDir, dayYmd) {
     }
   }
 
-  const regression = applyRnDayCounterRegression(scaledGrid, frameCount, stationCount);
+  const { packGrid, rollingGrid, stats: regression } = applyRnDayCounterRegression(
+    scaledGrid,
+    frameCount,
+    stationCount
+  );
   const byTm = new Map();
+  const filledByTm = new Map();
   for (let fi = 0; fi < frameCount; fi++) {
     const hhmm = timestamps[fi].slice(8, 12);
     if (rawByTm.get(hhmm) == null) {
       byTm.set(hhmm, null);
+      filledByTm.set(hhmm, null);
       continue;
     }
-    const byId = new Map();
+    const byIdRoll = new Map();
+    const byIdFilled = new Map();
     for (let si = 0; si < stationCount; si++) {
-      byId.set(stationIds[si], scaledGrid[fi * stationCount + si]);
+      const idx = fi * stationCount + si;
+      const stnId = stationIds[si];
+      byIdRoll.set(stnId, rollingGrid[idx]);
+      byIdFilled.set(stnId, packGrid[idx] == null && rollingGrid[idx] != null);
     }
-    byTm.set(hhmm, byId);
+    byTm.set(hhmm, byIdRoll);
+    filledByTm.set(hhmm, byIdFilled);
   }
 
   return {
     prevDay,
     byTm,
+    filledByTm,
     endById: byTm.get('2359'),
+    endFilledById: filledByTm.get('2359'),
     stationSet,
     presentCount,
     expectedCount: timestamps.length,
@@ -814,7 +847,9 @@ function emptyRollingQcCounts() {
     negative: 0,
     overflow: 0,
     stationMismatch: 0,
-    midnightNormalized: 0
+    midnightNormalized: 0,
+    counterRegressionFilledSampleCount: 0,
+    sourceMissingSampleCount: 0
   };
 }
 
@@ -863,6 +898,7 @@ async function buildAwsVariablePack(awsJsonDir, fromKor, toKor, variable, option
     prevDayRegression = prevDayIndex.regression || emptyRnDayRegressionStats();
     const prevStations = prevDayIndex.stationSet;
     const endById = prevDayIndex.endById;
+    const endFilledById = prevDayIndex.endFilledById;
 
     const todayQc = buildQcRnDayScaledGrid(frames, timestamps, stationIds);
     midnightNormalizedCount = todayQc.midnightNormalizedCount;
@@ -875,6 +911,9 @@ async function buildAwsVariablePack(awsJsonDir, fromKor, toKor, variable, option
       if (!byId) continue;
       const hhmm = timestamps[fi].slice(8, 12);
       const prevSameById = prevDayIndex.byTm.get(hhmm);
+      const prevSameFilledById = prevDayIndex.filledByTm
+        ? prevDayIndex.filledByTm.get(hhmm)
+        : null;
 
       for (let si = 0; si < stationCount; si++) {
         const stnId = stationIds[si];
@@ -888,18 +927,29 @@ async function buildAwsVariablePack(awsJsonDir, fromKor, toKor, variable, option
           continue;
         }
 
-        const todayScaled = todayQc.scaledGrid[fi * stationCount + si];
+        const idx = fi * stationCount + si;
+        const todayScaled = todayQc.rollingGrid[idx];
+        const todayFilled =
+          todayQc.packGrid[idx] == null && todayQc.rollingGrid[idx] != null;
 
         const prevEndScaled = endById ? endById.get(stnId) : null;
         const prevSameScaled =
           prevSameById && typeof prevSameById.get === 'function' ? prevSameById.get(stnId) : null;
-
         const endVal = endById == null ? null : prevEndScaled === undefined ? null : prevEndScaled;
         const sameVal =
           prevSameById == null ? null : prevSameScaled === undefined ? null : prevSameScaled;
+        const endFilled = Boolean(endFilledById && endFilledById.get(stnId));
+        const sameFilled = Boolean(prevSameFilledById && prevSameFilledById.get(stnId));
 
         const derived = deriveRolling24hScaled(todayScaled, endVal, sameVal);
         if (derived.reason) {
+          if (
+            derived.reason === 'missing_today' ||
+            derived.reason === 'missing_prev_end' ||
+            derived.reason === 'missing_prev_same'
+          ) {
+            rollingQc.sourceMissingSampleCount += 1;
+          }
           if (derived.reason === 'missing_today') rollingQc.missingToday += 1;
           else if (derived.reason === 'missing_prev_end') rollingQc.missingPrevEnd += 1;
           else if (derived.reason === 'missing_prev_same') rollingQc.missingPrevSame += 1;
@@ -910,6 +960,9 @@ async function buildAwsVariablePack(awsJsonDir, fromKor, toKor, variable, option
             overflowCount += 1;
           }
           continue;
+        }
+        if (todayFilled || endFilled || sameFilled) {
+          rollingQc.counterRegressionFilledSampleCount += 1;
         }
         int16[fi * stationCount + si] = derived.value;
       }
@@ -1003,9 +1056,14 @@ async function buildAwsVariablePack(awsJsonDir, fromKor, toKor, variable, option
         `RN_24HR applied Hub midnight RN-DAY normalize (00:00→0) for ${rollingQc.midnightNormalized} samples`
       );
     }
+    if (rollingQc.counterRegressionFilledSampleCount > 0) {
+      warnings.push(
+        `RN_24HR used last accepted RN_DAY for ${rollingQc.counterRegressionFilledSampleCount} counter-regression samples`
+      );
+    }
     if (rnDayRegression.regressionSampleCount > 0 || prevDayRegression.regressionSampleCount > 0) {
       warnings.push(
-        `RN_24HR used QC'd RN_DAY (today regression samples=${rnDayRegression.regressionSampleCount}, prevDay=${prevDayRegression.regressionSampleCount})`
+        `RN_24HR RN_DAY pack-regression samples today=${rnDayRegression.regressionSampleCount}, prevDay=${prevDayRegression.regressionSampleCount}`
       );
     }
     if (qcTotal > 0) {
@@ -1115,14 +1173,20 @@ async function buildAwsVariablePack(awsJsonDir, fromKor, toKor, variable, option
     const qcBlock = {
       regressionSampleCount: rnDayRegression.regressionSampleCount,
       regressionStationCount: rnDayRegression.regressionStationCount,
+      counterRegressionFilledSampleCount: rnDayRegression.counterRegressionFilledSampleCount,
+      sourceMissingSampleCount: rnDayRegression.sourceMissingSampleCount,
       byReason: { ...rnDayRegression.byReason }
     };
     if (spec.derive === 'rolling24hFromDayCounters') {
       qcBlock.previousDay = {
         regressionSampleCount: prevDayRegression.regressionSampleCount,
         regressionStationCount: prevDayRegression.regressionStationCount,
+        counterRegressionFilledSampleCount: prevDayRegression.counterRegressionFilledSampleCount,
+        sourceMissingSampleCount: prevDayRegression.sourceMissingSampleCount,
         byReason: { ...prevDayRegression.byReason }
       };
+      qcBlock.counterRegressionFilledSampleCount = rollingQc.counterRegressionFilledSampleCount;
+      qcBlock.sourceMissingSampleCount = rollingQc.sourceMissingSampleCount;
     }
     manifest.qc.rnDayRegression = qcBlock;
   }
