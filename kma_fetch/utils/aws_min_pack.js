@@ -28,7 +28,7 @@ const VARIABLE_TA = 'TA';
  */
 const PACK_SCHEMA_VERSION = 4;
 /** Bump when pack meaning/URL contract changes for cache reuse checks. */
-const PACK_CONTRACT_REVISION = 3;
+const PACK_CONTRACT_REVISION = 4;
 
 /**
  * Hub nph-aws2_min: 물리기온 ≤ -50℃ 결측.
@@ -610,9 +610,105 @@ function scaledRnDayFromRow(row, hhmm) {
 }
 
 /**
+ * Per-station running-max tracker for KST day accumulation.
+ * Decreases after the first valid sample are counter-regression → missing (max kept).
+ */
+function createRnDayRunningMaxTracker() {
+  let runningMax = null;
+  let hadRegression = false;
+  return {
+    push(scaled) {
+      if (scaled == null) return { value: null, reason: 'source_missing' };
+      if (runningMax == null || scaled >= runningMax) {
+        runningMax = scaled;
+        return { value: scaled, reason: null };
+      }
+      hadRegression = true;
+      return { value: null, reason: 'counterRegression' };
+    },
+    get runningMax() {
+      return runningMax;
+    },
+    get hadRegression() {
+      return hadRegression;
+    }
+  };
+}
+
+function emptyRnDayRegressionStats() {
+  return {
+    regressionSampleCount: 0,
+    regressionStationCount: 0,
+    byReason: { counterRegression: 0 }
+  };
+}
+
+/**
+ * Apply counter-regression QC to a FRAME_MAJOR scaled grid (null = missing).
+ * Mutates `scaledGrid` in place (regression → null).
+ */
+function applyRnDayCounterRegression(scaledGrid, frameCount, stationCount) {
+  const stats = emptyRnDayRegressionStats();
+  const stationHadRegression = new Uint8Array(stationCount);
+
+  for (let si = 0; si < stationCount; si++) {
+    const tracker = createRnDayRunningMaxTracker();
+    for (let fi = 0; fi < frameCount; fi++) {
+      const idx = fi * stationCount + si;
+      const result = tracker.push(scaledGrid[idx]);
+      scaledGrid[idx] = result.value;
+      if (result.reason === 'counterRegression') {
+        stats.regressionSampleCount += 1;
+        stats.byReason.counterRegression += 1;
+        stationHadRegression[si] = 1;
+      }
+    }
+    if (stationHadRegression[si]) stats.regressionStationCount += 1;
+  }
+
+  return stats;
+}
+
+/**
+ * Build midnight-normalized + counter-regression QC'd RN_DAY scaled grid
+ * from day frames. Grid entries are number|null.
+ */
+function buildQcRnDayScaledGrid(frames, timestamps, stationIds) {
+  const frameCount = timestamps.length;
+  const stationCount = stationIds.length;
+  const scaledGrid = new Array(frameCount * stationCount);
+  let midnightNormalizedCount = 0;
+  let jsonPresentCount = 0;
+
+  for (let fi = 0; fi < frameCount; fi++) {
+    const byId = frames[fi];
+    const hhmm = timestamps[fi].slice(8, 12);
+    for (let si = 0; si < stationCount; si++) {
+      const idx = fi * stationCount + si;
+      if (!byId) {
+        scaledGrid[idx] = null;
+        continue;
+      }
+      const row = byId.get(stationIds[si]);
+      if (!row) {
+        scaledGrid[idx] = null;
+        continue;
+      }
+      const raw = scaledRnDayOrNull(readRnDayRaw(row));
+      if (raw != null) jsonPresentCount += 1;
+      if (raw != null && hhmm === '0000' && raw !== 0) midnightNormalizedCount += 1;
+      scaledGrid[idx] = normalizeRnDayScaledAtHhmm(raw, hhmm);
+    }
+  }
+
+  const regression = applyRnDayCounterRegression(scaledGrid, frameCount, stationCount);
+  return { scaledGrid, midnightNormalizedCount, jsonPresentCount, regression };
+}
+
+/**
  * RN_24HR(D,t) = RN_DAY(D,t) + RN_DAY(D-1,23:59) - RN_DAY(D-1,t)
  * Window ends at (D,t) inclusive and excludes (D-1,t) minute (no double-count).
- * Callers must pass midnight-normalized RN_DAY scaled values.
+ * Callers must pass midnight-normalized + regression-QC'd RN_DAY scaled values.
  */
 function deriveRolling24hScaled(todayScaled, prevEndScaled, prevSameScaled) {
   if (todayScaled == null) return { value: null, reason: 'missing_today' };
@@ -626,7 +722,7 @@ function deriveRolling24hScaled(todayScaled, prevEndScaled, prevSameScaled) {
 }
 
 /**
- * Index previous KST day RN_DAY counters: byId@HHMM and end-of-day @2359.
+ * Index previous KST day RN_DAY counters (midnight-normalized + regression QC).
  * Throws DEPENDENCY_MISSING if the previous-day folder has no JSON at all.
  */
 async function loadPrevDayRnDayIndex(awsJsonDir, dayYmd) {
@@ -634,14 +730,14 @@ async function loadPrevDayRnDayIndex(awsJsonDir, dayYmd) {
   const from = `${prevDay}0000`;
   const to = `${prevDay}2359`;
   const timestamps = enumerateTimestamps(from, to, PACK_INTERVAL_MINUTES, PACK_MAX_FRAMES);
-  const byTm = new Map();
+  const rawByTm = new Map();
   let presentCount = 0;
   const stationSet = new Set();
 
   for (const tm of timestamps) {
     const { missing, rows } = await readFrameRows(awsJsonDir, tm);
     if (missing) {
-      byTm.set(tm.slice(8, 12), null);
+      rawByTm.set(tm.slice(8, 12), null);
       continue;
     }
     presentCount += 1;
@@ -653,7 +749,7 @@ async function loadPrevDayRnDayIndex(awsJsonDir, dayYmd) {
       stationSet.add(id);
       byId.set(id, scaledRnDayFromRow(row, hhmm));
     }
-    byTm.set(tm.slice(8, 12), byId);
+    rawByTm.set(hhmm, byId);
   }
 
   if (presentCount === 0) {
@@ -665,13 +761,47 @@ async function loadPrevDayRnDayIndex(awsJsonDir, dayYmd) {
     throw err;
   }
 
+  const stationIds = [...stationSet].sort((a, b) => a - b);
+  const frameCount = timestamps.length;
+  const stationCount = stationIds.length;
+  const scaledGrid = new Array(frameCount * stationCount);
+  for (let fi = 0; fi < frameCount; fi++) {
+    const hhmm = timestamps[fi].slice(8, 12);
+    const byId = rawByTm.get(hhmm);
+    for (let si = 0; si < stationCount; si++) {
+      const idx = fi * stationCount + si;
+      if (!byId) {
+        scaledGrid[idx] = null;
+        continue;
+      }
+      const v = byId.get(stationIds[si]);
+      scaledGrid[idx] = v === undefined ? null : v;
+    }
+  }
+
+  const regression = applyRnDayCounterRegression(scaledGrid, frameCount, stationCount);
+  const byTm = new Map();
+  for (let fi = 0; fi < frameCount; fi++) {
+    const hhmm = timestamps[fi].slice(8, 12);
+    if (rawByTm.get(hhmm) == null) {
+      byTm.set(hhmm, null);
+      continue;
+    }
+    const byId = new Map();
+    for (let si = 0; si < stationCount; si++) {
+      byId.set(stationIds[si], scaledGrid[fi * stationCount + si]);
+    }
+    byTm.set(hhmm, byId);
+  }
+
   return {
     prevDay,
     byTm,
     endById: byTm.get('2359'),
     stationSet,
     presentCount,
-    expectedCount: timestamps.length
+    expectedCount: timestamps.length,
+    regression
   };
 }
 
@@ -719,6 +849,8 @@ async function buildAwsVariablePack(awsJsonDir, fromKor, toKor, variable, option
   let jsonPresentCount = 0;
   let prevDayIndex = null;
   const rollingQc = emptyRollingQcCounts();
+  let rnDayRegression = emptyRnDayRegressionStats();
+  let prevDayRegression = emptyRnDayRegressionStats();
 
   if (spec.derive === 'rolling24hFromDayCounters') {
     const dayYmd = from.slice(0, 8);
@@ -728,8 +860,15 @@ async function buildAwsVariablePack(awsJsonDir, fromKor, toKor, variable, option
       throw err;
     }
     prevDayIndex = await loadPrevDayRnDayIndex(awsJsonDir, dayYmd);
+    prevDayRegression = prevDayIndex.regression || emptyRnDayRegressionStats();
     const prevStations = prevDayIndex.stationSet;
     const endById = prevDayIndex.endById;
+
+    const todayQc = buildQcRnDayScaledGrid(frames, timestamps, stationIds);
+    midnightNormalizedCount = todayQc.midnightNormalizedCount;
+    jsonPresentCount = todayQc.jsonPresentCount;
+    rnDayRegression = todayQc.regression;
+    rollingQc.midnightNormalized = midnightNormalizedCount;
 
     for (let fi = 0; fi < frameCount; fi++) {
       const byId = frames[fi];
@@ -749,19 +888,12 @@ async function buildAwsVariablePack(awsJsonDir, fromKor, toKor, variable, option
           continue;
         }
 
-        const rawToday = scaledRnDayOrNull(readRnDayRaw(row));
-        if (rawToday != null) jsonPresentCount += 1;
-        if (rawToday != null && hhmm === '0000' && rawToday !== 0) {
-          rollingQc.midnightNormalized += 1;
-          midnightNormalizedCount += 1;
-        }
-        const todayScaled = normalizeRnDayScaledAtHhmm(rawToday, hhmm);
+        const todayScaled = todayQc.scaledGrid[fi * stationCount + si];
 
         const prevEndScaled = endById ? endById.get(stnId) : null;
         const prevSameScaled =
           prevSameById && typeof prevSameById.get === 'function' ? prevSameById.get(stnId) : null;
 
-        // null Map entry or missing frame → treat as missing scaled
         const endVal = endById == null ? null : prevEndScaled === undefined ? null : prevEndScaled;
         const sameVal =
           prevSameById == null ? null : prevSameScaled === undefined ? null : prevSameScaled;
@@ -782,23 +914,30 @@ async function buildAwsVariablePack(awsJsonDir, fromKor, toKor, variable, option
         int16[fi * stationCount + si] = derived.value;
       }
     }
+  } else if (spec.normalizeMidnightRnDay || name === 'RN_DAY') {
+    const dayQc = buildQcRnDayScaledGrid(frames, timestamps, stationIds);
+    midnightNormalizedCount = dayQc.midnightNormalizedCount;
+    jsonPresentCount = dayQc.jsonPresentCount;
+    rnDayRegression = dayQc.regression;
+
+    for (let i = 0; i < dayQc.scaledGrid.length; i++) {
+      const scaled = dayQc.scaledGrid[i];
+      if (scaled == null) continue;
+      if (scaled > 32767) {
+        overflowCount += 1;
+        continue;
+      }
+      int16[i] = scaled;
+    }
   } else {
     for (let fi = 0; fi < frameCount; fi++) {
       const byId = frames[fi];
       if (!byId) continue;
-      const hhmm = timestamps[fi].slice(8, 12);
       for (let si = 0; si < stationCount; si++) {
         const row = byId.get(stationIds[si]);
         if (!row) continue;
-        let raw = readJsonFieldRaw(row, jsonField);
+        const raw = readJsonFieldRaw(row, jsonField);
         if (raw != null && raw !== '') jsonPresentCount += 1;
-        if (spec.normalizeMidnightRnDay && hhmm === '0000') {
-          const scaled = scaledRnDayOrNull(raw);
-          if (scaled != null) {
-            if (scaled !== 0) midnightNormalizedCount += 1;
-            raw = 0;
-          }
-        }
         if (spec.family === 'rain' && raw != null && raw !== '') {
           const n = Number(raw);
           if (Number.isFinite(n)) {
@@ -864,13 +1003,23 @@ async function buildAwsVariablePack(awsJsonDir, fromKor, toKor, variable, option
         `RN_24HR applied Hub midnight RN-DAY normalize (00:00→0) for ${rollingQc.midnightNormalized} samples`
       );
     }
+    if (rnDayRegression.regressionSampleCount > 0 || prevDayRegression.regressionSampleCount > 0) {
+      warnings.push(
+        `RN_24HR used QC'd RN_DAY (today regression samples=${rnDayRegression.regressionSampleCount}, prevDay=${prevDayRegression.regressionSampleCount})`
+      );
+    }
     if (qcTotal > 0) {
       warnings.push(`RN_24HR rolling QC missing reasons totaling ${qcTotal} sample slots`);
     }
   }
-  if (midnightNormalizedCount > 0 && spec.normalizeMidnightRnDay) {
+  if (midnightNormalizedCount > 0 && (spec.normalizeMidnightRnDay || name === 'RN_DAY')) {
     warnings.push(
       `RN_DAY Hub midnight normalize: forced ${midnightNormalizedCount} samples at 00:00 to 0 (Hub resets at 00:01)`
+    );
+  }
+  if (rnDayRegression.regressionSampleCount > 0 && (spec.normalizeMidnightRnDay || name === 'RN_DAY')) {
+    warnings.push(
+      `RN_DAY counter-regression → missing for ${rnDayRegression.regressionSampleCount} samples across ${rnDayRegression.regressionStationCount} stations`
     );
   }
   if (coverage.status === 'empty') {
@@ -955,12 +1104,27 @@ async function buildAwsVariablePack(awsJsonDir, fromKor, toKor, variable, option
   if (spec.derive === 'rolling24hFromDayCounters') {
     manifest.qc.rolling24h = { ...rollingQc };
   }
-  if (spec.normalizeMidnightRnDay || spec.derive === 'rolling24hFromDayCounters') {
+  if (spec.normalizeMidnightRnDay || spec.derive === 'rolling24hFromDayCounters' || name === 'RN_DAY') {
     manifest.qc.midnightRnDay = {
       enabled: true,
       forcedZeroAt0000: midnightNormalizedCount,
       note: 'Hub RN-DAY often retains previous-day total at 00:00; reset appears at 00:01'
     };
+  }
+  if (spec.normalizeMidnightRnDay || spec.derive === 'rolling24hFromDayCounters' || name === 'RN_DAY') {
+    const qcBlock = {
+      regressionSampleCount: rnDayRegression.regressionSampleCount,
+      regressionStationCount: rnDayRegression.regressionStationCount,
+      byReason: { ...rnDayRegression.byReason }
+    };
+    if (spec.derive === 'rolling24hFromDayCounters') {
+      qcBlock.previousDay = {
+        regressionSampleCount: prevDayRegression.regressionSampleCount,
+        regressionStationCount: prevDayRegression.regressionStationCount,
+        byReason: { ...prevDayRegression.byReason }
+      };
+    }
+    manifest.qc.rnDayRegression = qcBlock;
   }
 
   return { manifest, binary, dayKey, datasetId, revision, variable: name };
@@ -1155,6 +1319,8 @@ module.exports = {
   getPackVariableSpec,
   readRnDayRaw,
   normalizeRnDayScaledAtHhmm,
+  createRnDayRunningMaxTracker,
+  applyRnDayCounterRegression,
   deriveRolling24hScaled,
   prevYmd,
   buildAwsVariablePack,

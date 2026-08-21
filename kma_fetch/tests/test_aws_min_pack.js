@@ -27,6 +27,8 @@ const {
   packManifestCacheHeaders,
   deriveRolling24hScaled,
   normalizeRnDayScaledAtHhmm,
+  createRnDayRunningMaxTracker,
+  applyRnDayCounterRegression,
   PACK_SCHEMA_VERSION,
   PACK_CONTRACT_REVISION,
   PACK_VARIABLES,
@@ -99,6 +101,20 @@ async function main() {
   assert.strictEqual(normalizeRnDayScaledAtHhmm(3245, '0000'), 0);
   assert.strictEqual(normalizeRnDayScaledAtHhmm(5, '0001'), 5);
   assert.strictEqual(normalizeRnDayScaledAtHhmm(null, '0000'), null);
+
+  const tracker = createRnDayRunningMaxTracker();
+  assert.deepStrictEqual(tracker.push(5), { value: 5, reason: null });
+  assert.deepStrictEqual(tracker.push(0), { value: null, reason: 'counterRegression' });
+  assert.deepStrictEqual(tracker.push(3), { value: null, reason: 'counterRegression' });
+  assert.deepStrictEqual(tracker.push(12), { value: 12, reason: null });
+  assert.strictEqual(tracker.hadRegression, true);
+
+  const grid = [10, 0, 3, 12];
+  const regStats = applyRnDayCounterRegression(grid, 4, 1);
+  assert.deepStrictEqual(grid, [10, null, null, 12]);
+  assert.strictEqual(regStats.regressionSampleCount, 2);
+  assert.strictEqual(regStats.regressionStationCount, 1);
+  assert.strictEqual(PACK_CONTRACT_REVISION, 4);
 
   assert.strictEqual(encodeRainToI16(0), 0);
   assert.strictEqual(encodeRainToI16(15), 15);
@@ -431,9 +447,14 @@ async function main() {
   assert.strictEqual(r24[rollIdx.get(1)], 85);
   // 10 + 80 - 50 = 40
   assert.strictEqual(r24[rollIdx.get(2)], 40);
-  // counter decrease 70 < 90 → missing
+  // prev-day 23:59=70 < 12:00=90 → regression QC makes end missing → RN_24HR missing
   assert.strictEqual(r24[rollIdx.get(3)], MISSING_I16);
-  assert.ok(rn24Pack.manifest.qc.rolling24h.counterDecrease >= 1);
+  assert.ok(
+    rn24Pack.manifest.qc.rolling24h.missingPrevEnd >= 1 ||
+      (rn24Pack.manifest.qc.rnDayRegression &&
+        rn24Pack.manifest.qc.rnDayRegression.previousDay &&
+        rn24Pack.manifest.qc.rnDayRegression.previousDay.regressionSampleCount >= 1)
+  );
 
   const rnDayMidnight = await buildAwsVariablePack(rollRoot, '202608170000', '202608170000', 'RN_DAY', {
     catalog: rollCatalog
@@ -516,6 +537,81 @@ async function main() {
   assert.ok(h24[i0000] < 3245 * 2);
   assert.strictEqual(h24[i0000], h24[i0001]);
   void r24Max;
+
+  // Counter-regression QC: 개천(929) 07:01→07:02, 춘장대(646) peak→0, recovery
+  const regRoot = path.join(tmp, 'aws-regression');
+  const regCatalog = {
+    byId: new Map(),
+    stations: [{ STN_ID: 929 }, { STN_ID: 646 }, { STN_ID: 1 }]
+  };
+  await writeFrame(regRoot, '202608190000', [
+    { STN_ID: 929, RN_DAY: 0 },
+    { STN_ID: 646, RN_DAY: 0 },
+    { STN_ID: 1, RN_DAY: 0 }
+  ]);
+  await writeFrame(regRoot, '202608192359', [
+    { STN_ID: 929, RN_DAY: 20 },
+    { STN_ID: 646, RN_DAY: 30 },
+    { STN_ID: 1, RN_DAY: 10 }
+  ]);
+  // 개천: 07:01=0.5mm, 07:02=0.0mm (scaled 5 → 0)
+  await writeFrame(regRoot, '202608200701', [
+    { STN_ID: 929, RN_DAY: 5 },
+    { STN_ID: 646, RN_DAY: 105 },
+    { STN_ID: 1, RN_DAY: 10 }
+  ]);
+  await writeFrame(regRoot, '202608200702', [
+    { STN_ID: 929, RN_DAY: 0 },
+    { STN_ID: 646, RN_DAY: 0 },
+    { STN_ID: 1, RN_DAY: 3 }
+  ]);
+  // recovery: 646 back above 105; 1 recovers to 12; 929 still below 5
+  await writeFrame(regRoot, '202608200800', [
+    { STN_ID: 929, RN_DAY: 4 },
+    { STN_ID: 646, RN_DAY: 110 },
+    { STN_ID: 1, RN_DAY: 12 }
+  ]);
+  await writeFrame(regRoot, '202608200801', [
+    { STN_ID: 929, RN_DAY: 6 },
+    { STN_ID: 646, RN_DAY: 110 },
+    { STN_ID: 1, RN_DAY: 12 }
+  ]);
+
+  const regDay = await buildAwsVariablePack(regRoot, '202608200701', '202608200801', 'RN_DAY', {
+    catalog: regCatalog
+  });
+  assert.strictEqual(regDay.manifest.contractRevision, 4);
+  assert.ok(regDay.manifest.qc.rnDayRegression.regressionSampleCount >= 3);
+  assert.ok(regDay.manifest.qc.rnDayRegression.regressionStationCount >= 2);
+  const rd = new Int16Array(regDay.binary.buffer, regDay.binary.byteOffset, regDay.binary.length / 2);
+  const rIdx = new Map(regDay.manifest.stations.map((s, i) => [s.STN_ID, i]));
+  const scR = regDay.manifest.stationCount;
+  // frames: 0701,0702,...,0801 → 61 frames; index of 0701=0, 0702=1, 0800=59, 0801=60
+  const f0701 = 0;
+  const f0702 = 1;
+  const f0800 = 59;
+  const f0801 = 60;
+  assert.strictEqual(rd[f0701 * scR + rIdx.get(929)], 5);
+  assert.strictEqual(rd[f0702 * scR + rIdx.get(929)], MISSING_I16);
+  assert.strictEqual(rd[f0800 * scR + rIdx.get(929)], MISSING_I16); // 4 < max 5
+  assert.strictEqual(rd[f0801 * scR + rIdx.get(929)], 6);
+  assert.strictEqual(rd[f0701 * scR + rIdx.get(646)], 105);
+  assert.strictEqual(rd[f0702 * scR + rIdx.get(646)], MISSING_I16);
+  assert.strictEqual(rd[f0800 * scR + rIdx.get(646)], 110);
+  assert.strictEqual(rd[f0701 * scR + rIdx.get(1)], 10);
+  assert.strictEqual(rd[f0702 * scR + rIdx.get(1)], MISSING_I16); // 3 < 10
+  assert.strictEqual(rd[f0800 * scR + rIdx.get(1)], 12);
+
+  const reg24 = await buildAwsVariablePack(regRoot, '202608200701', '202608200702', 'RN_24HR', {
+    catalog: regCatalog
+  });
+  const r24v = new Int16Array(reg24.binary.buffer, reg24.binary.byteOffset, reg24.binary.length / 2);
+  const r24Idx = new Map(reg24.manifest.stations.map((s, i) => [s.STN_ID, i]));
+  const sc24 = reg24.manifest.stationCount;
+  // 0702 regression → RN_24HR missing for 929
+  assert.strictEqual(r24v[1 * sc24 + r24Idx.get(929)], MISSING_I16);
+  assert.ok(reg24.manifest.qc.rnDayRegression.regressionSampleCount >= 1);
+  assert.ok(reg24.manifest.qc.rnDayRegression.previousDay);
 
   // Legacy RN_DAY field fallback: row with only RN_24HR
   const legacyDay = await buildAwsVariablePack(rollRoot, '202608162359', '202608162359', 'RN_DAY', {

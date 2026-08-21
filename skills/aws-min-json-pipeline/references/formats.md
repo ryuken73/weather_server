@@ -82,7 +82,7 @@ JSON으로 넣을 때 (`work/fetch_aws_apihub.js`):
 | `RN_DAY` | KST 당일 00시~현재 | `day`, Asia/Seoul | `rn_day` |
 
 `RN_24HR` 계산: `RN_DAY(D,t) + RN_DAY(D-1,23:59) - RN_DAY(D-1,t)`. 결측/음수/counter 감소는 `-32768`, 0으로 clamp하지 않음.
-Hub RN-DAY는 종종 **00:01에 reset**되므로 pack은 당일·전일 **00:00을 0으로 정규화**한 뒤 위 식을 적용한다 (결측은 유지).
+Hub RN-DAY는 종종 **00:01에 reset**되므로 pack은 당일·전일 **00:00을 0으로 정규화**한 뒤, **날짜 중간 역행은 running-max QC로 missing** 처리하고 위 식을 적용한다 (offset stitching 없음).
 legacy `/datasets/aws/rn_24hr/` URL은 과거 day-total이므로 rolling으로 쓰지 말 것. 변경 요청: `docs/rainfall-producer-rn24-rnday-change-request.md`.
 
 | 원천 (JSON ×10 mm) | pack Int16 |
