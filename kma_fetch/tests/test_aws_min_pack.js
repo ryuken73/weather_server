@@ -33,6 +33,8 @@ const {
   evaluateRnDayUpwardSpike,
   qcRnDayStationSeries,
   findExtremeThenLongMissingRejects,
+  findContaminatedPeakEpisodeRejects,
+  isContentAddressedPackBinaryUrl,
   RN_24HR_SUBSTITUTION_MAX_MINUTES,
   PACK_SCHEMA_VERSION,
   PACK_CONTRACT_REVISION,
@@ -306,7 +308,12 @@ async function main() {
   assert.strictEqual(maxFi, 1); // 15:33
 
   await publishAwsTaPack(packRoot, built);
-  assert.ok(fs.existsSync(path.join(packRoot, 'ta', '1m', '20260812', 'ta.i16le')));
+  assert.ok(
+    isContentAddressedPackBinaryUrl(built.manifest.data.url, 'ta'),
+    `expected content-addressed TA url, got ${built.manifest.data.url}`
+  );
+  const taBinName = path.basename(built.manifest.data.url);
+  assert.ok(fs.existsSync(path.join(packRoot, 'ta', '1m', '20260812', taBinName)));
   assert.ok(fs.existsSync(path.join(packRoot, 'ta', '1m', '20260812', 'manifest.json')));
 
   // 서석(535) 유형: 연속 비현실 급락 — 첫 분만 유지, 이후 QC 제외
@@ -390,6 +397,14 @@ async function main() {
   assert.strictEqual(rnDay.manifest.accumulation.type, 'day');
   assert.strictEqual(rnDay.manifest.accumulation.timezone, 'Asia/Seoul');
   assert.ok(String(rnDay.manifest.data.url).includes('/rn_day/'));
+  assert.ok(
+    isContentAddressedPackBinaryUrl(rnDay.manifest.data.url, 'rn_day'),
+    `expected hash binary url, got ${rnDay.manifest.data.url}`
+  );
+  assert.strictEqual(
+    rnDay.manifest.data.url,
+    `/datasets/aws/rn_day/1m/20260813/rn_day-v${rnDay.manifest.data.sha256.slice(0, 8)}.i16le`
+  );
   assert.deepStrictEqual(
     rn60.manifest.stations.map((s) => s.STN_ID),
     rn15.manifest.stations.map((s) => s.STN_ID)
@@ -827,6 +842,28 @@ async function main() {
       'a',
       'b'
     ),
+    false
+  );
+  assert.strictEqual(
+    isReusableCachedManifest(
+      {
+        complete: true,
+        schemaVersion: PACK_SCHEMA_VERSION,
+        contractRevision: PACK_CONTRACT_REVISION,
+        variable: 'RN_24HR',
+        from: 'a',
+        to: 'b',
+        sourceField: 'derived:RN-DAY',
+        accumulation: { type: 'rolling', windowMinutes: 1440 },
+        validSampleCount: 1,
+        coverage: { status: 'ok' },
+        data: { url: '/datasets/aws/rn_24hr_rolling/1m/x/rn_24hr_rolling-vdeadbeef.i16le' },
+        qcDetailUrl: '/datasets/aws/rn_24hr_rolling/1m/x/qc-vabc123.json'
+      },
+      'RN_24HR',
+      'a',
+      'b'
+    ),
     true
   );
 
@@ -851,6 +888,63 @@ async function main() {
   ]);
   await writeFrame(upwardSpikeRoot, '202608201155', [
     { STN_ID: 104, RN_DAY: 0, RN_15M: 0, RN_60M: 0 },
+    { STN_ID: 940, RN_DAY: 0 },
+    { STN_ID: 277, RN_DAY: 0 },
+    { STN_ID: 688, RN_DAY: 540 }
+  ]);
+  // 북강릉: repeated 31mm episode (12:56~13:00) with 0/missing separators
+  await writeFrame(upwardSpikeRoot, '202608201250', [
+    { STN_ID: 104, RN_DAY: 0, RN_15M: 0, RN_60M: 0, RN_12HR: 0 },
+    { STN_ID: 940, RN_DAY: 0 },
+    { STN_ID: 277, RN_DAY: 0 },
+    { STN_ID: 688, RN_DAY: 540 }
+  ]);
+  await writeFrame(upwardSpikeRoot, '202608201251', [
+    { STN_ID: 104, RN_DAY: 0, RN_15M: 0, RN_60M: 0, RN_12HR: 0 },
+    { STN_ID: 940, RN_DAY: 0 },
+    { STN_ID: 277, RN_DAY: 0 },
+    { STN_ID: 688, RN_DAY: 540 }
+  ]);
+  await writeFrame(upwardSpikeRoot, '202608201252', [
+    { STN_ID: 104, RN_DAY: 0, RN_15M: 0, RN_60M: 0, RN_12HR: 0 },
+    { STN_ID: 940, RN_DAY: 0 },
+    { STN_ID: 277, RN_DAY: 0 },
+    { STN_ID: 688, RN_DAY: 540 }
+  ]);
+  await writeFrame(upwardSpikeRoot, '202608201253', [
+    { STN_ID: 104, RN_DAY: 0, RN_15M: 0, RN_60M: 0, RN_12HR: 0 },
+    { STN_ID: 940, RN_DAY: 0 },
+    { STN_ID: 277, RN_DAY: 0 },
+    { STN_ID: 688, RN_DAY: 540 }
+  ]);
+  // 12:54 missing (no frame)
+  await writeFrame(upwardSpikeRoot, '202608201255', [
+    { STN_ID: 104, RN_DAY: 0, RN_15M: 0, RN_60M: 0, RN_12HR: 0 },
+    { STN_ID: 940, RN_DAY: 0 },
+    { STN_ID: 277, RN_DAY: 0 },
+    { STN_ID: 688, RN_DAY: 540 }
+  ]);
+  await writeFrame(upwardSpikeRoot, '202608201256', [
+    { STN_ID: 104, RN_DAY: 310, RN_15M: 310, RN_60M: 310, RN_12HR: 310 },
+    { STN_ID: 940, RN_DAY: 0 },
+    { STN_ID: 277, RN_DAY: 0 },
+    { STN_ID: 688, RN_DAY: 540 }
+  ]);
+  // 12:57 missing
+  await writeFrame(upwardSpikeRoot, '202608201258', [
+    { STN_ID: 104, RN_DAY: 0, RN_15M: 0, RN_60M: 0, RN_12HR: 0 },
+    { STN_ID: 940, RN_DAY: 0 },
+    { STN_ID: 277, RN_DAY: 0 },
+    { STN_ID: 688, RN_DAY: 540 }
+  ]);
+  await writeFrame(upwardSpikeRoot, '202608201259', [
+    { STN_ID: 104, RN_DAY: 310, RN_15M: 310, RN_60M: 310, RN_12HR: 310 },
+    { STN_ID: 940, RN_DAY: 0 },
+    { STN_ID: 277, RN_DAY: 0 },
+    { STN_ID: 688, RN_DAY: 540 }
+  ]);
+  await writeFrame(upwardSpikeRoot, '202608201300', [
+    { STN_ID: 104, RN_DAY: 310, RN_15M: 310, RN_60M: 310, RN_12HR: 310 },
     { STN_ID: 940, RN_DAY: 0 },
     { STN_ID: 277, RN_DAY: 0 },
     { STN_ID: 688, RN_DAY: 540 }
@@ -921,6 +1015,54 @@ async function main() {
   assert.strictEqual(sd20[2 * sc20 + s20Idx.get(104)], 0); // 11:55 0.0 accepted, not regression vs spike
   assert.ok(spikeDay20.manifest.qc.rnDayQc.upwardSpikeRejectedSampleCount >= 1);
 
+  const episodeDay20 = await buildAwsVariablePack(
+    upwardSpikeRoot,
+    '202608201250',
+    '202608201300',
+    'RN_DAY',
+    { catalog: spikeCatalog }
+  );
+  const ep20 = new Int16Array(
+    episodeDay20.binary.buffer,
+    episodeDay20.binary.byteOffset,
+    episodeDay20.binary.length / 2
+  );
+  const epIdx = new Map(episodeDay20.manifest.stations.map((s, i) => [s.STN_ID, i]));
+  const epSc = episodeDay20.manifest.stationCount;
+  const tm1256 = episodeDay20.manifest.from.slice(0, 8) + '1256';
+  const tm1259 = episodeDay20.manifest.from.slice(0, 8) + '1259';
+  const tm1300 = episodeDay20.manifest.from.slice(0, 8) + '1300';
+  const fi1256 = episodeDay20.manifest.frameCount > 6 ? 6 : -1;
+  const fi1259 = episodeDay20.manifest.frameCount > 9 ? 9 : -1;
+  const fi1300 = episodeDay20.manifest.frameCount > 10 ? 10 : -1;
+  assert.ok(fi1256 >= 0, 'expected 12:56 frame');
+  assert.strictEqual(ep20[fi1256 * epSc + epIdx.get(104)], MISSING_I16);
+  assert.strictEqual(ep20[fi1259 * epSc + epIdx.get(104)], MISSING_I16);
+  assert.strictEqual(ep20[fi1300 * epSc + epIdx.get(104)], MISSING_I16);
+  assert.ok(episodeDay20.qcDetail);
+  const epRecs = episodeDay20.qcDetail.records.filter((r) => r.STN_ID === 104);
+  const epEpisodeRecs = epRecs.filter((r) => r.signals.includes('repeated_peak_episode'));
+  assert.ok(epEpisodeRecs.length >= 3);
+  assert.ok(epEpisodeRecs.every((r) => r.episodeId));
+  assert.ok(
+    isContentAddressedPackBinaryUrl(episodeDay20.manifest.data.url, 'rn_day'),
+    episodeDay20.manifest.data.url
+  );
+  const epPub = await publishAwsVariablePack(path.join(tmp, 'pack-ep20'), episodeDay20);
+  assert.ok(await fsp.stat(epPub.binaryPath));
+  assert.ok(await fsp.stat(epPub.qcDetailPath));
+  assert.ok(
+    await fsp
+      .access(
+        path.join(
+          path.dirname(epPub.qcDetailPath),
+          path.basename(episodeDay20.manifest.qcDetailUrl)
+        )
+      )
+      .then(() => true)
+      .catch(() => false)
+  );
+
   const spikeDay21 = await buildAwsVariablePack(upwardSpikeRoot, '202608210923', '202608210927', 'RN_DAY', {
     catalog: spikeCatalog
   });
@@ -950,6 +1092,8 @@ async function main() {
   // 영덕: extreme+cross contradiction → suspect-retained (keep raw 648 = 64.8mm)
   assert.strictEqual(yd[1 * ysc + yIdx.get(277)], 648);
   assert.ok(yeong.manifest.qc.rnDayQc.suspectRetainedSampleCount >= 1);
+  assert.ok(yeong.manifest.qc.qcStates);
+  assert.ok(yeong.manifest.qc.qcStates.suspectRetainedSampleCount >= 1);
   assert.ok(yeong.qcDetail);
   assert.ok(yeong.manifest.qcDetailUrl);
   assert.ok(yeong.manifest.qcDetailSha256);

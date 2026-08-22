@@ -44,6 +44,10 @@ const RN_DAY_SPIKE_REPEAT_JUMP_MIN = 500; // 50.0 mm mechanical repeat floor
 const RN_DAY_SPIKE_REPEAT_TOL = 50; // 5.0 mm
 const RN_DAY_SPIKE_ISOLATED_PEAK_MIN = 50; // 5.0 mm
 const RN_DAY_SPIKE_RECOVERY_STREAK = 2;
+const RN_DAY_EPISODE_PEAK_TOL = 1; // 0.1 mm — repeated peak must be nearly identical (31.0, not 10.5→11.0)
+const RN_DAY_EPISODE_LOW_MAX = 20; // 2.0 mm separator (0 / near-dry)
+const RN_DAY_EPISODE_MAX_SPAN_MINUTES = 120;
+const RN_DAY_LARGE_STEP_SUSPECT_MIN = 500; // 50.0 mm single-step → suspect-retained
 /** RN_24HR may use last-confirmed RN_DAY for rejected frames only up to this many consecutive minutes. */
 const RN_24HR_SUBSTITUTION_MAX_MINUTES = 30;
 
@@ -442,8 +446,18 @@ function packRelDir(spec, dayKey) {
   return path.join(spec.slug, '1m', dayKey);
 }
 
-function packBinaryUrl(spec, dayKey) {
-  return `/datasets/aws/${spec.slug}/1m/${dayKey}/${spec.slug}.i16le`;
+function packBinaryFileName(spec, contentSha256) {
+  const short = String(contentSha256 || 'pending').slice(0, 8);
+  return `${spec.slug}-v${short}.i16le`;
+}
+
+function packBinaryUrl(spec, dayKey, contentSha256) {
+  return `/datasets/aws/${spec.slug}/1m/${dayKey}/${packBinaryFileName(spec, contentSha256)}`;
+}
+
+function isContentAddressedPackBinaryUrl(url, slug) {
+  if (!url || !slug) return false;
+  return new RegExp(`/${slug}-v[a-f0-9]{8}\\.i16le$`, 'i').test(String(url));
 }
 
 /** Immutable-friendly QC detail URL (content hash in filename). */
@@ -675,6 +689,173 @@ function prevNonNullIndex(scaledSeries, fromIdx) {
   return -1;
 }
 
+function hhmmToMinutes(hhmm) {
+  const s = String(hhmm || '');
+  if (s.length < 4) return null;
+  const h = Number(s.slice(0, 2));
+  const m = Number(s.slice(2, 4));
+  if (!Number.isFinite(h) || !Number.isFinite(m)) return null;
+  return h * 60 + m;
+}
+
+/** Wall-clock minutes between frame indices (KST HHMM), not frame-gap dilution. */
+function elapsedMinutesBetween(hhmmSeries, fromIdx, toIdx) {
+  if (fromIdx == null || toIdx == null || fromIdx < 0 || toIdx < 0) {
+    return Math.max(1, toIdx - fromIdx);
+  }
+  if (!hhmmSeries) return Math.max(1, toIdx - fromIdx);
+  const a = hhmmToMinutes(hhmmSeries[fromIdx]);
+  const b = hhmmToMinutes(hhmmSeries[toIdx]);
+  if (a == null || b == null) return Math.max(1, toIdx - fromIdx);
+  const delta = b - a;
+  if (delta <= 0) return Math.max(1, toIdx - fromIdx);
+  return delta;
+}
+
+function peakValuesMatch(a, b) {
+  return Math.abs(a - b) <= RN_DAY_EPISODE_PEAK_TOL;
+}
+
+function isEpisodeSeparatorValue(v) {
+  return v == null || v <= RN_DAY_EPISODE_LOW_MAX;
+}
+
+function crossFieldsReplicatePeak(cross, peakScaled) {
+  if (!cross) return true;
+  const fields = [cross.rn15, cross.rn60, cross.rn12].filter((x) => x != null);
+  if (fields.length === 0) return true;
+  return fields.every((f) => peakValuesMatch(f, peakScaled));
+}
+
+/**
+ * Repeated peak episode (북강릉): same abnormal peak reappears after 0/missing separators.
+ * Consecutive same-value frames count as one burst; monotonic rain recovery is not an episode.
+ */
+function findContaminatedPeakEpisodeRejects(scaledSeries, crossSeries, hhmmSeries) {
+  const rejects = new Set();
+  const episodeMeta = new Map();
+  const n = scaledSeries.length;
+
+  const peakIndices = [];
+  for (let i = 0; i < n; i++) {
+    const v = scaledSeries[i];
+    if (v == null || v < RN_DAY_SPIKE_ISOLATED_PEAK_MIN) continue;
+    if (!crossFieldsReplicatePeak(crossSeries ? crossSeries[i] : null, v)) continue;
+    peakIndices.push(i);
+  }
+  if (peakIndices.length < 2) return { rejects, episodeMeta };
+
+  const byPeakValue = new Map();
+  for (const pi of peakIndices) {
+    const v = scaledSeries[pi];
+    let key = null;
+    for (const k of byPeakValue.keys()) {
+      if (peakValuesMatch(k, v)) {
+        key = k;
+        break;
+      }
+    }
+    if (key == null) {
+      key = v;
+      byPeakValue.set(key, []);
+    }
+    byPeakValue.get(key).push(pi);
+  }
+
+  for (const [peakValue, indices] of byPeakValue.entries()) {
+    const sorted = [...indices].sort((a, b) => a - b);
+    const episodeIndices = [];
+
+    for (let k = 0; k < sorted.length; k++) {
+      const cur = sorted[k];
+      if (k === 0) {
+        episodeIndices.push(cur);
+        continue;
+      }
+      const prev = sorted[k - 1];
+      let onlySeparators = true;
+      for (let j = prev + 1; j < cur; j++) {
+        if (!isEpisodeSeparatorValue(scaledSeries[j])) {
+          onlySeparators = false;
+          break;
+        }
+      }
+      if (onlySeparators) {
+        episodeIndices.push(cur);
+        continue;
+      }
+      if (cur === prev + 1 && peakValuesMatch(scaledSeries[cur], scaledSeries[prev])) {
+        episodeIndices.push(cur);
+        continue;
+      }
+      // Broken chain — evaluate accumulated episode and start fresh.
+      if (episodeIndices.length >= 2) {
+        stampEpisode(scaledSeries, hhmmSeries, episodeIndices, peakValue, rejects, episodeMeta);
+      }
+      episodeIndices.length = 0;
+      episodeIndices.push(cur);
+    }
+
+    if (episodeIndices.length >= 2) {
+      stampEpisode(scaledSeries, hhmmSeries, episodeIndices, peakValue, rejects, episodeMeta);
+    }
+  }
+
+  return { rejects, episodeMeta };
+}
+
+function stampEpisode(scaledSeries, hhmmSeries, indices, peakValue, rejects, episodeMeta) {
+  const firstIdx = indices[0];
+  let baseline = 0;
+  for (let j = 0; j < firstIdx; j++) {
+    const x = scaledSeries[j];
+    if (x != null && x > baseline) baseline = x;
+  }
+  const peakMax = Math.max(...indices.map((i) => scaledSeries[i]));
+  const peakMin = Math.min(...indices.map((i) => scaledSeries[i]));
+  if (peakMax - peakMin > RN_DAY_EPISODE_PEAK_TOL) return;
+  // Repeated pollution must jump well above recent baseline (not monotonic rain recovery).
+  if (peakMax - baseline <= RN_DAY_SPIKE_SOFT_JUMP) return;
+  if (peakValue <= baseline + RN_DAY_SPIKE_ISOLATED_PEAK_MIN) return;
+  if (hhmmSeries && indices.length >= 2) {
+    const span = elapsedMinutesBetween(hhmmSeries, indices[0], indices[indices.length - 1]);
+    if (span > RN_DAY_EPISODE_MAX_SPAN_MINUTES) return;
+  }
+  const episodeId = `peak-ep-${firstIdx}-${peakValue}`;
+  const meta = {
+    episodeId,
+    startIdx: indices[0],
+    endIdx: indices[indices.length - 1],
+    peakValue
+  };
+  for (const idx of indices) {
+    rejects.add(idx);
+    episodeMeta.set(idx, meta);
+  }
+}
+
+function evaluateStepSpikeSignals(scaledSeries, hhmmSeries, i) {
+  const stepPrev = prevNonNullIndex(scaledSeries, i - 1);
+  if (stepPrev < 0 || stepPrev === i) {
+    return { stepExtreme: false, stepSoft: false, largeStepSuspect: false, signals: [] };
+  }
+  const stepMin = elapsedMinutesBetween(hhmmSeries, stepPrev, i);
+  const stepInc = scaledSeries[i] - scaledSeries[stepPrev];
+  if (stepInc <= 0) {
+    return { stepExtreme: false, stepSoft: false, largeStepSuspect: false, signals: [] };
+  }
+  const stepRate = stepInc / Math.max(1, stepMin);
+  const signals = [];
+  const stepExtreme = stepRate >= RN_DAY_SPIKE_EXTREME_RATE_PER_MIN;
+  const stepSoft =
+    stepRate >= RN_DAY_SPIKE_SOFT_RATE_PER_MIN || stepInc >= RN_DAY_SPIKE_SOFT_JUMP;
+  const largeStepSuspect = stepInc >= RN_DAY_LARGE_STEP_SUSPECT_MIN;
+  if (stepExtreme) signals.push('extreme_step_rate');
+  else if (stepSoft) signals.push('soft_step_rate');
+  if (largeStepSuspect) signals.push('large_step_increase');
+  return { stepExtreme, stepSoft, largeStepSuspect, signals };
+}
+
 /**
  * Classify increase vs baseline for candidate detection (never sole reject).
  * RN_DAY/RN_15M/RN_60M equality is intentionally NOT a reject signal.
@@ -836,10 +1017,16 @@ function qcRnDayStationSeries(scaledSeries, crossSeries, hhmmSeries) {
   const reason = new Array(n);
   const status = new Array(n);
   const signals = new Array(n);
+  const episodeMeta = new Array(n).fill(null);
 
   const mechRejects = findMechanicalRepeatRejects(scaledSeries);
   const isolatedRejects = findIsolatedPeakResetRejects(scaledSeries);
-  const rejectMask = new Set([...mechRejects, ...isolatedRejects]);
+  const episodeResult = findContaminatedPeakEpisodeRejects(scaledSeries, crossSeries, hhmmSeries);
+  const episodeRejects = episodeResult.rejects;
+  for (const [idx, meta] of episodeResult.episodeMeta.entries()) {
+    episodeMeta[idx] = meta;
+  }
+  const rejectMask = new Set([...mechRejects, ...isolatedRejects, ...episodeRejects]);
   // extreme + long missing alone is intentionally NOT a reject path.
 
   let accepted = null;
@@ -880,6 +1067,7 @@ function qcRnDayStationSeries(scaledSeries, crossSeries, hhmmSeries) {
       const sig = [];
       if (mechRejects.has(i)) sig.push('mechanical_repeat');
       if (isolatedRejects.has(i)) sig.push('isolated_peak_reset');
+      if (episodeRejects.has(i)) sig.push('repeated_peak_episode');
       signals[i] = sig;
       pack[i] = null;
       rolling[i] = accepted;
@@ -903,8 +1091,10 @@ function qcRnDayStationSeries(scaledSeries, crossSeries, hhmmSeries) {
 
     if (accepted == null) {
       const cls0 = classifyRnDayIncrease(v, 0, 1, cross);
-      signals[i] = cls0.signals;
-      if (cls0.extremeCandidate) {
+      const step0 = evaluateStepSpikeSignals(scaledSeries, hhmmSeries, i);
+      signals[i] = [...cls0.signals, ...step0.signals];
+      const extremeCandidate = cls0.extremeCandidate || step0.stepExtreme || step0.largeStepSuspect;
+      if (extremeCandidate || (cls0.softCandidate && cls0.crossContradiction) || step0.largeStepSuspect) {
         pendingSuspect = { value: v, idx: i };
         pack[i] = v;
         rolling[i] = v;
@@ -921,9 +1111,10 @@ function qcRnDayStationSeries(scaledSeries, crossSeries, hhmmSeries) {
       continue;
     }
 
-    const elapsed = Math.max(1, i - acceptedIdx);
+    const elapsed = elapsedMinutesBetween(hhmmSeries, acceptedIdx, i);
     const cls = classifyRnDayIncrease(v, accepted, elapsed, cross);
-    signals[i] = cls.signals;
+    const stepSig = evaluateStepSpikeSignals(scaledSeries, hhmmSeries, i);
+    signals[i] = [...cls.signals, ...stepSig.signals];
 
     if (pendingSuspect) {
       if (!cls.extremeCandidate && cls.increase >= 0 && cls.increase <= RN_DAY_SPIKE_SOFT_JUMP) {
@@ -935,8 +1126,15 @@ function qcRnDayStationSeries(scaledSeries, crossSeries, hhmmSeries) {
       }
     }
 
-    // Extreme alone, or soft+cross contradiction → suspect-retained (includes extreme+missing cases)
-    if (cls.extremeCandidate || (cls.softCandidate && cls.crossContradiction)) {
+    // Extreme / large single-step / soft+cross contradiction → suspect-retained
+    const extremeCandidate =
+      cls.extremeCandidate || stepSig.stepExtreme || stepSig.largeStepSuspect;
+    const softCandidate = cls.softCandidate || stepSig.stepSoft;
+    if (
+      extremeCandidate ||
+      (softCandidate && cls.crossContradiction) ||
+      stepSig.largeStepSuspect
+    ) {
       pendingSuspect = { value: v, idx: i };
       pack[i] = v;
       rolling[i] = v;
@@ -974,7 +1172,7 @@ function qcRnDayStationSeries(scaledSeries, crossSeries, hhmmSeries) {
     status[i] = 'valid';
   }
 
-  return { pack, rolling, reason, status, signals, rejectMask };
+  return { pack, rolling, reason, status, signals, rejectMask, episodeMeta };
 }
 
 /**
@@ -1063,6 +1261,7 @@ function applyRnDayCounterRegression(scaledGrid, frameCount, stationCount, optio
   const reasonGrid = new Array(frameCount * stationCount);
   const statusGrid = new Array(frameCount * stationCount);
   const signalsGrid = new Array(frameCount * stationCount);
+  const episodeMetaGrid = new Array(frameCount * stationCount).fill(null);
   const stats = emptyRnDayRegressionStats();
   const stationHadRegression = new Uint8Array(stationCount);
   const stationHadSpike = new Uint8Array(stationCount);
@@ -1086,6 +1285,7 @@ function applyRnDayCounterRegression(scaledGrid, frameCount, stationCount, optio
       reasonGrid[idx] = qc.reason[fi];
       statusGrid[idx] = qc.status[fi];
       signalsGrid[idx] = qc.signals ? qc.signals[fi] : [];
+      episodeMetaGrid[idx] = qc.episodeMeta ? qc.episodeMeta[fi] : null;
 
       const st = qc.status[fi];
       const rs = qc.reason[fi];
@@ -1120,7 +1320,7 @@ function applyRnDayCounterRegression(scaledGrid, frameCount, stationCount, optio
     if (stationHadSpike[si]) stats.upwardSpikeStationCount += 1;
   }
 
-  return { packGrid, rollingGrid, reasonGrid, statusGrid, signalsGrid, stats };
+  return { packGrid, rollingGrid, reasonGrid, statusGrid, signalsGrid, episodeMetaGrid, stats };
 }
 
 function scaledToMm(scaled) {
@@ -1143,6 +1343,7 @@ function buildSparseRnDayQcRecords({
   statusGrid,
   reasonGrid,
   signalsGrid,
+  episodeMetaGrid,
   frameCount,
   stationCount
 }) {
@@ -1169,7 +1370,8 @@ function buildSparseRnDayQcRecords({
       const substitutionUsed =
         packValue == null && rollValue != null && state === 'rejected';
       const meta = stations && stations[si] ? stations[si] : null;
-      records.push({
+      const ep = episodeMetaGrid ? episodeMetaGrid[idx] : null;
+      const record = {
         TM: tm,
         STN_ID: stationIds[si],
         stationName: meta && (meta.STN_KO || meta.STN_NAME) ? meta.STN_KO || meta.STN_NAME : undefined,
@@ -1186,7 +1388,15 @@ function buildSparseRnDayQcRecords({
         packValueMm: scaledToMm(packValue),
         date: dayYmd,
         variable: 'RN_DAY'
-      });
+      };
+      if (ep) {
+        record.episodeId = ep.episodeId;
+        record.episodeStartTm = timestamps[ep.startIdx] || undefined;
+        record.episodeEndTm = timestamps[ep.endIdx] || undefined;
+        record.episodePeakRawValue = ep.peakValue;
+        record.episodePeakValueMm = scaledToMm(ep.peakValue);
+      }
+      records.push(record);
     }
   }
   return records;
@@ -1250,8 +1460,15 @@ function buildQcRnDayScaledGrid(frames, timestamps, stationIds, options = {}) {
   }
 
   const rawScaledGrid = scaledGrid.slice();
-  const { packGrid, rollingGrid, reasonGrid, statusGrid, signalsGrid, stats: regression } =
-    applyRnDayCounterRegression(scaledGrid, frameCount, stationCount, { crossGrid, timestamps });
+  const {
+    packGrid,
+    rollingGrid,
+    reasonGrid,
+    statusGrid,
+    signalsGrid,
+    episodeMetaGrid,
+    stats: regression
+  } = applyRnDayCounterRegression(scaledGrid, frameCount, stationCount, { crossGrid, timestamps });
 
   const dayYmd = timestamps[0] ? timestamps[0].slice(0, 8) : null;
   const sparseQcRecords = buildSparseRnDayQcRecords({
@@ -1265,6 +1482,7 @@ function buildQcRnDayScaledGrid(frames, timestamps, stationIds, options = {}) {
     statusGrid,
     reasonGrid,
     signalsGrid,
+    episodeMetaGrid,
     frameCount,
     stationCount
   });
@@ -1275,6 +1493,7 @@ function buildQcRnDayScaledGrid(frames, timestamps, stationIds, options = {}) {
     reasonGrid,
     statusGrid,
     signalsGrid,
+    episodeMetaGrid,
     rawScaledGrid,
     sparseQcRecords,
     scaledGrid: packGrid,
@@ -1770,7 +1989,7 @@ async function buildAwsVariablePack(awsJsonDir, fromKor, toKor, variable, option
     stationOrder: 'STN_ID_ASC',
     stations,
     data: {
-      url: packBinaryUrl(spec, dayKey),
+      url: packBinaryUrl(spec, dayKey, sha256),
       dtype: 'int16',
       endianness: 'little',
       order: 'FRAME_MAJOR_STATION_MINOR',
@@ -1917,7 +2136,16 @@ async function buildAwsVariablePack(awsJsonDir, fromKor, toKor, variable, option
     qcDetail._publishAlsoAs = 'qc.json';
   }
 
-  return { manifest, binary, dayKey, datasetId, revision, variable: name, qcDetail };
+  return {
+    manifest,
+    binary,
+    dayKey,
+    datasetId,
+    revision,
+    variable: name,
+    qcDetail,
+    binaryFileName: packBinaryFileName(spec, sha256)
+  };
 }
 
 async function buildAwsTaPack(awsJsonDir, fromKor, toKor, options = {}) {
@@ -1925,13 +2153,18 @@ async function buildAwsTaPack(awsJsonDir, fromKor, toKor, options = {}) {
 }
 
 async function publishAwsVariablePack(packRoot, built) {
-  const { manifest, binary, dayKey, variable, qcDetail } = built;
+  const { manifest, binary, dayKey, variable, qcDetail, binaryFileName } = built;
   const { spec } = getPackVariableSpec(variable || manifest.variable);
   const outDir = path.join(packRoot, packRelDir(spec, dayKey));
   await fsp.mkdir(outDir, { recursive: true });
 
-  const binTmp = path.join(outDir, `${spec.slug}.i16le.${process.pid}.tmp`);
-  const binFinal = path.join(outDir, `${spec.slug}.i16le`);
+  const binName =
+    binaryFileName ||
+    (manifest.data && manifest.data.sha256
+      ? packBinaryFileName(spec, manifest.data.sha256)
+      : `${spec.slug}.i16le`);
+  const binTmp = path.join(outDir, `${binName}.${process.pid}.tmp`);
+  const binFinal = path.join(outDir, binName);
   const manTmp = path.join(outDir, `manifest.json.${process.pid}.tmp`);
   const manFinal = path.join(outDir, 'manifest.json');
 
@@ -1958,6 +2191,32 @@ async function publishAwsVariablePack(packRoot, built) {
     const aliasFinal = path.join(outDir, alsoAs);
     await fsp.writeFile(aliasTmp, json, 'utf8');
     await fsp.rename(aliasTmp, aliasFinal);
+  }
+
+  if (manifest.qcDetailUrl) {
+    const expectedQc =
+      qcDetailPath ||
+      path.join(outDir, manifest.qcDetailFile || packQcDetailFileName(manifest.qcDetailSha256));
+    try {
+      await fsp.access(expectedQc);
+    } catch (err) {
+      const fail = new Error(
+        `Pack publish incomplete: qcDetailUrl ${manifest.qcDetailUrl} file missing on disk`
+      );
+      fail.code = 'QC_DETAIL_MISSING';
+      throw fail;
+    }
+  }
+  if (manifest.data && manifest.data.url) {
+    try {
+      await fsp.access(binFinal);
+    } catch (err) {
+      const fail = new Error(
+        `Pack publish incomplete: data.url ${manifest.data.url} binary missing on disk`
+      );
+      fail.code = 'PACK_BINARY_MISSING';
+      throw fail;
+    }
   }
 
   return { manifest, binaryPath: binFinal, manifestPath: manFinal, qcDetailPath };
@@ -2005,10 +2264,14 @@ function isReusableCachedManifest(cached, name, from, to) {
     if (!cached.data || !cached.data.url || !String(cached.data.url).includes('rn_24hr_rolling')) {
       return false;
     }
+    if (!isContentAddressedPackBinaryUrl(cached.data.url, 'rn_24hr_rolling')) return false;
+    if (!cached.qcDetailUrl || !String(cached.qcDetailUrl).includes('qc-v')) return false;
   }
   if (name === 'RN_DAY') {
     const acc = cached.accumulation;
     if (!acc || acc.type !== 'day') return false;
+    if (!isContentAddressedPackBinaryUrl(cached.data.url, 'rn_day')) return false;
+    if (!cached.qcDetailUrl || !String(cached.qcDetailUrl).includes('qc-v')) return false;
   }
   return true;
 }
@@ -2135,6 +2398,11 @@ module.exports = {
   classifyRnDayIncrease,
   qcRnDayStationSeries,
   findExtremeThenLongMissingRejects,
+  findContaminatedPeakEpisodeRejects,
+  evaluateStepSpikeSignals,
+  packBinaryUrl,
+  packBinaryFileName,
+  isContentAddressedPackBinaryUrl,
   RN_24HR_SUBSTITUTION_MAX_MINUTES,
   readRainCrossScaled,
   deriveRolling24hScaled,

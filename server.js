@@ -151,7 +151,7 @@ const convertKSTToGMTString = (dateString) => {
   await fs.mkdir(awsPackDir, { recursive: true });
 
   /**
-   * Pack binary: past complete → immutable + ETag(sha256); today/incomplete → no-store.
+   * Pack assets: content-addressed binary + QC JSON (past complete → immutable + ETag).
    * Registered before static so Cache-Control is not overwritten by @fastify/static defaults.
    */
   fastify.get('/datasets/aws/:slug/1m/:day/:file', async (request, reply) => {
@@ -167,15 +167,43 @@ const convertKSTToGMTString = (dateString) => {
     if (!/^\d{8}$/.test(day)) {
       return reply.code(400).send({ error: 'Invalid day. Expected YYYYMMDD' });
     }
-    if (file !== `${slug}.i16le`) {
-      return reply.code(404).send({ error: 'Pack binary not found', slug, day, file });
+
+    const isLegacyBinary = file === `${slug}.i16le`;
+    const isHashedBinary = new RegExp(`^${slug}-v[a-f0-9]{8}\\.i16le$`, 'i').test(file);
+    const isQcJson = /^qc(-v[a-f0-9]+)?\.json$/i.test(file);
+
+    if (!isLegacyBinary && !isHashedBinary && !isQcJson) {
+      return reply.code(404).send({ error: 'Pack asset not found', slug, day, file });
     }
-    const binPath = path.join(awsPackDir, slug, '1m', day, `${slug}.i16le`);
+
+    const assetPath = path.join(awsPackDir, slug, '1m', day, file);
     try {
-      const binary = await fs.readFile(binPath);
       const cached = await loadCachedManifest(awsPackDir, day, variable);
       const today = kstTodayYmd();
       const immutable = cached && isPackImmutableCacheable(cached) && day !== today;
+
+      if (isQcJson) {
+        const body = await fs.readFile(assetPath, 'utf8');
+        let etag = null;
+        if (cached && cached.qcDetailSha256 && file === cached.qcDetailFile) {
+          etag = `"${cached.qcDetailSha256}"`;
+        } else {
+          etag = `"${crypto.createHash('sha256').update(body).digest('hex')}"`;
+        }
+        if (immutable) {
+          reply.header('Cache-Control', 'public, max-age=31536000, immutable');
+        } else {
+          reply.header('Cache-Control', 'no-store');
+        }
+        reply.header('ETag', etag);
+        if (immutable && request.headers['if-none-match'] === etag) {
+          return reply.code(304).send();
+        }
+        reply.type('application/json');
+        return reply.send(body);
+      }
+
+      const binary = await fs.readFile(assetPath);
       if (immutable) {
         reply.header('Cache-Control', 'public, max-age=31536000, immutable');
       } else {
@@ -199,19 +227,19 @@ const convertKSTToGMTString = (dateString) => {
       return reply.send(binary);
     } catch (err) {
       if (err.code === 'ENOENT') {
-        return reply.code(404).send({ error: 'Pack binary not found', slug, day });
+        return reply.code(404).send({ error: 'Pack asset not found', slug, day, file });
       }
       fastify.log.error(err);
       return reply.code(500).send({ error: 'Internal server error', details: err.message });
     }
   });
 
-  // manifest.json 등만 static. binary(.i16le)는 위 전용 route만 사용 (Cache-Control 보장)
+  // manifest.json 등만 static. binary(.i16le) / qc-v*.json 은 위 전용 route만 사용
   fastify.register(require('@fastify/static'), {
     root: awsPackDir,
     prefix: '/datasets/aws/',
     decorateReply: false,
-    allowedPath: (pathName) => !/\.i16le$/i.test(pathName)
+    allowedPath: (pathName) => !/\.i16le$/i.test(pathName) && !/^\/[^/]+\/1m\/\d{8}\/qc-v[a-f0-9]+\.json$/i.test(pathName)
   });
   fastify.register(require('@fastify/static'), {
     root: kimTextDatasetDir,
