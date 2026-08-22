@@ -78,7 +78,7 @@ Pack binary 계약 (consumer):
   - binary URL: `RN_24HR` → **`/datasets/aws/rn_24hr_rolling/...`만**. legacy `/datasets/aws/rn_24hr/...`는 과거 day-total이므로 **사용·하드코딩 금지**
   - `RN_DAY` → `/datasets/aws/rn_day/...`
   - Hub가 00:00에 전일 총량을 남기면 producer가 **00:00→0 정규화** (RN_DAY·RN_24HR 공통). 자정 스파이크를 일최대/순위에 쓰지 말 것
-  - RN_DAY upward spike: extreme/soft는 후보, reject는 복수 신호만. `suspect-retained`는 원값 보존 (`qc.rnDayQc`). equality·20mm/min 단독 reject 금지
+  - RN_DAY upward spike: extreme/soft는 후보, reject는 복수 신호만. `suspect-retained`는 원값 보존. sparse QC: `qcDetailUrl` + `qcDetailSha256` (`docs/aws-rn-qc-consumer-schema.md`)
 
 ## 핵심 규칙
 

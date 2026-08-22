@@ -446,8 +446,15 @@ function packBinaryUrl(spec, dayKey) {
   return `/datasets/aws/${spec.slug}/1m/${dayKey}/${spec.slug}.i16le`;
 }
 
-function packQcDetailUrl(spec, dayKey) {
-  return `/datasets/aws/${spec.slug}/1m/${dayKey}/qc.json`;
+/** Immutable-friendly QC detail URL (content hash in filename). */
+function packQcDetailUrl(spec, dayKey, contentSha256) {
+  const short = String(contentSha256 || 'pending').slice(0, 16);
+  return `/datasets/aws/${spec.slug}/1m/${dayKey}/qc-v${short}.json`;
+}
+
+function packQcDetailFileName(contentSha256) {
+  const short = String(contentSha256 || 'pending').slice(0, 16);
+  return `qc-v${short}.json`;
 }
 
 /**
@@ -1122,7 +1129,8 @@ function scaledToMm(scaled) {
 }
 
 /**
- * Sparse QC records for suspect-retained / rejected / substituted (not every valid sample).
+ * Sparse QC records for suspect-retained / rejected / substituted / substitution-expired.
+ * Field names match docs/rainfall-producer-contract-v8-verification-request.md.
  */
 function buildSparseRnDayQcRecords({
   dayYmd,
@@ -1145,35 +1153,39 @@ function buildSparseRnDayQcRecords({
       const idx = fi * stationCount + si;
       const st = statusGrid[idx];
       const rs = reasonGrid[idx];
-      const interesting =
-        st === 'suspect-retained' ||
-        st === 'rejected' ||
-        rs === 'upwardSpikeRejected' ||
-        rs === 'spikeRecoveryPending' ||
-        rs === 'counterRegression';
-      if (!interesting) continue;
+      let state = null;
+      if (st === 'suspect-retained' || rs === 'suspectRetained') state = 'suspect-retained';
+      else if (st === 'rejected' || rs === 'upwardSpikeRejected' || rs === 'spikeRecoveryPending') {
+        state = 'rejected';
+      } else if (rs === 'counterRegression') {
+        // Counter-regression is pack-missing with rolling hold; expose as rejected-style sparse for tracing.
+        state = 'rejected';
+      }
+      if (!state) continue;
+
       const rawValue = rawScaledGrid[idx];
       const packValue = packGrid[idx];
       const rollValue = rollingGrid[idx];
-      const substituted =
-        packValue == null && rollValue != null && (st === 'rejected' || rs === 'counterRegression');
+      const substitutionUsed =
+        packValue == null && rollValue != null && state === 'rejected';
       const meta = stations && stations[si] ? stations[si] : null;
       records.push({
-        date: dayYmd,
-        variable: 'RN_DAY',
         TM: tm,
         STN_ID: stationIds[si],
         stationName: meta && (meta.STN_KO || meta.STN_NAME) ? meta.STN_KO || meta.STN_NAME : undefined,
+        state,
         rawValue: rawValue == null ? null : rawValue,
         scale: 0.1,
         valueMm: scaledToMm(rawValue),
+        signals: signalsGrid && signalsGrid[idx] ? [...signalsGrid[idx]] : [],
+        acceptedUpdated: false,
+        substitutionUsed: Boolean(substitutionUsed),
+        reason: rs || state,
+        // Extra trace fields (optional for consumers)
         packRawValue: packValue,
         packValueMm: scaledToMm(packValue),
-        qcState: st || rs || 'unknown',
-        candidateSignals: signalsGrid && signalsGrid[idx] ? signalsGrid[idx] : [],
-        acceptedBaselineUpdated: st === 'valid' || rs === 'spikeRecovery',
-        rn24hrSubstitutionCandidate: Boolean(substituted),
-        reason: rs
+        date: dayYmd,
+        variable: 'RN_DAY'
       });
     }
   }
@@ -1495,6 +1507,22 @@ async function buildAwsVariablePack(awsJsonDir, fromKor, toKor, variable, option
             todayScaled = null;
             rollingQc.substitutionExpiredSampleCount += 1;
             rollingQc.qcRejectedSourceSampleCount += 1;
+            sparseQcRecords.push({
+              TM: timestamps[fi],
+              STN_ID: stnId,
+              state: 'substitution-expired',
+              rawValue: todayQc.rawScaledGrid ? todayQc.rawScaledGrid[idx] : null,
+              scale: 0.1,
+              valueMm: scaledToMm(todayQc.rawScaledGrid ? todayQc.rawScaledGrid[idx] : null),
+              signals: ['substitution_max_exceeded'],
+              acceptedUpdated: false,
+              substitutionUsed: false,
+              substitutionMinutes: holdMins,
+              substitutionMaxMinutes: RN_24HR_SUBSTITUTION_MAX_MINUTES,
+              reason: 'last_confirmed_expired',
+              date: dayYmd,
+              variable: 'RN_24HR'
+            });
           }
         }
 
@@ -1543,18 +1571,21 @@ async function buildAwsVariablePack(awsJsonDir, fromKor, toKor, variable, option
             rollingQc.upwardSpikeContaminationPreventedSampleCount += 1;
             rollingQc.upwardSpikeRejectedSampleCount += 1;
             sparseQcRecords.push({
-              date: dayYmd,
-              variable: 'RN_24HR',
               TM: timestamps[fi],
               STN_ID: stnId,
-              qcState: 'substituted',
-              substitutionMinutes: holdMins,
-              substitutionMaxMinutes: RN_24HR_SUBSTITUTION_MAX_MINUTES,
+              state: 'substituted',
               rawValue: todayQc.rawScaledGrid ? todayQc.rawScaledGrid[idx] : null,
               scale: 0.1,
               valueMm: scaledToMm(todayQc.rawScaledGrid ? todayQc.rawScaledGrid[idx] : null),
+              signals: ['last_confirmed_rn_day'],
+              acceptedUpdated: false,
+              substitutionUsed: true,
+              substitutionMinutes: holdMins,
+              substitutionMaxMinutes: RN_24HR_SUBSTITUTION_MAX_MINUTES,
               rn24hrValueMm: scaledToMm(derived.value),
-              reason: 'last_confirmed_rn_day'
+              reason: 'last_confirmed_rn_day',
+              date: dayYmd,
+              variable: 'RN_24HR'
             });
           }
         } else if (todayFilled || endFilled || sameFilled) {
@@ -1844,29 +1875,46 @@ async function buildAwsVariablePack(awsJsonDir, fromKor, toKor, variable, option
     sparseQcRecords.length > 0
   ) {
     const suspectRetainedSampleCount = sparseQcRecords.filter(
-      (r) => r.qcState === 'suspect-retained'
+      (r) => r.state === 'suspect-retained'
     ).length;
-    const rejectedSampleCount = sparseQcRecords.filter(
-      (r) => r.qcState === 'rejected' || r.reason === 'upwardSpikeRejected'
+    const rejectedSampleCount = sparseQcRecords.filter((r) => r.state === 'rejected').length;
+    const substitutedSampleCount = sparseQcRecords.filter((r) => r.state === 'substituted').length;
+    const substitutionExpiredSampleCount = sparseQcRecords.filter(
+      (r) => r.state === 'substitution-expired'
     ).length;
-    const substitutedSampleCount = sparseQcRecords.filter((r) => r.qcState === 'substituted').length;
-    qcDetail = {
+    const qcStates = {
+      suspectRetainedSampleCount,
+      rejectedSampleCount,
+      substitutedSampleCount,
+      substitutionExpiredSampleCount,
+      recordCount: sparseQcRecords.length
+    };
+    // Hash after body is stable (without sha field); then stamp URL + sha on manifest.
+    const qcBody = {
       schemaVersion: 1,
+      contractRevision: PACK_CONTRACT_REVISION,
+      datasetId,
       date: from.slice(0, 8),
       variable: name,
+      generatedAt: manifest.generatedAt,
       scale: 0.1,
       unit: 'mm',
-      note: 'Sparse QC: suspect-retained, rejected, substituted only. rawValue is Int16×10; valueMm = rawValue*0.1',
-      qcStates: {
-        suspectRetainedSampleCount,
-        rejectedSampleCount,
-        substitutedSampleCount,
-        recordCount: sparseQcRecords.length
-      },
+      note:
+        'Sparse QC only: suspect-retained | rejected | substituted | substitution-expired. Lookup by (TM, STN_ID). rawValue=Int16×10, valueMm=rawValue*0.1',
+      qcStates,
       records: sparseQcRecords
     };
-    manifest.qcDetailUrl = packQcDetailUrl(spec, dayKey);
-    manifest.qc.qcStates = qcDetail.qcStates;
+    const qcSha256 = crypto.createHash('sha256').update(JSON.stringify(qcBody)).digest('hex');
+    qcDetail = { ...qcBody, sha256: qcSha256 };
+    const qcUrl = packQcDetailUrl(spec, dayKey, qcSha256);
+    const qcFileName = packQcDetailFileName(qcSha256);
+    manifest.qcDetailUrl = qcUrl;
+    manifest.qcDetailSha256 = qcSha256;
+    manifest.qcDetailFile = qcFileName;
+    manifest.qc.qcStates = qcStates;
+    // Keep a stable sidecar name for ops + hashed immutable name for CDN.
+    qcDetail._publishFileName = qcFileName;
+    qcDetail._publishAlsoAs = 'qc.json';
   }
 
   return { manifest, binary, dayKey, datasetId, revision, variable: name, qcDetail };
@@ -1894,11 +1942,22 @@ async function publishAwsVariablePack(packRoot, built) {
 
   let qcDetailPath = null;
   if (qcDetail) {
-    const qcTmp = path.join(outDir, `qc.json.${process.pid}.tmp`);
-    const qcFinal = path.join(outDir, 'qc.json');
-    await fsp.writeFile(qcTmp, JSON.stringify(qcDetail, null, 2), 'utf8');
+    const publishName = qcDetail._publishFileName || packQcDetailFileName(qcDetail.sha256);
+    const alsoAs = qcDetail._publishAlsoAs || 'qc.json';
+    const body = { ...qcDetail };
+    delete body._publishFileName;
+    delete body._publishAlsoAs;
+    const json = JSON.stringify(body, null, 2);
+    const qcTmp = path.join(outDir, `${publishName}.${process.pid}.tmp`);
+    const qcFinal = path.join(outDir, publishName);
+    await fsp.writeFile(qcTmp, json, 'utf8');
     await fsp.rename(qcTmp, qcFinal);
     qcDetailPath = qcFinal;
+    // Convenience alias (may be overwritten next warm; consumers should prefer qcDetailUrl).
+    const aliasTmp = path.join(outDir, `${alsoAs}.${process.pid}.tmp`);
+    const aliasFinal = path.join(outDir, alsoAs);
+    await fsp.writeFile(aliasTmp, json, 'utf8');
+    await fsp.rename(aliasTmp, aliasFinal);
   }
 
   return { manifest, binaryPath: binFinal, manifestPath: manFinal, qcDetailPath };
