@@ -28,7 +28,19 @@ const VARIABLE_TA = 'TA';
  */
 const PACK_SCHEMA_VERSION = 4;
 /** Bump when pack meaning/URL contract changes for cache reuse checks. */
-const PACK_CONTRACT_REVISION = 5;
+const PACK_CONTRACT_REVISION = 6;
+
+/**
+ * RN_DAY upward-spike thresholds (scaled ×10 mm).
+ * Hard rate alone is absurd for AWS; soft rate needs cross-variable corroboration.
+ * Do not use a single absolute RN_DAY ceiling.
+ */
+const RN_DAY_SPIKE_HARD_RATE_PER_MIN = 200; // 20.0 mm/min
+const RN_DAY_SPIKE_SOFT_RATE_PER_MIN = 50; // 5.0 mm/min
+const RN_DAY_SPIKE_SOFT_JUMP = 100; // 10.0 mm absolute jump (soft path)
+const RN_DAY_SPIKE_MULTI_EQUAL_MIN = 50; // 5.0 mm multi-field equality floor
+const RN_DAY_SPIKE_CROSS_SLACK = 20; // 2.0 mm slack vs RN_15M/RN_60M
+const RN_DAY_SPIKE_RECOVERY_STREAK = 2;
 
 /**
  * Hub nph-aws2_min: 물리기온 ≤ -50℃ 결측.
@@ -609,30 +621,299 @@ function scaledRnDayFromRow(row, hhmm) {
   return normalizeRnDayScaledAtHhmm(scaledRnDayOrNull(readRnDayRaw(row)), hhmm);
 }
 
+/** Short-window rain fields for RN_DAY spike cross-check (scaled ×10, null=missing). */
+function readRainCrossScaled(row) {
+  if (row == null) return { rn15: null, rn60: null, rn12: null };
+  const rn15 = scaledRnDayOrNull(row.RN_15M);
+  const rn60Raw =
+    row.RN_60M != null && row.RN_60M !== ''
+      ? row.RN_60M
+      : row.RN_1HR != null && row.RN_1HR !== ''
+        ? row.RN_1HR
+        : null;
+  const rn60 = scaledRnDayOrNull(rn60Raw);
+  const rn12 = scaledRnDayOrNull(row.RN_12HR);
+  return { rn15, rn60, rn12 };
+}
+
 /**
- * Per-station accepted RN_DAY tracker for KST day accumulation.
- * Pack: mid-day decreases → missing. Rolling: hold last accepted (no source-missing fill).
+ * Multi-field Hub glitch: RN_DAY equals short/medium accumulations (impossible for day total).
+ */
+function isMultiFieldEqualSpike(scaled, cross) {
+  if (scaled == null || scaled < RN_DAY_SPIKE_MULTI_EQUAL_MIN) return false;
+  if (cross == null) return false;
+  const { rn15, rn60, rn12 } = cross;
+  if (rn15 == null || rn60 == null) return false;
+  if (rn15 !== scaled || rn60 !== scaled) return false;
+  if (rn12 != null && rn12 !== scaled) return false;
+  return true;
+}
+
+/**
+ * Decide whether an increase is an upward spike (candidate → rejected when evidence holds).
+ * Cross-var missing alone never rejects; rate / equality / inconsistency must combine.
+ */
+function evaluateRnDayUpwardSpike(scaled, accepted, elapsedMinutes, cross) {
+  const elapsed = Math.max(1, elapsedMinutes | 0);
+  const baseline = accepted == null ? 0 : accepted;
+  const increase = scaled - baseline;
+  if (increase <= 0) {
+    return { spike: false, candidate: false, ratePerMinute: 0, increase, elapsedMinutes: elapsed };
+  }
+  const ratePerMinute = increase / elapsed;
+  const candidate =
+    ratePerMinute >= RN_DAY_SPIKE_SOFT_RATE_PER_MIN || increase >= RN_DAY_SPIKE_SOFT_JUMP;
+
+  if (ratePerMinute >= RN_DAY_SPIKE_HARD_RATE_PER_MIN) {
+    return {
+      spike: true,
+      candidate: true,
+      rejected: true,
+      reason: 'hard_rate',
+      ratePerMinute,
+      increase,
+      elapsedMinutes: elapsed
+    };
+  }
+
+  if (isMultiFieldEqualSpike(scaled, cross)) {
+    return {
+      spike: true,
+      candidate: true,
+      rejected: true,
+      reason: 'multi_field_equal',
+      ratePerMinute,
+      increase,
+      elapsedMinutes: elapsed
+    };
+  }
+
+  if (!candidate) {
+    return { spike: false, candidate: false, ratePerMinute, increase, elapsedMinutes: elapsed };
+  }
+
+  // Soft candidate: corroborate with short-window accumulations when present.
+  const slack = RN_DAY_SPIKE_CROSS_SLACK;
+  if (cross) {
+    if (elapsed <= 15 && cross.rn15 != null && increase > cross.rn15 + slack) {
+      return {
+        spike: true,
+        candidate: true,
+        rejected: true,
+        reason: 'exceeds_rn15',
+        ratePerMinute,
+        increase,
+        elapsedMinutes: elapsed
+      };
+    }
+    if (elapsed <= 60 && cross.rn60 != null && increase > cross.rn60 + slack) {
+      return {
+        spike: true,
+        candidate: true,
+        rejected: true,
+        reason: 'exceeds_rn60',
+        ratePerMinute,
+        increase,
+        elapsedMinutes: elapsed
+      };
+    }
+    // Soft rate with both short windows present and roughly matching → allow (real heavy rain).
+    if (
+      cross.rn15 != null &&
+      cross.rn60 != null &&
+      increase <= cross.rn15 + slack &&
+      increase <= cross.rn60 + slack
+    ) {
+      return {
+        spike: false,
+        candidate: true,
+        rejected: false,
+        reason: 'soft_corroborated',
+        ratePerMinute,
+        increase,
+        elapsedMinutes: elapsed
+      };
+    }
+  }
+
+  // Soft candidate without corroborating short-window support → reject (Yeongdeok-style).
+  // Missing cross alone is not enough: require soft rate/jump already true above.
+  if (cross == null || (cross.rn15 == null && cross.rn60 == null)) {
+    if (ratePerMinute >= RN_DAY_SPIKE_SOFT_RATE_PER_MIN && increase >= RN_DAY_SPIKE_SOFT_JUMP) {
+      return {
+        spike: true,
+        candidate: true,
+        rejected: true,
+        reason: 'soft_uncorroborated',
+        ratePerMinute,
+        increase,
+        elapsedMinutes: elapsed
+      };
+    }
+    // Soft rate but modest jump and no cross → do not reject solely on missing cross.
+    return {
+      spike: false,
+      candidate: true,
+      rejected: false,
+      reason: 'soft_missing_cross_allowed',
+      ratePerMinute,
+      increase,
+      elapsedMinutes: elapsed
+    };
+  }
+
+  // Cross present but inconsistent / incomplete → reject soft candidate.
+  return {
+    spike: true,
+    candidate: true,
+    rejected: true,
+    reason: 'soft_inconsistent_cross',
+    ratePerMinute,
+    increase,
+    elapsedMinutes: elapsed
+  };
+}
+
+/**
+ * Per-station RN_DAY QC: upward spike → then counter regression.
+ * Pack: spike/regression → missing. Rolling: hold last accepted (never spike; never source-missing fill).
  */
 function createRnDayRunningMaxTracker() {
   let acceptedRnDay = null;
+  let acceptedFrameIndex = null;
   let hadRegression = false;
+  let spikeContamination = false;
+  let recoveryStreak = 0;
   return {
-    push(scaled) {
+    /**
+     * @param {number|null} scaled midnight-normalized scaled RN_DAY
+     * @param {{ frameIndex?: number, cross?: {rn15:number|null,rn60:number|null,rn12:number|null}, hhmm?: string }} [meta]
+     */
+    push(scaled, meta = {}) {
+      const frameIndex = meta.frameIndex == null ? 0 : meta.frameIndex;
+      const cross = meta.cross || null;
+      const hhmm = meta.hhmm != null ? String(meta.hhmm) : null;
+
       if (scaled == null) {
-        return { packValue: null, forRolling: null, reason: 'source_missing' };
+        recoveryStreak = 0;
+        return { packValue: null, forRolling: null, reason: 'source_missing', spikeEval: null };
       }
+
+      // Normal KST midnight reset (already normalized to 0 for valid 00:00).
+      if (hhmm === '0000' && scaled === 0) {
+        acceptedRnDay = 0;
+        acceptedFrameIndex = frameIndex;
+        spikeContamination = false;
+        recoveryStreak = 0;
+        return { packValue: 0, forRolling: 0, reason: null, spikeEval: null };
+      }
+
       if (acceptedRnDay != null && scaled < acceptedRnDay) {
         hadRegression = true;
-        return { packValue: null, forRolling: acceptedRnDay, reason: 'counterRegression' };
+        recoveryStreak = 0;
+        return {
+          packValue: null,
+          forRolling: acceptedRnDay,
+          reason: 'counterRegression',
+          spikeEval: null
+        };
       }
+
+      // First valid sample of the KST day: do not treat absolute day-total as a 1-min rate.
+      // Only reject isolated multi-field equality glitches (북강릉-style).
+      if (acceptedRnDay == null) {
+        if (isMultiFieldEqualSpike(scaled, cross)) {
+          spikeContamination = true;
+          recoveryStreak = 0;
+          return {
+            packValue: null,
+            forRolling: null,
+            reason: 'upwardSpikeRejected',
+            spikeEval: {
+              spike: true,
+              candidate: true,
+              rejected: true,
+              reason: 'multi_field_equal',
+              ratePerMinute: scaled,
+              increase: scaled,
+              elapsedMinutes: 1
+            }
+          };
+        }
+        acceptedRnDay = scaled;
+        acceptedFrameIndex = frameIndex;
+        recoveryStreak = 0;
+        return { packValue: scaled, forRolling: scaled, reason: null, spikeEval: null };
+      }
+
+      const elapsed = Math.max(1, frameIndex - acceptedFrameIndex);
+      const spikeEval = evaluateRnDayUpwardSpike(scaled, acceptedRnDay, elapsed, cross);
+
+      if (spikeEval.rejected) {
+        spikeContamination = true;
+        recoveryStreak = 0;
+        return {
+          packValue: null,
+          forRolling: acceptedRnDay,
+          reason: 'upwardSpikeRejected',
+          spikeEval
+        };
+      }
+
+      if (spikeContamination) {
+        // No accepted lock yet: first non-spike sample becomes accepted immediately
+        // (e.g. isolated multi-equal spike then return to 0).
+        if (acceptedRnDay == null) {
+          spikeContamination = false;
+          recoveryStreak = 0;
+          acceptedRnDay = scaled;
+          acceptedFrameIndex = frameIndex;
+          return {
+            packValue: scaled,
+            forRolling: scaled,
+            reason: 'spikeRecovery',
+            spikeEval
+          };
+        }
+        recoveryStreak += 1;
+        if (recoveryStreak < RN_DAY_SPIKE_RECOVERY_STREAK) {
+          return {
+            packValue: null,
+            forRolling: acceptedRnDay,
+            reason: 'spikeRecoveryPending',
+            spikeEval
+          };
+        }
+        spikeContamination = false;
+        recoveryStreak = 0;
+        acceptedRnDay = scaled;
+        acceptedFrameIndex = frameIndex;
+        return {
+          packValue: scaled,
+          forRolling: scaled,
+          reason: 'spikeRecovery',
+          spikeEval
+        };
+      }
+
       acceptedRnDay = scaled;
-      return { packValue: scaled, forRolling: scaled, reason: null };
+      acceptedFrameIndex = frameIndex;
+      recoveryStreak = 0;
+      return {
+        packValue: scaled,
+        forRolling: scaled,
+        reason: spikeEval.candidate ? 'upwardSpikeCandidateAccepted' : null,
+        spikeEval
+      };
     },
     get acceptedRnDay() {
       return acceptedRnDay;
     },
     get hadRegression() {
       return hadRegression;
+    },
+    get spikeContamination() {
+      return spikeContamination;
     }
   };
 }
@@ -643,27 +924,51 @@ function emptyRnDayRegressionStats() {
     regressionStationCount: 0,
     counterRegressionFilledSampleCount: 0,
     sourceMissingSampleCount: 0,
-    byReason: { counterRegression: 0, sourceMissing: 0 }
+    upwardSpikeCandidateSampleCount: 0,
+    upwardSpikeRejectedSampleCount: 0,
+    upwardSpikeStationCount: 0,
+    spikeRecoverySampleCount: 0,
+    byReason: {
+      counterRegression: 0,
+      sourceMissing: 0,
+      upwardSpikeRejected: 0,
+      spikeRecoveryPending: 0,
+      spikeRecovery: 0
+    }
   };
 }
 
 /**
- * Apply QC to midnight-normalized FRAME_MAJOR scaled grid.
- * @returns {{ packGrid: Array, rollingGrid: Array, stats: object }}
+ * Apply RN_DAY QC (spike then regression) to midnight-normalized grids.
+ * @param {Array<number|null>} scaledGrid
+ * @param {Array<object|null>|null} crossGrid parallel {rn15,rn60,rn12} or null entries
+ * @param {string[]} timestamps
  */
-function applyRnDayCounterRegression(scaledGrid, frameCount, stationCount) {
+function applyRnDayCounterRegression(scaledGrid, frameCount, stationCount, options = {}) {
+  const crossGrid = options.crossGrid || null;
+  const timestamps = options.timestamps || null;
   const packGrid = new Array(frameCount * stationCount);
   const rollingGrid = new Array(frameCount * stationCount);
+  const reasonGrid = new Array(frameCount * stationCount);
   const stats = emptyRnDayRegressionStats();
   const stationHadRegression = new Uint8Array(stationCount);
+  const stationHadSpike = new Uint8Array(stationCount);
 
   for (let si = 0; si < stationCount; si++) {
     const tracker = createRnDayRunningMaxTracker();
     for (let fi = 0; fi < frameCount; fi++) {
       const idx = fi * stationCount + si;
-      const result = tracker.push(scaledGrid[idx]);
+      const hhmm = timestamps ? timestamps[fi].slice(8, 12) : null;
+      const cross = crossGrid ? crossGrid[idx] : null;
+      const result = tracker.push(scaledGrid[idx], { frameIndex: fi, cross, hhmm });
       packGrid[idx] = result.packValue;
       rollingGrid[idx] = result.forRolling;
+      reasonGrid[idx] = result.reason;
+
+      if (result.spikeEval && result.spikeEval.candidate) {
+        stats.upwardSpikeCandidateSampleCount += 1;
+      }
+
       if (result.reason === 'counterRegression') {
         stats.regressionSampleCount += 1;
         stats.counterRegressionFilledSampleCount += 1;
@@ -672,21 +977,33 @@ function applyRnDayCounterRegression(scaledGrid, frameCount, stationCount) {
       } else if (result.reason === 'source_missing') {
         stats.sourceMissingSampleCount += 1;
         stats.byReason.sourceMissing += 1;
+      } else if (result.reason === 'upwardSpikeRejected') {
+        stats.upwardSpikeRejectedSampleCount += 1;
+        stats.byReason.upwardSpikeRejected += 1;
+        stationHadSpike[si] = 1;
+      } else if (result.reason === 'spikeRecoveryPending') {
+        stats.byReason.spikeRecoveryPending += 1;
+        stationHadSpike[si] = 1;
+      } else if (result.reason === 'spikeRecovery') {
+        stats.spikeRecoverySampleCount += 1;
+        stats.byReason.spikeRecovery += 1;
       }
     }
     if (stationHadRegression[si]) stats.regressionStationCount += 1;
+    if (stationHadSpike[si]) stats.upwardSpikeStationCount += 1;
   }
 
-  return { packGrid, rollingGrid, stats };
+  return { packGrid, rollingGrid, reasonGrid, stats };
 }
 
 /**
- * Build midnight-normalized + dual QC grids (pack missing on regression; rolling holds accepted).
+ * Build midnight-normalized + dual QC grids (spike/regression pack missing; rolling holds accepted).
  */
 function buildQcRnDayScaledGrid(frames, timestamps, stationIds) {
   const frameCount = timestamps.length;
   const stationCount = stationIds.length;
   const scaledGrid = new Array(frameCount * stationCount);
+  const crossGrid = new Array(frameCount * stationCount);
   let midnightNormalizedCount = 0;
   let jsonPresentCount = 0;
 
@@ -697,28 +1014,33 @@ function buildQcRnDayScaledGrid(frames, timestamps, stationIds) {
       const idx = fi * stationCount + si;
       if (!byId) {
         scaledGrid[idx] = null;
+        crossGrid[idx] = null;
         continue;
       }
       const row = byId.get(stationIds[si]);
       if (!row) {
         scaledGrid[idx] = null;
+        crossGrid[idx] = null;
         continue;
       }
       const raw = scaledRnDayOrNull(readRnDayRaw(row));
       if (raw != null) jsonPresentCount += 1;
       if (raw != null && hhmm === '0000' && raw !== 0) midnightNormalizedCount += 1;
       scaledGrid[idx] = normalizeRnDayScaledAtHhmm(raw, hhmm);
+      crossGrid[idx] = readRainCrossScaled(row);
     }
   }
 
-  const { packGrid, rollingGrid, stats: regression } = applyRnDayCounterRegression(
+  const { packGrid, rollingGrid, reasonGrid, stats: regression } = applyRnDayCounterRegression(
     scaledGrid,
     frameCount,
-    stationCount
+    stationCount,
+    { crossGrid, timestamps }
   );
   return {
     packGrid,
     rollingGrid,
+    reasonGrid,
     scaledGrid: packGrid,
     midnightNormalizedCount,
     jsonPresentCount,
@@ -742,34 +1064,34 @@ function deriveRolling24hScaled(todayScaled, prevEndScaled, prevSameScaled) {
 }
 
 /**
- * Index previous KST day RN_DAY counters (midnight-normalized + regression QC).
- * Throws DEPENDENCY_MISSING if the previous-day folder has no JSON at all.
+ * Index previous KST day RN_DAY (midnight-normalized + dual QC including upward spike).
+ * byTm / endById expose forRolling values for RN_24HR derive.
  */
 async function loadPrevDayRnDayIndex(awsJsonDir, dayYmd) {
   const prevDay = prevYmd(dayYmd);
   const from = `${prevDay}0000`;
   const to = `${prevDay}2359`;
   const timestamps = enumerateTimestamps(from, to, PACK_INTERVAL_MINUTES, PACK_MAX_FRAMES);
-  const rawByTm = new Map();
+  const frames = new Array(timestamps.length);
   let presentCount = 0;
   const stationSet = new Set();
 
-  for (const tm of timestamps) {
+  for (let fi = 0; fi < timestamps.length; fi++) {
+    const tm = timestamps[fi];
     const { missing, rows } = await readFrameRows(awsJsonDir, tm);
     if (missing) {
-      rawByTm.set(tm.slice(8, 12), null);
+      frames[fi] = null;
       continue;
     }
     presentCount += 1;
     const byId = new Map();
-    const hhmm = tm.slice(8, 12);
     for (const row of rows) {
       if (row == null || row.STN_ID == null) continue;
       const id = Number(row.STN_ID);
       stationSet.add(id);
-      byId.set(id, scaledRnDayFromRow(row, hhmm));
+      byId.set(id, row);
     }
-    rawByTm.set(hhmm, byId);
+    frames[fi] = byId;
   }
 
   if (presentCount === 0) {
@@ -782,53 +1104,45 @@ async function loadPrevDayRnDayIndex(awsJsonDir, dayYmd) {
   }
 
   const stationIds = [...stationSet].sort((a, b) => a - b);
+  const dayQc = buildQcRnDayScaledGrid(frames, timestamps, stationIds);
+  const { packGrid, rollingGrid, regression } = dayQc;
   const frameCount = timestamps.length;
   const stationCount = stationIds.length;
-  const scaledGrid = new Array(frameCount * stationCount);
-  for (let fi = 0; fi < frameCount; fi++) {
-    const hhmm = timestamps[fi].slice(8, 12);
-    const byId = rawByTm.get(hhmm);
-    for (let si = 0; si < stationCount; si++) {
-      const idx = fi * stationCount + si;
-      if (!byId) {
-        scaledGrid[idx] = null;
-        continue;
-      }
-      const v = byId.get(stationIds[si]);
-      scaledGrid[idx] = v === undefined ? null : v;
-    }
-  }
 
-  const { packGrid, rollingGrid, stats: regression } = applyRnDayCounterRegression(
-    scaledGrid,
-    frameCount,
-    stationCount
-  );
   const byTm = new Map();
   const filledByTm = new Map();
+  const spikeHoldByTm = new Map();
   for (let fi = 0; fi < frameCount; fi++) {
     const hhmm = timestamps[fi].slice(8, 12);
-    if (rawByTm.get(hhmm) == null) {
+    if (frames[fi] == null) {
       byTm.set(hhmm, null);
       filledByTm.set(hhmm, null);
+      spikeHoldByTm.set(hhmm, null);
       continue;
     }
     const byIdRoll = new Map();
     const byIdFilled = new Map();
+    const byIdSpikeHold = new Map();
     for (let si = 0; si < stationCount; si++) {
       const idx = fi * stationCount + si;
       const stnId = stationIds[si];
       byIdRoll.set(stnId, rollingGrid[idx]);
-      byIdFilled.set(stnId, packGrid[idx] == null && rollingGrid[idx] != null);
+      const held = packGrid[idx] == null && rollingGrid[idx] != null;
+      byIdFilled.set(stnId, held);
+      // Approximate spike-hold: held but not from a lower pack value than raw...
+      // Detailed reason isn't stored per cell; treat held as regression/spike fill for rolling.
+      byIdSpikeHold.set(stnId, held);
     }
     byTm.set(hhmm, byIdRoll);
     filledByTm.set(hhmm, byIdFilled);
+    spikeHoldByTm.set(hhmm, byIdSpikeHold);
   }
 
   return {
     prevDay,
     byTm,
     filledByTm,
+    spikeHoldByTm,
     endById: byTm.get('2359'),
     endFilledById: filledByTm.get('2359'),
     stationSet,
@@ -849,7 +1163,9 @@ function emptyRollingQcCounts() {
     stationMismatch: 0,
     midnightNormalized: 0,
     counterRegressionFilledSampleCount: 0,
-    sourceMissingSampleCount: 0
+    sourceMissingSampleCount: 0,
+    upwardSpikeRejectedSampleCount: 0,
+    upwardSpikeContaminationPreventedSampleCount: 0
   };
 }
 
@@ -929,8 +1245,11 @@ async function buildAwsVariablePack(awsJsonDir, fromKor, toKor, variable, option
 
         const idx = fi * stationCount + si;
         const todayScaled = todayQc.rollingGrid[idx];
+        const todayReason = todayQc.reasonGrid ? todayQc.reasonGrid[idx] : null;
         const todayFilled =
           todayQc.packGrid[idx] == null && todayQc.rollingGrid[idx] != null;
+        const todaySpikeHold =
+          todayReason === 'upwardSpikeRejected' || todayReason === 'spikeRecoveryPending';
 
         const prevEndScaled = endById ? endById.get(stnId) : null;
         const prevSameScaled =
@@ -961,7 +1280,10 @@ async function buildAwsVariablePack(awsJsonDir, fromKor, toKor, variable, option
           }
           continue;
         }
-        if (todayFilled || endFilled || sameFilled) {
+        if (todaySpikeHold) {
+          rollingQc.upwardSpikeRejectedSampleCount += 1;
+          rollingQc.upwardSpikeContaminationPreventedSampleCount += 1;
+        } else if (todayFilled || endFilled || sameFilled) {
           rollingQc.counterRegressionFilledSampleCount += 1;
         }
         int16[fi * stationCount + si] = derived.value;
@@ -1061,9 +1383,22 @@ async function buildAwsVariablePack(awsJsonDir, fromKor, toKor, variable, option
         `RN_24HR used last accepted RN_DAY for ${rollingQc.counterRegressionFilledSampleCount} counter-regression samples`
       );
     }
+    if (rollingQc.upwardSpikeContaminationPreventedSampleCount > 0) {
+      warnings.push(
+        `RN_24HR blocked upward-spike RN_DAY contamination for ${rollingQc.upwardSpikeContaminationPreventedSampleCount} samples`
+      );
+    }
     if (rnDayRegression.regressionSampleCount > 0 || prevDayRegression.regressionSampleCount > 0) {
       warnings.push(
         `RN_24HR RN_DAY pack-regression samples today=${rnDayRegression.regressionSampleCount}, prevDay=${prevDayRegression.regressionSampleCount}`
+      );
+    }
+    if (
+      rnDayRegression.upwardSpikeRejectedSampleCount > 0 ||
+      prevDayRegression.upwardSpikeRejectedSampleCount > 0
+    ) {
+      warnings.push(
+        `RN_24HR RN_DAY upward-spike rejected today=${rnDayRegression.upwardSpikeRejectedSampleCount}, prevDay=${prevDayRegression.upwardSpikeRejectedSampleCount}`
       );
     }
     if (qcTotal > 0) {
@@ -1078,6 +1413,14 @@ async function buildAwsVariablePack(awsJsonDir, fromKor, toKor, variable, option
   if (rnDayRegression.regressionSampleCount > 0 && (spec.normalizeMidnightRnDay || name === 'RN_DAY')) {
     warnings.push(
       `RN_DAY counter-regression → missing for ${rnDayRegression.regressionSampleCount} samples across ${rnDayRegression.regressionStationCount} stations`
+    );
+  }
+  if (
+    rnDayRegression.upwardSpikeRejectedSampleCount > 0 &&
+    (spec.normalizeMidnightRnDay || name === 'RN_DAY')
+  ) {
+    warnings.push(
+      `RN_DAY upward-spike → missing for ${rnDayRegression.upwardSpikeRejectedSampleCount} samples across ${rnDayRegression.upwardSpikeStationCount} stations`
     );
   }
   if (coverage.status === 'empty') {
@@ -1175,6 +1518,10 @@ async function buildAwsVariablePack(awsJsonDir, fromKor, toKor, variable, option
       regressionStationCount: rnDayRegression.regressionStationCount,
       counterRegressionFilledSampleCount: rnDayRegression.counterRegressionFilledSampleCount,
       sourceMissingSampleCount: rnDayRegression.sourceMissingSampleCount,
+      upwardSpikeCandidateSampleCount: rnDayRegression.upwardSpikeCandidateSampleCount,
+      upwardSpikeRejectedSampleCount: rnDayRegression.upwardSpikeRejectedSampleCount,
+      upwardSpikeStationCount: rnDayRegression.upwardSpikeStationCount,
+      spikeRecoverySampleCount: rnDayRegression.spikeRecoverySampleCount,
       byReason: { ...rnDayRegression.byReason }
     };
     if (spec.derive === 'rolling24hFromDayCounters') {
@@ -1183,12 +1530,29 @@ async function buildAwsVariablePack(awsJsonDir, fromKor, toKor, variable, option
         regressionStationCount: prevDayRegression.regressionStationCount,
         counterRegressionFilledSampleCount: prevDayRegression.counterRegressionFilledSampleCount,
         sourceMissingSampleCount: prevDayRegression.sourceMissingSampleCount,
+        upwardSpikeCandidateSampleCount: prevDayRegression.upwardSpikeCandidateSampleCount,
+        upwardSpikeRejectedSampleCount: prevDayRegression.upwardSpikeRejectedSampleCount,
+        upwardSpikeStationCount: prevDayRegression.upwardSpikeStationCount,
+        spikeRecoverySampleCount: prevDayRegression.spikeRecoverySampleCount,
         byReason: { ...prevDayRegression.byReason }
       };
       qcBlock.counterRegressionFilledSampleCount = rollingQc.counterRegressionFilledSampleCount;
       qcBlock.sourceMissingSampleCount = rollingQc.sourceMissingSampleCount;
+      qcBlock.upwardSpikeRejectedSampleCount = rollingQc.upwardSpikeRejectedSampleCount;
     }
     manifest.qc.rnDayRegression = qcBlock;
+    manifest.qc.rnDayQc = {
+      sourceMissingSampleCount: rnDayRegression.sourceMissingSampleCount,
+      counterRegressionSampleCount: rnDayRegression.regressionSampleCount,
+      counterRegressionFilledSampleCount:
+        spec.derive === 'rolling24hFromDayCounters'
+          ? rollingQc.counterRegressionFilledSampleCount
+          : rnDayRegression.counterRegressionFilledSampleCount,
+      upwardSpikeCandidateSampleCount: rnDayRegression.upwardSpikeCandidateSampleCount,
+      upwardSpikeRejectedSampleCount: rnDayRegression.upwardSpikeRejectedSampleCount,
+      upwardSpikeStationCount: rnDayRegression.upwardSpikeStationCount,
+      spikeRecoverySampleCount: rnDayRegression.spikeRecoverySampleCount
+    };
   }
 
   return { manifest, binary, dayKey, datasetId, revision, variable: name };
@@ -1385,6 +1749,8 @@ module.exports = {
   normalizeRnDayScaledAtHhmm,
   createRnDayRunningMaxTracker,
   applyRnDayCounterRegression,
+  evaluateRnDayUpwardSpike,
+  readRainCrossScaled,
   deriveRolling24hScaled,
   prevYmd,
   buildAwsVariablePack,

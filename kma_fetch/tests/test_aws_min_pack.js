@@ -29,6 +29,7 @@ const {
   normalizeRnDayScaledAtHhmm,
   createRnDayRunningMaxTracker,
   applyRnDayCounterRegression,
+  evaluateRnDayUpwardSpike,
   PACK_SCHEMA_VERSION,
   PACK_CONTRACT_REVISION,
   PACK_VARIABLES,
@@ -103,24 +104,23 @@ async function main() {
   assert.strictEqual(normalizeRnDayScaledAtHhmm(null, '0000'), null);
 
   const tracker = createRnDayRunningMaxTracker();
-  assert.deepStrictEqual(tracker.push(5), { packValue: 5, forRolling: 5, reason: null });
-  assert.deepStrictEqual(tracker.push(0), {
-    packValue: null,
-    forRolling: 5,
-    reason: 'counterRegression'
-  });
-  assert.deepStrictEqual(tracker.push(3), {
-    packValue: null,
-    forRolling: 5,
-    reason: 'counterRegression'
-  });
-  assert.deepStrictEqual(tracker.push(12), { packValue: 12, forRolling: 12, reason: null });
+  assert.strictEqual(tracker.push(5, { frameIndex: 0 }).reason, null);
+  assert.strictEqual(tracker.acceptedRnDay, 5);
+  assert.strictEqual(tracker.push(0, { frameIndex: 1 }).reason, 'counterRegression');
+  assert.strictEqual(tracker.push(3, { frameIndex: 2 }).reason, 'counterRegression');
+  assert.strictEqual(tracker.push(12, { frameIndex: 3 }).reason, null);
+  assert.strictEqual(tracker.acceptedRnDay, 12);
   assert.strictEqual(tracker.hadRegression, true);
-  assert.deepStrictEqual(tracker.push(null), {
-    packValue: null,
-    forRolling: null,
-    reason: 'source_missing'
-  });
+  assert.strictEqual(tracker.push(null, { frameIndex: 4 }).reason, 'source_missing');
+
+  const hard = evaluateRnDayUpwardSpike(1015, 0, 1, { rn15: 1015, rn60: 1015, rn12: 1015 });
+  assert.strictEqual(hard.rejected, true);
+  assert.strictEqual(hard.reason, 'hard_rate');
+  const multi = evaluateRnDayUpwardSpike(310, 0, 5, { rn15: 310, rn60: 310, rn12: 310 });
+  assert.strictEqual(multi.rejected, true);
+  assert.strictEqual(multi.reason, 'multi_field_equal');
+  const okHeavy = evaluateRnDayUpwardSpike(50, 0, 1, { rn15: 50, rn60: 80, rn12: 100 });
+  assert.strictEqual(okHeavy.rejected, false);
 
   const grid = [10, 0, 3, 12];
   const { packGrid, rollingGrid, stats: regStats } = applyRnDayCounterRegression(grid, 4, 1);
@@ -129,7 +129,7 @@ async function main() {
   assert.strictEqual(regStats.regressionSampleCount, 2);
   assert.strictEqual(regStats.counterRegressionFilledSampleCount, 2);
   assert.strictEqual(regStats.regressionStationCount, 1);
-  assert.strictEqual(PACK_CONTRACT_REVISION, 5);
+  assert.strictEqual(PACK_CONTRACT_REVISION, 6);
 
   assert.strictEqual(encodeRainToI16(0), 0);
   assert.strictEqual(encodeRainToI16(15), 15);
@@ -605,7 +605,7 @@ async function main() {
   const regDay = await buildAwsVariablePack(regRoot, '202608200701', '202608200801', 'RN_DAY', {
     catalog: regCatalog
   });
-  assert.strictEqual(regDay.manifest.contractRevision, 5);
+  assert.strictEqual(regDay.manifest.contractRevision, 6);
   assert.ok(regDay.manifest.qc.rnDayRegression.regressionSampleCount >= 3);
   assert.ok(regDay.manifest.qc.rnDayRegression.regressionStationCount >= 2);
   const rd = new Int16Array(regDay.binary.buffer, regDay.binary.byteOffset, regDay.binary.length / 2);
@@ -789,6 +789,140 @@ async function main() {
       'b'
     ),
     true
+  );
+
+  // --- upward spike QC: 동래 940 continuous + 북강릉 104 isolated multi-equal ---
+  const upwardSpikeRoot = path.join(tmp, 'aws-upward-spike');
+  const spikeCatalog = {
+    byId: new Map(),
+    stations: [{ STN_ID: 940 }, { STN_ID: 104 }, { STN_ID: 277 }, { STN_ID: 688 }]
+  };
+  await writeFrame(upwardSpikeRoot, '202608200000', [
+    { STN_ID: 940, RN_DAY: 0 },
+    { STN_ID: 104, RN_DAY: 0 },
+    { STN_ID: 277, RN_DAY: 0 },
+    { STN_ID: 688, RN_DAY: 0 }
+  ]);
+  // 북강릉: isolated 31.0 with all rain fields equal
+  await writeFrame(upwardSpikeRoot, '202608201153', [
+    { STN_ID: 104, RN_DAY: 310, RN_15M: 310, RN_60M: 310, RN_12HR: 310 },
+    { STN_ID: 940, RN_DAY: 0 },
+    { STN_ID: 277, RN_DAY: 0 },
+    { STN_ID: 688, RN_DAY: 540 }
+  ]);
+  await writeFrame(upwardSpikeRoot, '202608201155', [
+    { STN_ID: 104, RN_DAY: 0, RN_15M: 0, RN_60M: 0 },
+    { STN_ID: 940, RN_DAY: 0 },
+    { STN_ID: 277, RN_DAY: 0 },
+    { STN_ID: 688, RN_DAY: 540 }
+  ]);
+  await writeFrame(upwardSpikeRoot, '202608202359', [
+    { STN_ID: 940, RN_DAY: 0 },
+    { STN_ID: 104, RN_DAY: 0 },
+    { STN_ID: 277, RN_DAY: 0 },
+    { STN_ID: 688, RN_DAY: 540 }
+  ]);
+  // 동래 continuous spike 09:23–09:27
+  await writeFrame(upwardSpikeRoot, '202608210923', [
+    { STN_ID: 940, RN_DAY: 0, RN_15M: 0, RN_60M: 0 },
+    { STN_ID: 104, RN_DAY: 0 },
+    { STN_ID: 277, RN_DAY: 0 },
+    { STN_ID: 688, RN_DAY: 5 }
+  ]);
+  await writeFrame(upwardSpikeRoot, '202608210924', [
+    { STN_ID: 940, RN_DAY: 1015, RN_15M: 1015, RN_60M: 1015 },
+    { STN_ID: 104, RN_DAY: 0 },
+    { STN_ID: 277, RN_DAY: 0 },
+    { STN_ID: 688, RN_DAY: 5 }
+  ]);
+  await writeFrame(upwardSpikeRoot, '202608210925', [
+    { STN_ID: 940, RN_DAY: 2215, RN_15M: null, RN_60M: 2215 },
+    { STN_ID: 104, RN_DAY: 0 },
+    { STN_ID: 277, RN_DAY: 0 },
+    { STN_ID: 688, RN_DAY: 5 }
+  ]);
+  await writeFrame(upwardSpikeRoot, '202608210926', [
+    { STN_ID: 940, RN_DAY: 3415 },
+    { STN_ID: 104, RN_DAY: 0 },
+    { STN_ID: 277, RN_DAY: 0 },
+    { STN_ID: 688, RN_DAY: 5 }
+  ]);
+  await writeFrame(upwardSpikeRoot, '202608210927', [
+    { STN_ID: 940, RN_DAY: 4615 },
+    { STN_ID: 104, RN_DAY: 0 },
+    { STN_ID: 277, RN_DAY: 0 },
+    { STN_ID: 688, RN_DAY: 5 }
+  ]);
+  // 영덕: +64.4mm/min with RN_15M missing, RN_60M inconsistent
+  await writeFrame(upwardSpikeRoot, '202608211413', [
+    { STN_ID: 277, RN_DAY: 4, RN_15M: 0, RN_60M: 4 },
+    { STN_ID: 940, RN_DAY: 0 },
+    { STN_ID: 104, RN_DAY: 0 },
+    { STN_ID: 688, RN_DAY: 5 }
+  ]);
+  await writeFrame(upwardSpikeRoot, '202608211414', [
+    { STN_ID: 277, RN_DAY: 648, RN_60M: 189 },
+    { STN_ID: 940, RN_DAY: 0 },
+    { STN_ID: 104, RN_DAY: 0 },
+    { STN_ID: 688, RN_DAY: 5 }
+  ]);
+
+  const spikeDay20 = await buildAwsVariablePack(upwardSpikeRoot, '202608201153', '202608201155', 'RN_DAY', {
+    catalog: spikeCatalog
+  });
+  const sd20 = new Int16Array(
+    spikeDay20.binary.buffer,
+    spikeDay20.binary.byteOffset,
+    spikeDay20.binary.length / 2
+  );
+  const s20Idx = new Map(spikeDay20.manifest.stations.map((s, i) => [s.STN_ID, i]));
+  const sc20 = spikeDay20.manifest.stationCount;
+  assert.strictEqual(sd20[0 * sc20 + s20Idx.get(104)], MISSING_I16); // 11:53 31.0 rejected
+  assert.strictEqual(sd20[1 * sc20 + s20Idx.get(104)], MISSING_I16); // 11:54 frame missing
+  assert.strictEqual(sd20[2 * sc20 + s20Idx.get(104)], 0); // 11:55 0.0 accepted, not regression vs spike
+  assert.ok(spikeDay20.manifest.qc.rnDayQc.upwardSpikeRejectedSampleCount >= 1);
+
+  const spikeDay21 = await buildAwsVariablePack(upwardSpikeRoot, '202608210923', '202608210927', 'RN_DAY', {
+    catalog: spikeCatalog
+  });
+  const sd21 = new Int16Array(
+    spikeDay21.binary.buffer,
+    spikeDay21.binary.byteOffset,
+    spikeDay21.binary.length / 2
+  );
+  const s21Idx = new Map(spikeDay21.manifest.stations.map((s, i) => [s.STN_ID, i]));
+  const sc21 = spikeDay21.manifest.stationCount;
+  assert.strictEqual(sd21[0 * sc21 + s21Idx.get(940)], 0);
+  for (let fi = 1; fi <= 4; fi++) {
+    assert.strictEqual(sd21[fi * sc21 + s21Idx.get(940)], MISSING_I16);
+  }
+  assert.ok(spikeDay21.manifest.qc.rnDayQc.upwardSpikeRejectedSampleCount >= 4);
+  assert.ok(
+    (spikeDay21.manifest.warnings || []).some((w) => /upward-spike/.test(w))
+  );
+
+  const yeong = await buildAwsVariablePack(upwardSpikeRoot, '202608211413', '202608211414', 'RN_DAY', {
+    catalog: spikeCatalog
+  });
+  const yd = new Int16Array(yeong.binary.buffer, yeong.binary.byteOffset, yeong.binary.length / 2);
+  const yIdx = new Map(yeong.manifest.stations.map((s, i) => [s.STN_ID, i]));
+  const ysc = yeong.manifest.stationCount;
+  assert.strictEqual(yd[0 * ysc + yIdx.get(277)], 4);
+  assert.strictEqual(yd[1 * ysc + yIdx.get(277)], MISSING_I16);
+
+  const spike24 = await buildAwsVariablePack(upwardSpikeRoot, '202608210923', '202608210927', 'RN_24HR', {
+    catalog: spikeCatalog
+  });
+  const s24 = new Int16Array(spike24.binary.buffer, spike24.binary.byteOffset, spike24.binary.length / 2);
+  const s24Idx = new Map(spike24.manifest.stations.map((s, i) => [s.STN_ID, i]));
+  const sc24s = spike24.manifest.stationCount;
+  for (let fi = 0; fi < spike24.manifest.frameCount; fi++) {
+    const v = s24[fi * sc24s + s24Idx.get(940)];
+    if (v !== MISSING_I16) assert.ok(v < 4615, `RN_24HR must not carry 461.5mm spike, got ${v}`);
+  }
+  assert.ok(
+    spike24.manifest.qc.rolling24h.upwardSpikeContaminationPreventedSampleCount >= 1 ||
+      spike24.manifest.qc.rnDayQc.upwardSpikeRejectedSampleCount >= 1
   );
 
   const headers = packManifestCacheHeaders({

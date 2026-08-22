@@ -69,7 +69,7 @@ Pack binary 계약 (consumer):
 - 결측은 모두 Int16 `-32768`. TA: `null`/`-999`/Hub ≤ -50℃/temporal QC. 강수: `null`/음수/Hub ≤ -50mm. **0 mm는 0**. 풍향 0–360(무풍 360). 통계에서 sentinel 제외
 - Temporal QC는 **TA pack만**. 강수·바람·습도·이슬점 pack에는 적용하지 않음. `/exact`·디스크 JSON은 원천 그대로
 - 과거 `complete:true`는 timestamp 파일 완결. 값 coverage는 `coverage.status` (`ok|degraded|empty`) / `dataComplete`. 전부 결측 pack을 정상으로 보지 말 것
-- `schemaVersion: 4` / `contractRevision: 5`
+- `schemaVersion: 4` / `contractRevision: 6`
 - **강수 변수 구분 (필수)**
   - `RN_15M`/`RN_60M`/`RN_12HR`/`RN_24HR` → rolling. UI: “직전 N분/시간 누적”
   - `RN_DAY` → KST 당일 00시~현재. UI: “오늘 00시부터 누적”
@@ -78,7 +78,7 @@ Pack binary 계약 (consumer):
   - binary URL: `RN_24HR` → **`/datasets/aws/rn_24hr_rolling/...`만**. legacy `/datasets/aws/rn_24hr/...`는 과거 day-total이므로 **사용·하드코딩 금지**
   - `RN_DAY` → `/datasets/aws/rn_day/...`
   - Hub가 00:00에 전일 총량을 남기면 producer가 **00:00→0 정규화** (RN_DAY·RN_24HR 공통). 자정 스파이크를 일최대/순위에 쓰지 말 것
-  - RN_DAY 주간 역행: pack은 **missing**, RN_24HR은 **last accepted**로 유지 (`qc.rnDayRegression.counterRegressionFilledSampleCount`). 원천 결측은 fill하지 않음
+  - RN_DAY upward spike → pack **missing**, accepted 미갱신; 주간 역행 → pack **missing**, RN_24HR **last accepted** (`qc.rnDayQc`). 원천 결측은 fill하지 않음
 
 ## 핵심 규칙
 
