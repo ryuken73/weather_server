@@ -471,6 +471,15 @@ function packQcDetailFileName(contentSha256) {
   return `qc-v${short}.json`;
 }
 
+/** Exact on-disk QC JSON (pretty, no trailing newline). Hash this UTF-8 string for qcDetailSha256. */
+function serializeQcDetailJson(qcBody) {
+  return JSON.stringify(qcBody, null, 2);
+}
+
+function hashQcDetailJson(qcJson) {
+  return crypto.createHash('sha256').update(qcJson, 'utf8').digest('hex');
+}
+
 /**
  * `variable` query. 기본 TA. comma 복수(TA,RN_60M). FULL 불가.
  * @returns {string[]}
@@ -2108,7 +2117,7 @@ async function buildAwsVariablePack(awsJsonDir, fromKor, toKor, variable, option
       substitutionExpiredSampleCount,
       recordCount: sparseQcRecords.length
     };
-    // Hash after body is stable (without sha field); then stamp URL + sha on manifest.
+    // Hash the exact bytes that will be written to disk (no in-file sha256 field).
     const qcBody = {
       schemaVersion: 1,
       contractRevision: PACK_CONTRACT_REVISION,
@@ -2123,17 +2132,20 @@ async function buildAwsVariablePack(awsJsonDir, fromKor, toKor, variable, option
       qcStates,
       records: sparseQcRecords
     };
-    const qcSha256 = crypto.createHash('sha256').update(JSON.stringify(qcBody)).digest('hex');
-    qcDetail = { ...qcBody, sha256: qcSha256 };
+    const qcJson = serializeQcDetailJson(qcBody);
+    const qcSha256 = hashQcDetailJson(qcJson);
     const qcUrl = packQcDetailUrl(spec, dayKey, qcSha256);
     const qcFileName = packQcDetailFileName(qcSha256);
     manifest.qcDetailUrl = qcUrl;
     manifest.qcDetailSha256 = qcSha256;
     manifest.qcDetailFile = qcFileName;
     manifest.qc.qcStates = qcStates;
-    // Keep a stable sidecar name for ops + hashed immutable name for CDN.
-    qcDetail._publishFileName = qcFileName;
-    qcDetail._publishAlsoAs = 'qc.json';
+    qcDetail = {
+      ...qcBody,
+      _publishJson: qcJson,
+      _publishFileName: qcFileName,
+      _publishAlsoAs: 'qc.json'
+    };
   }
 
   return {
@@ -2175,12 +2187,29 @@ async function publishAwsVariablePack(packRoot, built) {
 
   let qcDetailPath = null;
   if (qcDetail) {
-    const publishName = qcDetail._publishFileName || packQcDetailFileName(qcDetail.sha256);
+    const publishName =
+      qcDetail._publishFileName ||
+      (manifest.qcDetailFile
+        ? manifest.qcDetailFile
+        : packQcDetailFileName(manifest.qcDetailSha256));
     const alsoAs = qcDetail._publishAlsoAs || 'qc.json';
-    const body = { ...qcDetail };
-    delete body._publishFileName;
-    delete body._publishAlsoAs;
-    const json = JSON.stringify(body, null, 2);
+    const json =
+      qcDetail._publishJson ||
+      serializeQcDetailJson(
+        Object.fromEntries(
+          Object.entries(qcDetail).filter(([k]) => !k.startsWith('_publish'))
+        )
+      );
+    if (manifest.qcDetailSha256) {
+      const actualSha = hashQcDetailJson(json);
+      if (actualSha !== manifest.qcDetailSha256) {
+        const fail = new Error(
+          `QC JSON SHA mismatch: manifest=${manifest.qcDetailSha256} bytes=${actualSha}`
+        );
+        fail.code = 'QC_SHA_MISMATCH';
+        throw fail;
+      }
+    }
     const qcTmp = path.join(outDir, `${publishName}.${process.pid}.tmp`);
     const qcFinal = path.join(outDir, publishName);
     await fsp.writeFile(qcTmp, json, 'utf8');
@@ -2403,6 +2432,8 @@ module.exports = {
   packBinaryUrl,
   packBinaryFileName,
   isContentAddressedPackBinaryUrl,
+  serializeQcDetailJson,
+  hashQcDetailJson,
   RN_24HR_SUBSTITUTION_MAX_MINUTES,
   readRainCrossScaled,
   deriveRolling24hScaled,

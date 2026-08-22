@@ -7,14 +7,14 @@
 1. `GET /api/aws/min/pack?date=YYYYMMDD&variable=RN_DAY|RN_24HR&cacheburst=...`
 2. manifest의 `data.url` → Int16 LE binary
 3. manifest의 `qcDetailUrl` → sparse QC JSON (있으면)
-4. `manifest.qcDetailSha256`로 본문 무결성 확인 (권장)
+4. **무결성**: `qcDetailSha256` === SHA-256(다운로드 본문 UTF-8 bytes). Brotli/gzip 등으로 압축 전송된 경우 **해제(decompress)한 원본 JSON bytes** 기준으로 검증한다. HTTP `ETag`는 `"${qcDetailSha256}"` 형식(따옴표 포함)이다.
 
 ## Cache 정책
 
 | 자산 | URL | Cache |
 | --- | --- | --- |
-| pack binary (과거 complete) | `.../{slug}.i16le` | immutable + ETag(sha256) |
-| qc detail | `.../qc-v{sha16}.json` | 파일명에 content hash → URL 변경 시 자동 bust. alias `qc.json`은 편의용(덮어쓰기됨) → **소비자는 qcDetailUrl만 사용** |
+| pack binary (과거 complete) | `.../{slug}-v{sha8}.i16le` | immutable + ETag(sha256) |
+| qc detail | `.../qc-v{sha16}.json` | immutable + ETag(qcDetailSha256). 파일명 sha16 = manifest qcDetailSha256 앞 16자 |
 | manifest API | `/api/aws/min/pack` | 오늘/미완료 `no-store`, 과거 complete는 ETag |
 
 `qcDetailUrl`이 가리키는 hashed 파일과 binary는 같은 warm에서 생성되며, `qcDetail.datasetId === manifest.datasetId`이어야 한다.
@@ -31,7 +31,7 @@ type AwsRnQcDetail = {
   generatedAt: string; // ISO-8601
   scale: 0.1;
   unit: 'mm';
-  sha256: string; // of canonical body (producer stamps)
+  note?: string;
   qcStates: {
     suspectRetainedSampleCount: number;
     rejectedSampleCount: number;
@@ -116,7 +116,6 @@ function findQc(records: AwsRnQcRecord[], tm: string, stnId: number) {
   "generatedAt": "2026-08-22T05:00:00.000Z",
   "scale": 0.1,
   "unit": "mm",
-  "sha256": "...",
   "qcStates": {
     "suspectRetainedSampleCount": 1,
     "rejectedSampleCount": 4,

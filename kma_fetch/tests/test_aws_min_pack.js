@@ -8,6 +8,7 @@ const fs = require('fs');
 const fsp = require('fs/promises');
 const path = require('path');
 const os = require('os');
+const crypto = require('crypto');
 const {
   buildAwsTaPack,
   buildAwsVariablePack,
@@ -35,6 +36,7 @@ const {
   findExtremeThenLongMissingRejects,
   findContaminatedPeakEpisodeRejects,
   isContentAddressedPackBinaryUrl,
+  hashQcDetailJson,
   RN_24HR_SUBSTITUTION_MAX_MINUTES,
   PACK_SCHEMA_VERSION,
   PACK_CONTRACT_REVISION,
@@ -1095,9 +1097,15 @@ async function main() {
   assert.ok(yeong.manifest.qc.qcStates);
   assert.ok(yeong.manifest.qc.qcStates.suspectRetainedSampleCount >= 1);
   assert.ok(yeong.qcDetail);
+  assert.strictEqual(yeong.qcDetail.sha256, undefined);
   assert.ok(yeong.manifest.qcDetailUrl);
   assert.ok(yeong.manifest.qcDetailSha256);
   assert.ok(String(yeong.manifest.qcDetailUrl).includes('qc-v'));
+  assert.ok(
+    yeong.manifest.qcDetailUrl.endsWith(
+      `qc-v${yeong.manifest.qcDetailSha256.slice(0, 16)}.json`
+    )
+  );
   assert.strictEqual(yeong.qcDetail.contractRevision, 8);
   assert.strictEqual(yeong.qcDetail.datasetId, yeong.manifest.datasetId);
   const yRec = yeong.qcDetail.records.find((r) => r.STN_ID === 277 && r.rawValue === 648);
@@ -1108,7 +1116,10 @@ async function main() {
   assert.strictEqual(yRec.acceptedUpdated, false);
   const yeongPub = await publishAwsVariablePack(path.join(tmp, 'pack-out'), yeong);
   assert.ok(yeongPub.qcDetailPath);
-  assert.ok(await fsp.stat(yeongPub.qcDetailPath));
+  const yeongQcBytes = await fsp.readFile(yeongPub.qcDetailPath);
+  const yeongQcSha = crypto.createHash('sha256').update(yeongQcBytes).digest('hex');
+  assert.strictEqual(yeongQcSha, yeong.manifest.qcDetailSha256);
+  assert.strictEqual(yeongQcSha, hashQcDetailJson(yeongQcBytes.toString('utf8')));
   assert.ok(await fsp.stat(path.join(path.dirname(yeongPub.qcDetailPath), 'qc.json')));
 
   // Fixture A: 21mm/min extreme with consistent follow-up — not rejected
