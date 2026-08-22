@@ -59,7 +59,7 @@ description: AWS_MIN station JSON 수집·누락 복구·과거 backfill·1분 �
 - `RN_12HR` 두 값 합산·`RN_60M` 반복 합산으로 24h를 만들지 않는다 (window 중복).
 - **Hub RN-DAY는 00:01에 reset**되는 경우가 많다. pack은 **00:00 프레임을 0으로 정규화**한다 (결측은 결측 유지). RN_24HR derive의 당일/전일 00:00에도 동일 적용.
 - **날짜 중간 RN_DAY 감소**는 counter-regression. **RN_DAY pack은 missing**, RN_24HR 계산은 **직전 accepted RN_DAY로 대체** (원천 결측은 fill 금지). offset stitching 없음.
-- **비정상 양의 급상승**: soft(≥5mm/min)·extreme(≥20mm/min)은 **후보**만. reject는 복수 독립 신호(기계적 반복 jump, isolated peak→reset, extreme+장시간 missing). equality·20mm/min 단독 reject 금지. `suspect-retained`는 pack에 원값 보존.
+- **비정상 양의 급상승**: soft/extreme은 **후보**만. reject는 `mechanical_repeat`·`isolated_peak_reset`만. extreme+장시간 missing 단독 reject 금지. `suspect-retained`는 원값 보존. RN_24HR last-confirmed substitution ≤30분.
 - 결측/counter 감소/음수/overflow → `-32768`. 0으로 clamp·carry-forward 금지.
 - 전일 JSON 없으면 해당 날짜 `RN_24HR`만 `dependency-missing` (다른 변수 성공분 유지).
 - `schemaVersion: 4`, `contractRevision: 8`. sparse QC: `qcDetailUrl`=`qc-v{sha16}.json` + `qcDetailSha256`. consumer: `docs/aws-rn-qc-consumer-schema.md`.
