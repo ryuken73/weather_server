@@ -58,7 +58,7 @@ override: `AWS_JSON_DIR`, `AWS_PACK_DIR`.
 | dtype | int16 LE |
 | scale | 0.1 ℃ |
 | missing | -32768 (`null`, `-999`, 물리 ≤ -50℃ / ×10 ≤ -500, > 60℃, pack temporal QC) |
-| schema | `schemaVersion: 4` + `contractRevision: 7`. 구 pack은 `--force` 재워밍 |
+| schema | `schemaVersion: 4` + `contractRevision: 8`. 구 pack은 `--force` 재워밍 |
 | order | FRAME_MAJOR_STATION_MINOR |
 | index | `frameIndex * stationCount + stationIndex` |
 | stations | STN_ID ASC (범위 union) |

@@ -62,7 +62,8 @@ description: AWS_MIN station JSON 수집·누락 복구·과거 backfill·1분 �
 - **비정상 양의 급상승**: soft(≥5mm/min)·extreme(≥20mm/min)은 **후보**만. reject는 복수 독립 신호(기계적 반복 jump, isolated peak→reset, extreme+장시간 missing). equality·20mm/min 단독 reject 금지. `suspect-retained`는 pack에 원값 보존.
 - 결측/counter 감소/음수/overflow → `-32768`. 0으로 clamp·carry-forward 금지.
 - 전일 JSON 없으면 해당 날짜 `RN_24HR`만 `dependency-missing` (다른 변수 성공분 유지).
-- `schemaVersion: 4`, `contractRevision: 7`. 구 pack은 `--force` 재워밍. 안전성 리뷰: `docs/rainfall-producer-spike-qc-safety-review.md`.
+- `schemaVersion: 4`, `contractRevision: 8`. 구 pack은 `--force` 재워밍. 최종 리뷰: `docs/rainfall-producer-spike-qc-final-review.md`.
+- extreme+장시간 missing **단독 reject 금지**(suspect-retained). RN_24HR last-confirmed substitution 최대 **30분** 후 missing. sparse `qc.json`(`qcDetailUrl`).
 
 워밍 예:
 

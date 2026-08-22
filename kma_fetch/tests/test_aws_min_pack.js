@@ -12,6 +12,7 @@ const {
   buildAwsTaPack,
   buildAwsVariablePack,
   publishAwsTaPack,
+  publishAwsVariablePack,
   warmAwsDayPack,
   encodeTaToI16,
   encodeRainToI16,
@@ -31,6 +32,8 @@ const {
   applyRnDayCounterRegression,
   evaluateRnDayUpwardSpike,
   qcRnDayStationSeries,
+  findExtremeThenLongMissingRejects,
+  RN_24HR_SUBSTITUTION_MAX_MINUTES,
   PACK_SCHEMA_VERSION,
   PACK_CONTRACT_REVISION,
   PACK_VARIABLES,
@@ -155,7 +158,17 @@ async function main() {
   assert.strictEqual(regStats.regressionSampleCount, 2);
   assert.strictEqual(regStats.counterRegressionFilledSampleCount, 2);
   assert.strictEqual(regStats.regressionStationCount, 1);
-  assert.strictEqual(PACK_CONTRACT_REVISION, 7);
+  assert.strictEqual(PACK_CONTRACT_REVISION, 8);
+  assert.strictEqual(findExtremeThenLongMissingRejects([0, 210, ...Array(15).fill(null)]).size, 0);
+
+  // Fixture A: extreme then long missing → suspect-retained, not rejected
+  const extremeThenMiss = qcRnDayStationSeries(
+    [0, 210, ...Array(15).fill(null)],
+    [{ rn15: 0 }, { rn15: 210, rn60: 210 }, ...Array(15).fill(null)],
+    null
+  );
+  assert.strictEqual(extremeThenMiss.status[1], 'suspect-retained');
+  assert.strictEqual(extremeThenMiss.pack[1], 210);
 
   assert.strictEqual(encodeRainToI16(0), 0);
   assert.strictEqual(encodeRainToI16(15), 15);
@@ -631,7 +644,7 @@ async function main() {
   const regDay = await buildAwsVariablePack(regRoot, '202608200701', '202608200801', 'RN_DAY', {
     catalog: regCatalog
   });
-  assert.strictEqual(regDay.manifest.contractRevision, 7);
+  assert.strictEqual(regDay.manifest.contractRevision, 8);
   assert.ok(regDay.manifest.qc.rnDayRegression.regressionSampleCount >= 3);
   assert.ok(regDay.manifest.qc.rnDayRegression.regressionStationCount >= 2);
   const rd = new Int16Array(regDay.binary.buffer, regDay.binary.byteOffset, regDay.binary.length / 2);
@@ -934,9 +947,19 @@ async function main() {
   const yIdx = new Map(yeong.manifest.stations.map((s, i) => [s.STN_ID, i]));
   const ysc = yeong.manifest.stationCount;
   assert.strictEqual(yd[0 * ysc + yIdx.get(277)], 4);
-  // 영덕: extreme+cross contradiction → suspect-retained (keep value), not hard reject
+  // 영덕: extreme+cross contradiction → suspect-retained (keep raw 648 = 64.8mm)
   assert.strictEqual(yd[1 * ysc + yIdx.get(277)], 648);
   assert.ok(yeong.manifest.qc.rnDayQc.suspectRetainedSampleCount >= 1);
+  assert.ok(yeong.qcDetail);
+  assert.ok(yeong.manifest.qcDetailUrl);
+  const yRec = yeong.qcDetail.records.find((r) => r.STN_ID === 277 && r.rawValue === 648);
+  assert.ok(yRec);
+  assert.strictEqual(yRec.scale, 0.1);
+  assert.strictEqual(yRec.valueMm, 64.8);
+  assert.strictEqual(yRec.qcState, 'suspect-retained');
+  const yeongPub = await publishAwsVariablePack(path.join(tmp, 'pack-out'), yeong);
+  assert.ok(yeongPub.qcDetailPath);
+  assert.ok(await fsp.stat(yeongPub.qcDetailPath));
 
   // Fixture A: 21mm/min extreme with consistent follow-up — not rejected
   const extremeRoot = path.join(tmp, 'aws-extreme-ok');

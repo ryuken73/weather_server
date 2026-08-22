@@ -69,7 +69,7 @@ Pack binary 계약 (consumer):
 - 결측은 모두 Int16 `-32768`. TA: `null`/`-999`/Hub ≤ -50℃/temporal QC. 강수: `null`/음수/Hub ≤ -50mm. **0 mm는 0**. 풍향 0–360(무풍 360). 통계에서 sentinel 제외
 - Temporal QC는 **TA pack만**. 강수·바람·습도·이슬점 pack에는 적용하지 않음. `/exact`·디스크 JSON은 원천 그대로
 - 과거 `complete:true`는 timestamp 파일 완결. 값 coverage는 `coverage.status` (`ok|degraded|empty`) / `dataComplete`. 전부 결측 pack을 정상으로 보지 말 것
-- `schemaVersion: 4` / `contractRevision: 7`
+- `schemaVersion: 4` / `contractRevision: 8`
 - **강수 변수 구분 (필수)**
   - `RN_15M`/`RN_60M`/`RN_12HR`/`RN_24HR` → rolling. UI: “직전 N분/시간 누적”
   - `RN_DAY` → KST 당일 00시~현재. UI: “오늘 00시부터 누적”

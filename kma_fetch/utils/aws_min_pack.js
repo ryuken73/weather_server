@@ -28,12 +28,13 @@ const VARIABLE_TA = 'TA';
  */
 const PACK_SCHEMA_VERSION = 4;
 /** Bump when pack meaning/URL contract changes for cache reuse checks. */
-const PACK_CONTRACT_REVISION = 7;
+const PACK_CONTRACT_REVISION = 8;
 
 /**
  * RN_DAY upward-spike QC thresholds (scaled ×10 mm).
  * Soft/extreme rates are candidate detectors only — never sole reject criteria.
  * @see docs/rainfall-producer-spike-qc-safety-review.md
+ * @see docs/rainfall-producer-spike-qc-final-review.md
  */
 const RN_DAY_SPIKE_EXTREME_RATE_PER_MIN = 200; // 20.0 mm/min → extreme candidate (not hard reject)
 const RN_DAY_SPIKE_SOFT_RATE_PER_MIN = 50; // 5.0 mm/min
@@ -41,9 +42,10 @@ const RN_DAY_SPIKE_SOFT_JUMP = 100; // 10.0 mm
 const RN_DAY_SPIKE_CROSS_SLACK = 20; // 2.0 mm
 const RN_DAY_SPIKE_REPEAT_JUMP_MIN = 500; // 50.0 mm mechanical repeat floor
 const RN_DAY_SPIKE_REPEAT_TOL = 50; // 5.0 mm
-const RN_DAY_SPIKE_LONG_MISSING_MIN = 10; // minutes after spike
 const RN_DAY_SPIKE_ISOLATED_PEAK_MIN = 50; // 5.0 mm
 const RN_DAY_SPIKE_RECOVERY_STREAK = 2;
+/** RN_24HR may use last-confirmed RN_DAY for rejected frames only up to this many consecutive minutes. */
+const RN_24HR_SUBSTITUTION_MAX_MINUTES = 30;
 
 /**
  * Hub nph-aws2_min: 물리기온 ≤ -50℃ 결측.
@@ -444,6 +446,10 @@ function packBinaryUrl(spec, dayKey) {
   return `/datasets/aws/${spec.slug}/1m/${dayKey}/${spec.slug}.i16le`;
 }
 
+function packQcDetailUrl(spec, dayKey) {
+  return `/datasets/aws/${spec.slug}/1m/${dayKey}/qc.json`;
+}
+
 /**
  * `variable` query. 기본 TA. comma 복수(TA,RN_60M). FULL 불가.
  * @returns {string[]}
@@ -801,36 +807,20 @@ function findIsolatedPeakResetRejects(scaledSeries) {
 }
 
 /**
- * Extreme/large jump then long source-missing (≥10 min) → reject that jump (2 signals).
+ * Extreme/large jump then long source-missing is NOT a reject by itself
+ * (extreme rain can be followed by telemetry gaps). Those samples stay
+ * suspect-retained via the normal extreme-candidate path.
+ * Kept as a no-op helper so call sites/docs stay explicit.
  */
-function findExtremeThenLongMissingRejects(scaledSeries) {
-  const rejects = new Set();
-  let accepted = null;
-  let acceptedIdx = null;
-  for (let i = 0; i < scaledSeries.length; i++) {
-    const v = scaledSeries[i];
-    if (v == null) continue;
-    if (accepted != null && v < accepted) continue;
-    if (accepted != null) {
-      const elapsed = Math.max(1, i - acceptedIdx);
-      const increase = v - accepted;
-      const rate = increase / elapsed;
-      if (rate >= RN_DAY_SPIKE_EXTREME_RATE_PER_MIN || increase >= RN_DAY_SPIKE_REPEAT_JUMP_MIN) {
-        if (countTrailingMissing(scaledSeries, i + 1) >= RN_DAY_SPIKE_LONG_MISSING_MIN) {
-          rejects.add(i);
-          continue;
-        }
-      }
-    }
-    accepted = v;
-    acceptedIdx = i;
-  }
-  return rejects;
+function findExtremeThenLongMissingRejects(_scaledSeries) {
+  return new Set();
 }
 
 /**
  * Offline per-station QC.
  * status: valid | suspect-retained | rejected | missing | counterRegression
+ * Reject requires multi-signal patterns only (mechanical repeat, isolated peak→reset).
+ * extreme + long missing alone → NOT rejected.
  */
 function qcRnDayStationSeries(scaledSeries, crossSeries, hhmmSeries) {
   const n = scaledSeries.length;
@@ -838,12 +828,12 @@ function qcRnDayStationSeries(scaledSeries, crossSeries, hhmmSeries) {
   const rolling = new Array(n);
   const reason = new Array(n);
   const status = new Array(n);
+  const signals = new Array(n);
 
-  const rejectMask = new Set([
-    ...findMechanicalRepeatRejects(scaledSeries),
-    ...findIsolatedPeakResetRejects(scaledSeries),
-    ...findExtremeThenLongMissingRejects(scaledSeries)
-  ]);
+  const mechRejects = findMechanicalRepeatRejects(scaledSeries);
+  const isolatedRejects = findIsolatedPeakResetRejects(scaledSeries);
+  const rejectMask = new Set([...mechRejects, ...isolatedRejects]);
+  // extreme + long missing alone is intentionally NOT a reject path.
 
   let accepted = null;
   let acceptedIdx = null;
@@ -855,6 +845,7 @@ function qcRnDayStationSeries(scaledSeries, crossSeries, hhmmSeries) {
     const v = scaledSeries[i];
     const hhmm = hhmmSeries ? hhmmSeries[i] : null;
     const cross = crossSeries ? crossSeries[i] : null;
+    signals[i] = [];
 
     if (v == null) {
       pack[i] = null;
@@ -879,8 +870,11 @@ function qcRnDayStationSeries(scaledSeries, crossSeries, hhmmSeries) {
     }
 
     if (rejectMask.has(i)) {
+      const sig = [];
+      if (mechRejects.has(i)) sig.push('mechanical_repeat');
+      if (isolatedRejects.has(i)) sig.push('isolated_peak_reset');
+      signals[i] = sig;
       pack[i] = null;
-      // Prefer missing for RN_24HR when no confirmed accepted (safer than inventing).
       rolling[i] = accepted;
       reason[i] = 'upwardSpikeRejected';
       status[i] = 'rejected';
@@ -902,6 +896,7 @@ function qcRnDayStationSeries(scaledSeries, crossSeries, hhmmSeries) {
 
     if (accepted == null) {
       const cls0 = classifyRnDayIncrease(v, 0, 1, cross);
+      signals[i] = cls0.signals;
       if (cls0.extremeCandidate) {
         pendingSuspect = { value: v, idx: i };
         pack[i] = v;
@@ -921,6 +916,7 @@ function qcRnDayStationSeries(scaledSeries, crossSeries, hhmmSeries) {
 
     const elapsed = Math.max(1, i - acceptedIdx);
     const cls = classifyRnDayIncrease(v, accepted, elapsed, cross);
+    signals[i] = cls.signals;
 
     if (pendingSuspect) {
       if (!cls.extremeCandidate && cls.increase >= 0 && cls.increase <= RN_DAY_SPIKE_SOFT_JUMP) {
@@ -932,7 +928,7 @@ function qcRnDayStationSeries(scaledSeries, crossSeries, hhmmSeries) {
       }
     }
 
-    // Extreme alone, or soft+cross contradiction → suspect-retained (Yeongdeok), not reject
+    // Extreme alone, or soft+cross contradiction → suspect-retained (includes extreme+missing cases)
     if (cls.extremeCandidate || (cls.softCandidate && cls.crossContradiction)) {
       pendingSuspect = { value: v, idx: i };
       pack[i] = v;
@@ -971,7 +967,7 @@ function qcRnDayStationSeries(scaledSeries, crossSeries, hhmmSeries) {
     status[i] = 'valid';
   }
 
-  return { pack, rolling, reason, status, rejectMask };
+  return { pack, rolling, reason, status, signals, rejectMask };
 }
 
 /**
@@ -1059,6 +1055,7 @@ function applyRnDayCounterRegression(scaledGrid, frameCount, stationCount, optio
   const rollingGrid = new Array(frameCount * stationCount);
   const reasonGrid = new Array(frameCount * stationCount);
   const statusGrid = new Array(frameCount * stationCount);
+  const signalsGrid = new Array(frameCount * stationCount);
   const stats = emptyRnDayRegressionStats();
   const stationHadRegression = new Uint8Array(stationCount);
   const stationHadSpike = new Uint8Array(stationCount);
@@ -1081,6 +1078,7 @@ function applyRnDayCounterRegression(scaledGrid, frameCount, stationCount, optio
       rollingGrid[idx] = qc.rolling[fi];
       reasonGrid[idx] = qc.reason[fi];
       statusGrid[idx] = qc.status[fi];
+      signalsGrid[idx] = qc.signals ? qc.signals[fi] : [];
 
       const st = qc.status[fi];
       const rs = qc.reason[fi];
@@ -1115,13 +1113,99 @@ function applyRnDayCounterRegression(scaledGrid, frameCount, stationCount, optio
     if (stationHadSpike[si]) stats.upwardSpikeStationCount += 1;
   }
 
-  return { packGrid, rollingGrid, reasonGrid, statusGrid, stats };
+  return { packGrid, rollingGrid, reasonGrid, statusGrid, signalsGrid, stats };
+}
+
+function scaledToMm(scaled) {
+  if (scaled == null) return null;
+  return Number((scaled * 0.1).toFixed(1));
+}
+
+/**
+ * Sparse QC records for suspect-retained / rejected / substituted (not every valid sample).
+ */
+function buildSparseRnDayQcRecords({
+  dayYmd,
+  timestamps,
+  stationIds,
+  stations,
+  rawScaledGrid,
+  packGrid,
+  rollingGrid,
+  statusGrid,
+  reasonGrid,
+  signalsGrid,
+  frameCount,
+  stationCount
+}) {
+  const records = [];
+  for (let fi = 0; fi < frameCount; fi++) {
+    const tm = timestamps[fi];
+    for (let si = 0; si < stationCount; si++) {
+      const idx = fi * stationCount + si;
+      const st = statusGrid[idx];
+      const rs = reasonGrid[idx];
+      const interesting =
+        st === 'suspect-retained' ||
+        st === 'rejected' ||
+        rs === 'upwardSpikeRejected' ||
+        rs === 'spikeRecoveryPending' ||
+        rs === 'counterRegression';
+      if (!interesting) continue;
+      const rawValue = rawScaledGrid[idx];
+      const packValue = packGrid[idx];
+      const rollValue = rollingGrid[idx];
+      const substituted =
+        packValue == null && rollValue != null && (st === 'rejected' || rs === 'counterRegression');
+      const meta = stations && stations[si] ? stations[si] : null;
+      records.push({
+        date: dayYmd,
+        variable: 'RN_DAY',
+        TM: tm,
+        STN_ID: stationIds[si],
+        stationName: meta && (meta.STN_KO || meta.STN_NAME) ? meta.STN_KO || meta.STN_NAME : undefined,
+        rawValue: rawValue == null ? null : rawValue,
+        scale: 0.1,
+        valueMm: scaledToMm(rawValue),
+        packRawValue: packValue,
+        packValueMm: scaledToMm(packValue),
+        qcState: st || rs || 'unknown',
+        candidateSignals: signalsGrid && signalsGrid[idx] ? signalsGrid[idx] : [],
+        acceptedBaselineUpdated: st === 'valid' || rs === 'spikeRecovery',
+        rn24hrSubstitutionCandidate: Boolean(substituted),
+        reason: rs
+      });
+    }
+  }
+  return records;
+}
+
+/**
+ * Consecutive spike-reject minutes ending at frame fi for one station.
+ */
+function consecutiveSpikeRejectMinutes(reasonGrid, statusGrid, fi, si, stationCount) {
+  let mins = 0;
+  for (let f = fi; f >= 0; f--) {
+    const idx = f * stationCount + si;
+    const rs = reasonGrid[idx];
+    const st = statusGrid[idx];
+    if (
+      rs === 'upwardSpikeRejected' ||
+      rs === 'spikeRecoveryPending' ||
+      st === 'rejected'
+    ) {
+      mins += 1;
+      continue;
+    }
+    break;
+  }
+  return mins;
 }
 
 /**
  * Build midnight-normalized + dual QC grids (spike/regression pack missing; rolling holds accepted).
  */
-function buildQcRnDayScaledGrid(frames, timestamps, stationIds) {
+function buildQcRnDayScaledGrid(frames, timestamps, stationIds, options = {}) {
   const frameCount = timestamps.length;
   const stationCount = stationIds.length;
   const scaledGrid = new Array(frameCount * stationCount);
@@ -1153,17 +1237,34 @@ function buildQcRnDayScaledGrid(frames, timestamps, stationIds) {
     }
   }
 
-  const { packGrid, rollingGrid, reasonGrid, statusGrid, stats: regression } = applyRnDayCounterRegression(
-    scaledGrid,
+  const rawScaledGrid = scaledGrid.slice();
+  const { packGrid, rollingGrid, reasonGrid, statusGrid, signalsGrid, stats: regression } =
+    applyRnDayCounterRegression(scaledGrid, frameCount, stationCount, { crossGrid, timestamps });
+
+  const dayYmd = timestamps[0] ? timestamps[0].slice(0, 8) : null;
+  const sparseQcRecords = buildSparseRnDayQcRecords({
+    dayYmd,
+    timestamps,
+    stationIds,
+    stations: options.stations || null,
+    rawScaledGrid,
+    packGrid,
+    rollingGrid,
+    statusGrid,
+    reasonGrid,
+    signalsGrid,
     frameCount,
-    stationCount,
-    { crossGrid, timestamps }
-  );
+    stationCount
+  });
+
   return {
     packGrid,
     rollingGrid,
     reasonGrid,
     statusGrid,
+    signalsGrid,
+    rawScaledGrid,
+    sparseQcRecords,
     scaledGrid: packGrid,
     midnightNormalizedCount,
     jsonPresentCount,
@@ -1288,7 +1389,11 @@ function emptyRollingQcCounts() {
     counterRegressionFilledSampleCount: 0,
     sourceMissingSampleCount: 0,
     upwardSpikeRejectedSampleCount: 0,
-    upwardSpikeContaminationPreventedSampleCount: 0
+    upwardSpikeContaminationPreventedSampleCount: 0,
+    qcRejectedSourceSampleCount: 0,
+    lastConfirmedSubstitutionSampleCount: 0,
+    substitutionExpiredSampleCount: 0,
+    substitutionMaxMinutes: RN_24HR_SUBSTITUTION_MAX_MINUTES
   };
 }
 
@@ -1325,6 +1430,8 @@ async function buildAwsVariablePack(awsJsonDir, fromKor, toKor, variable, option
   const rollingQc = emptyRollingQcCounts();
   let rnDayRegression = emptyRnDayRegressionStats();
   let prevDayRegression = emptyRnDayRegressionStats();
+  let sparseQcRecords = [];
+  let qcDetail = null;
 
   if (spec.derive === 'rolling24hFromDayCounters') {
     const dayYmd = from.slice(0, 8);
@@ -1339,10 +1446,11 @@ async function buildAwsVariablePack(awsJsonDir, fromKor, toKor, variable, option
     const endById = prevDayIndex.endById;
     const endFilledById = prevDayIndex.endFilledById;
 
-    const todayQc = buildQcRnDayScaledGrid(frames, timestamps, stationIds);
+    const todayQc = buildQcRnDayScaledGrid(frames, timestamps, stationIds, { stations });
     midnightNormalizedCount = todayQc.midnightNormalizedCount;
     jsonPresentCount = todayQc.jsonPresentCount;
     rnDayRegression = todayQc.regression;
+    sparseQcRecords = todayQc.sparseQcRecords || [];
     rollingQc.midnightNormalized = midnightNormalizedCount;
 
     for (let fi = 0; fi < frameCount; fi++) {
@@ -1367,12 +1475,28 @@ async function buildAwsVariablePack(awsJsonDir, fromKor, toKor, variable, option
         }
 
         const idx = fi * stationCount + si;
-        const todayScaled = todayQc.rollingGrid[idx];
+        let todayScaled = todayQc.rollingGrid[idx];
         const todayReason = todayQc.reasonGrid ? todayQc.reasonGrid[idx] : null;
+        const todayStatus = todayQc.statusGrid ? todayQc.statusGrid[idx] : null;
         const todayFilled =
           todayQc.packGrid[idx] == null && todayQc.rollingGrid[idx] != null;
         const todaySpikeHold =
           todayReason === 'upwardSpikeRejected' || todayReason === 'spikeRecoveryPending';
+
+        if (todaySpikeHold && todayScaled != null) {
+          const holdMins = consecutiveSpikeRejectMinutes(
+            todayQc.reasonGrid,
+            todayQc.statusGrid,
+            fi,
+            si,
+            stationCount
+          );
+          if (holdMins > RN_24HR_SUBSTITUTION_MAX_MINUTES) {
+            todayScaled = null;
+            rollingQc.substitutionExpiredSampleCount += 1;
+            rollingQc.qcRejectedSourceSampleCount += 1;
+          }
+        }
 
         const prevEndScaled = endById ? endById.get(stnId) : null;
         const prevSameScaled =
@@ -1391,6 +1515,9 @@ async function buildAwsVariablePack(awsJsonDir, fromKor, toKor, variable, option
             derived.reason === 'missing_prev_same'
           ) {
             rollingQc.sourceMissingSampleCount += 1;
+            if (todaySpikeHold || todayStatus === 'rejected') {
+              rollingQc.qcRejectedSourceSampleCount += 1;
+            }
           }
           if (derived.reason === 'missing_today') rollingQc.missingToday += 1;
           else if (derived.reason === 'missing_prev_end') rollingQc.missingPrevEnd += 1;
@@ -1403,9 +1530,33 @@ async function buildAwsVariablePack(awsJsonDir, fromKor, toKor, variable, option
           }
           continue;
         }
-        if (todaySpikeHold) {
-          rollingQc.upwardSpikeRejectedSampleCount += 1;
-          rollingQc.upwardSpikeContaminationPreventedSampleCount += 1;
+        if (todaySpikeHold && todayQc.rollingGrid[idx] != null) {
+          const holdMins = consecutiveSpikeRejectMinutes(
+            todayQc.reasonGrid,
+            todayQc.statusGrid,
+            fi,
+            si,
+            stationCount
+          );
+          if (holdMins <= RN_24HR_SUBSTITUTION_MAX_MINUTES) {
+            rollingQc.lastConfirmedSubstitutionSampleCount += 1;
+            rollingQc.upwardSpikeContaminationPreventedSampleCount += 1;
+            rollingQc.upwardSpikeRejectedSampleCount += 1;
+            sparseQcRecords.push({
+              date: dayYmd,
+              variable: 'RN_24HR',
+              TM: timestamps[fi],
+              STN_ID: stnId,
+              qcState: 'substituted',
+              substitutionMinutes: holdMins,
+              substitutionMaxMinutes: RN_24HR_SUBSTITUTION_MAX_MINUTES,
+              rawValue: todayQc.rawScaledGrid ? todayQc.rawScaledGrid[idx] : null,
+              scale: 0.1,
+              valueMm: scaledToMm(todayQc.rawScaledGrid ? todayQc.rawScaledGrid[idx] : null),
+              rn24hrValueMm: scaledToMm(derived.value),
+              reason: 'last_confirmed_rn_day'
+            });
+          }
         } else if (todayFilled || endFilled || sameFilled) {
           rollingQc.counterRegressionFilledSampleCount += 1;
         }
@@ -1413,10 +1564,11 @@ async function buildAwsVariablePack(awsJsonDir, fromKor, toKor, variable, option
       }
     }
   } else if (spec.normalizeMidnightRnDay || name === 'RN_DAY') {
-    const dayQc = buildQcRnDayScaledGrid(frames, timestamps, stationIds);
+    const dayQc = buildQcRnDayScaledGrid(frames, timestamps, stationIds, { stations });
     midnightNormalizedCount = dayQc.midnightNormalizedCount;
     jsonPresentCount = dayQc.jsonPresentCount;
     rnDayRegression = dayQc.regression;
+    sparseQcRecords = dayQc.sparseQcRecords || [];
 
     for (let i = 0; i < dayQc.scaledGrid.length; i++) {
       const scaled = dayQc.scaledGrid[i];
@@ -1506,9 +1658,14 @@ async function buildAwsVariablePack(awsJsonDir, fromKor, toKor, variable, option
         `RN_24HR used last accepted RN_DAY for ${rollingQc.counterRegressionFilledSampleCount} counter-regression samples`
       );
     }
-    if (rollingQc.upwardSpikeContaminationPreventedSampleCount > 0) {
+    if (rollingQc.substitutionExpiredSampleCount > 0) {
       warnings.push(
-        `RN_24HR blocked upward-spike RN_DAY contamination for ${rollingQc.upwardSpikeContaminationPreventedSampleCount} samples`
+        `RN_24HR last-confirmed substitution expired (>${RN_24HR_SUBSTITUTION_MAX_MINUTES}min) for ${rollingQc.substitutionExpiredSampleCount} samples`
+      );
+    }
+    if (rollingQc.lastConfirmedSubstitutionSampleCount > 0) {
+      warnings.push(
+        `RN_24HR used last-confirmed RN_DAY substitution for ${rollingQc.lastConfirmedSubstitutionSampleCount} samples (max ${RN_24HR_SUBSTITUTION_MAX_MINUTES}min)`
       );
     }
     if (rnDayRegression.regressionSampleCount > 0 || prevDayRegression.regressionSampleCount > 0) {
@@ -1681,8 +1838,38 @@ async function buildAwsVariablePack(awsJsonDir, fromKor, toKor, variable, option
       recoverySampleCount: rnDayRegression.spikeRecoverySampleCount
     };
   }
+  if (
+    (name === 'RN_DAY' || name === 'RN_24HR') &&
+    Array.isArray(sparseQcRecords) &&
+    sparseQcRecords.length > 0
+  ) {
+    const suspectRetainedSampleCount = sparseQcRecords.filter(
+      (r) => r.qcState === 'suspect-retained'
+    ).length;
+    const rejectedSampleCount = sparseQcRecords.filter(
+      (r) => r.qcState === 'rejected' || r.reason === 'upwardSpikeRejected'
+    ).length;
+    const substitutedSampleCount = sparseQcRecords.filter((r) => r.qcState === 'substituted').length;
+    qcDetail = {
+      schemaVersion: 1,
+      date: from.slice(0, 8),
+      variable: name,
+      scale: 0.1,
+      unit: 'mm',
+      note: 'Sparse QC: suspect-retained, rejected, substituted only. rawValue is Int16×10; valueMm = rawValue*0.1',
+      qcStates: {
+        suspectRetainedSampleCount,
+        rejectedSampleCount,
+        substitutedSampleCount,
+        recordCount: sparseQcRecords.length
+      },
+      records: sparseQcRecords
+    };
+    manifest.qcDetailUrl = packQcDetailUrl(spec, dayKey);
+    manifest.qc.qcStates = qcDetail.qcStates;
+  }
 
-  return { manifest, binary, dayKey, datasetId, revision, variable: name };
+  return { manifest, binary, dayKey, datasetId, revision, variable: name, qcDetail };
 }
 
 async function buildAwsTaPack(awsJsonDir, fromKor, toKor, options = {}) {
@@ -1690,7 +1877,7 @@ async function buildAwsTaPack(awsJsonDir, fromKor, toKor, options = {}) {
 }
 
 async function publishAwsVariablePack(packRoot, built) {
-  const { manifest, binary, dayKey, variable } = built;
+  const { manifest, binary, dayKey, variable, qcDetail } = built;
   const { spec } = getPackVariableSpec(variable || manifest.variable);
   const outDir = path.join(packRoot, packRelDir(spec, dayKey));
   await fsp.mkdir(outDir, { recursive: true });
@@ -1705,7 +1892,16 @@ async function publishAwsVariablePack(packRoot, built) {
   await fsp.writeFile(manTmp, JSON.stringify(manifest, null, 2), 'utf8');
   await fsp.rename(manTmp, manFinal);
 
-  return { manifest, binaryPath: binFinal, manifestPath: manFinal };
+  let qcDetailPath = null;
+  if (qcDetail) {
+    const qcTmp = path.join(outDir, `qc.json.${process.pid}.tmp`);
+    const qcFinal = path.join(outDir, 'qc.json');
+    await fsp.writeFile(qcTmp, JSON.stringify(qcDetail, null, 2), 'utf8');
+    await fsp.rename(qcTmp, qcFinal);
+    qcDetailPath = qcFinal;
+  }
+
+  return { manifest, binaryPath: binFinal, manifestPath: manFinal, qcDetailPath };
 }
 
 async function publishAwsTaPack(packRoot, built) {
@@ -1879,6 +2075,8 @@ module.exports = {
   evaluateRnDayUpwardSpike,
   classifyRnDayIncrease,
   qcRnDayStationSeries,
+  findExtremeThenLongMissingRejects,
+  RN_24HR_SUBSTITUTION_MAX_MINUTES,
   readRainCrossScaled,
   deriveRolling24hScaled,
   prevYmd,
