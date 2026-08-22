@@ -82,8 +82,8 @@ JSON으로 넣을 때 (`work/fetch_aws_apihub.js`):
 | `RN_DAY` | KST 당일 00시~현재 | `day`, Asia/Seoul | `rn_day` |
 
 `RN_24HR` 계산: `RN_DAY(D,t) + RN_DAY(D-1,23:59) - RN_DAY(D-1,t)`. 결측/음수/counter 감소는 `-32768`, 0으로 clamp하지 않음.
-Hub RN-DAY는 종종 **00:01에 reset**되므로 pack은 당일·전일 **00:00을 0으로 정규화**한 뒤, **upward spike QC → counter regression** 순으로 처리한다. spike rejected는 accepted를 오염시키지 않으며 RN_24HR에도 넣지 않는다. 날짜 중간 역행은 RN_DAY pack missing + rolling last-accepted (원천 결측 fill·offset stitching 없음).
-legacy `/datasets/aws/rn_24hr/` URL은 과거 day-total이므로 rolling으로 쓰지 말 것. 변경 요청: `docs/rainfall-producer-rn24-rnday-change-request.md`, spike QC: `docs/rainfall-producer-rn24-spike-qc-request.md`.
+Hub RN-DAY는 종종 **00:01에 reset**되므로 pack은 당일·전일 **00:00을 0으로 정규화**한 뒤, **upward spike QC(후보→복수신호 reject / suspect-retained) → counter regression** 순으로 처리한다. `≥20mm/min`·multi-field equality 단독 reject 금지. spike rejected는 accepted를 오염시키지 않음.
+legacy `/datasets/aws/rn_24hr/` URL은 과거 day-total이므로 rolling으로 쓰지 말 것. 변경 요청: `docs/rainfall-producer-rn24-rnday-change-request.md`, spike: `docs/rainfall-producer-rn24-spike-qc-request.md`, 안전성: `docs/rainfall-producer-spike-qc-safety-review.md`.
 
 | 원천 (JSON ×10 mm) | pack Int16 |
 | --- | --- |

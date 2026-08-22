@@ -28,18 +28,21 @@ const VARIABLE_TA = 'TA';
  */
 const PACK_SCHEMA_VERSION = 4;
 /** Bump when pack meaning/URL contract changes for cache reuse checks. */
-const PACK_CONTRACT_REVISION = 6;
+const PACK_CONTRACT_REVISION = 7;
 
 /**
- * RN_DAY upward-spike thresholds (scaled ×10 mm).
- * Hard rate alone is absurd for AWS; soft rate needs cross-variable corroboration.
- * Do not use a single absolute RN_DAY ceiling.
+ * RN_DAY upward-spike QC thresholds (scaled ×10 mm).
+ * Soft/extreme rates are candidate detectors only — never sole reject criteria.
+ * @see docs/rainfall-producer-spike-qc-safety-review.md
  */
-const RN_DAY_SPIKE_HARD_RATE_PER_MIN = 200; // 20.0 mm/min
+const RN_DAY_SPIKE_EXTREME_RATE_PER_MIN = 200; // 20.0 mm/min → extreme candidate (not hard reject)
 const RN_DAY_SPIKE_SOFT_RATE_PER_MIN = 50; // 5.0 mm/min
-const RN_DAY_SPIKE_SOFT_JUMP = 100; // 10.0 mm absolute jump (soft path)
-const RN_DAY_SPIKE_MULTI_EQUAL_MIN = 50; // 5.0 mm multi-field equality floor
-const RN_DAY_SPIKE_CROSS_SLACK = 20; // 2.0 mm slack vs RN_15M/RN_60M
+const RN_DAY_SPIKE_SOFT_JUMP = 100; // 10.0 mm
+const RN_DAY_SPIKE_CROSS_SLACK = 20; // 2.0 mm
+const RN_DAY_SPIKE_REPEAT_JUMP_MIN = 500; // 50.0 mm mechanical repeat floor
+const RN_DAY_SPIKE_REPEAT_TOL = 50; // 5.0 mm
+const RN_DAY_SPIKE_LONG_MISSING_MIN = 10; // minutes after spike
+const RN_DAY_SPIKE_ISOLATED_PEAK_MIN = 50; // 5.0 mm
 const RN_DAY_SPIKE_RECOVERY_STREAK = 2;
 
 /**
@@ -636,273 +639,381 @@ function readRainCrossScaled(row) {
   return { rn15, rn60, rn12 };
 }
 
-/**
- * Multi-field Hub glitch: RN_DAY equals short/medium accumulations (impossible for day total).
- */
-function isMultiFieldEqualSpike(scaled, cross) {
-  if (scaled == null || scaled < RN_DAY_SPIKE_MULTI_EQUAL_MIN) return false;
-  if (cross == null) return false;
-  const { rn15, rn60, rn12 } = cross;
-  if (rn15 == null || rn60 == null) return false;
-  if (rn15 !== scaled || rn60 !== scaled) return false;
-  if (rn12 != null && rn12 !== scaled) return false;
-  return true;
+function countTrailingMissing(scaledSeries, fromIdx) {
+  let c = 0;
+  for (let i = fromIdx; i < scaledSeries.length; i++) {
+    if (scaledSeries[i] != null) break;
+    c += 1;
+  }
+  return c;
+}
+
+function nextNonNullIndex(scaledSeries, fromIdx) {
+  for (let i = fromIdx; i < scaledSeries.length; i++) {
+    if (scaledSeries[i] != null) return i;
+  }
+  return -1;
+}
+
+function prevNonNullIndex(scaledSeries, fromIdx) {
+  for (let i = fromIdx; i >= 0; i--) {
+    if (scaledSeries[i] != null) return i;
+  }
+  return -1;
 }
 
 /**
- * Decide whether an increase is an upward spike (candidate → rejected when evidence holds).
- * Cross-var missing alone never rejects; rate / equality / inconsistency must combine.
+ * Classify increase vs baseline for candidate detection (never sole reject).
+ * RN_DAY/RN_15M/RN_60M equality is intentionally NOT a reject signal.
  */
-function evaluateRnDayUpwardSpike(scaled, accepted, elapsedMinutes, cross) {
+function classifyRnDayIncrease(scaled, accepted, elapsedMinutes, cross) {
   const elapsed = Math.max(1, elapsedMinutes | 0);
   const baseline = accepted == null ? 0 : accepted;
   const increase = scaled - baseline;
   if (increase <= 0) {
-    return { spike: false, candidate: false, ratePerMinute: 0, increase, elapsedMinutes: elapsed };
+    return {
+      softCandidate: false,
+      extremeCandidate: false,
+      ratePerMinute: 0,
+      increase,
+      elapsedMinutes: elapsed,
+      crossContradiction: false,
+      signals: []
+    };
   }
   const ratePerMinute = increase / elapsed;
-  const candidate =
+  const softCandidate =
     ratePerMinute >= RN_DAY_SPIKE_SOFT_RATE_PER_MIN || increase >= RN_DAY_SPIKE_SOFT_JUMP;
+  const extremeCandidate = ratePerMinute >= RN_DAY_SPIKE_EXTREME_RATE_PER_MIN;
+  const signals = [];
+  if (extremeCandidate) signals.push('extreme_rate');
+  else if (softCandidate) signals.push('soft_rate');
 
-  if (ratePerMinute >= RN_DAY_SPIKE_HARD_RATE_PER_MIN) {
-    return {
-      spike: true,
-      candidate: true,
-      rejected: true,
-      reason: 'hard_rate',
-      ratePerMinute,
-      increase,
-      elapsedMinutes: elapsed
-    };
-  }
-
-  if (isMultiFieldEqualSpike(scaled, cross)) {
-    return {
-      spike: true,
-      candidate: true,
-      rejected: true,
-      reason: 'multi_field_equal',
-      ratePerMinute,
-      increase,
-      elapsedMinutes: elapsed
-    };
-  }
-
-  if (!candidate) {
-    return { spike: false, candidate: false, ratePerMinute, increase, elapsedMinutes: elapsed };
-  }
-
-  // Soft candidate: corroborate with short-window accumulations when present.
+  let crossContradiction = false;
   const slack = RN_DAY_SPIKE_CROSS_SLACK;
   if (cross) {
     if (elapsed <= 15 && cross.rn15 != null && increase > cross.rn15 + slack) {
-      return {
-        spike: true,
-        candidate: true,
-        rejected: true,
-        reason: 'exceeds_rn15',
-        ratePerMinute,
-        increase,
-        elapsedMinutes: elapsed
-      };
-    }
-    if (elapsed <= 60 && cross.rn60 != null && increase > cross.rn60 + slack) {
-      return {
-        spike: true,
-        candidate: true,
-        rejected: true,
-        reason: 'exceeds_rn60',
-        ratePerMinute,
-        increase,
-        elapsedMinutes: elapsed
-      };
-    }
-    // Soft rate with both short windows present and roughly matching → allow (real heavy rain).
-    if (
-      cross.rn15 != null &&
-      cross.rn60 != null &&
-      increase <= cross.rn15 + slack &&
-      increase <= cross.rn60 + slack
-    ) {
-      return {
-        spike: false,
-        candidate: true,
-        rejected: false,
-        reason: 'soft_corroborated',
-        ratePerMinute,
-        increase,
-        elapsedMinutes: elapsed
-      };
+      crossContradiction = true;
+      signals.push('cross_contradiction_rn15');
+    } else if (elapsed <= 60 && cross.rn60 != null && increase > cross.rn60 + slack) {
+      crossContradiction = true;
+      signals.push('cross_contradiction_rn60');
     }
   }
-
-  // Soft candidate without corroborating short-window support → reject (Yeongdeok-style).
-  // Missing cross alone is not enough: require soft rate/jump already true above.
-  if (cross == null || (cross.rn15 == null && cross.rn60 == null)) {
-    if (ratePerMinute >= RN_DAY_SPIKE_SOFT_RATE_PER_MIN && increase >= RN_DAY_SPIKE_SOFT_JUMP) {
-      return {
-        spike: true,
-        candidate: true,
-        rejected: true,
-        reason: 'soft_uncorroborated',
-        ratePerMinute,
-        increase,
-        elapsedMinutes: elapsed
-      };
-    }
-    // Soft rate but modest jump and no cross → do not reject solely on missing cross.
-    return {
-      spike: false,
-      candidate: true,
-      rejected: false,
-      reason: 'soft_missing_cross_allowed',
-      ratePerMinute,
-      increase,
-      elapsedMinutes: elapsed
-    };
-  }
-
-  // Cross present but inconsistent / incomplete → reject soft candidate.
   return {
-    spike: true,
-    candidate: true,
-    rejected: true,
-    reason: 'soft_inconsistent_cross',
+    softCandidate,
+    extremeCandidate,
     ratePerMinute,
     increase,
-    elapsedMinutes: elapsed
+    elapsedMinutes: elapsed,
+    crossContradiction,
+    signals
+  };
+}
+
+/** Candidate classifier for tests — never sets rejected:true by itself. */
+function evaluateRnDayUpwardSpike(scaled, accepted, elapsedMinutes, cross) {
+  const c = classifyRnDayIncrease(scaled, accepted, elapsedMinutes, cross);
+  return {
+    spike: c.extremeCandidate || c.softCandidate,
+    candidate: c.softCandidate || c.extremeCandidate,
+    rejected: false,
+    extremeCandidate: c.extremeCandidate,
+    reason: c.extremeCandidate ? 'extreme_candidate' : c.softCandidate ? 'soft_candidate' : null,
+    ratePerMinute: c.ratePerMinute,
+    increase: c.increase,
+    elapsedMinutes: c.elapsedMinutes,
+    signals: c.signals
   };
 }
 
 /**
- * Per-station RN_DAY QC: upward spike → then counter regression.
- * Pack: spike/regression → missing. Rolling: hold last accepted (never spike; never source-missing fill).
+ * Mechanical large equal jumps (동래 +120mm repeat) → reject polluted run indices.
+ */
+function findMechanicalRepeatRejects(scaledSeries) {
+  const rejects = new Set();
+  const idxs = [];
+  for (let i = 0; i < scaledSeries.length; i++) {
+    if (scaledSeries[i] != null) idxs.push(i);
+  }
+  if (idxs.length < 3) return rejects;
+
+  for (let a = 0; a < idxs.length - 2; a++) {
+    const i0 = idxs[a];
+    const i1 = idxs[a + 1];
+    const i2 = idxs[a + 2];
+    const d1 = scaledSeries[i1] - scaledSeries[i0];
+    const d2 = scaledSeries[i2] - scaledSeries[i1];
+    if (d1 < RN_DAY_SPIKE_REPEAT_JUMP_MIN || d2 < RN_DAY_SPIKE_REPEAT_JUMP_MIN) continue;
+    if (Math.abs(d1 - d2) > RN_DAY_SPIKE_REPEAT_TOL) {
+      // First jump may differ (101.5 vs 120); still start a run if d2 matches subsequent
+      // Fall through only when d1 also large — handled below with looser first jump
+    }
+
+    const run = [];
+    // Require at least two consecutive large similar deltas among d1,d2,...
+    let matched = Math.abs(d1 - d2) <= RN_DAY_SPIKE_REPEAT_TOL;
+    if (!matched && d1 >= RN_DAY_SPIKE_REPEAT_JUMP_MIN && d2 >= RN_DAY_SPIKE_REPEAT_JUMP_MIN) {
+      // Allow first jump mismatch up to 30mm (101.5 vs 120)
+      matched = Math.abs(d1 - d2) <= 300;
+    }
+    if (!matched) continue;
+
+    run.push(i1, i2);
+    let prev = i2;
+    let prevDelta = d2;
+    for (let b = a + 3; b < idxs.length; b++) {
+      const ix = idxs[b];
+      const d = scaledSeries[ix] - scaledSeries[prev];
+      if (d < RN_DAY_SPIKE_REPEAT_JUMP_MIN) break;
+      if (Math.abs(d - prevDelta) > RN_DAY_SPIKE_REPEAT_TOL) break;
+      run.push(ix);
+      prev = ix;
+      prevDelta = d;
+    }
+    if (run.length < 2) continue;
+    for (const ri of run) rejects.add(ri);
+  }
+  return rejects;
+}
+
+/**
+ * Isolated peak between missings then reset low (북강릉). Equality alone is not used.
+ */
+function findIsolatedPeakResetRejects(scaledSeries) {
+  const rejects = new Set();
+  for (let i = 0; i < scaledSeries.length; i++) {
+    const v = scaledSeries[i];
+    if (v == null || v < RN_DAY_SPIKE_ISOLATED_PEAK_MIN) continue;
+    const prev = prevNonNullIndex(scaledSeries, i - 1);
+    const next = nextNonNullIndex(scaledSeries, i + 1);
+    const gapBefore = prev < 0 ? true : i - prev >= 2;
+    const gapAfter = next < 0 ? i < scaledSeries.length - 1 : next - i >= 2;
+    if (!gapBefore || !gapAfter) continue;
+    if (next < 0) {
+      if (countTrailingMissing(scaledSeries, i + 1) >= 1) rejects.add(i);
+      continue;
+    }
+    const nv = scaledSeries[next];
+    if (nv <= 20 || nv <= v * 0.2) rejects.add(i);
+  }
+  return rejects;
+}
+
+/**
+ * Extreme/large jump then long source-missing (≥10 min) → reject that jump (2 signals).
+ */
+function findExtremeThenLongMissingRejects(scaledSeries) {
+  const rejects = new Set();
+  let accepted = null;
+  let acceptedIdx = null;
+  for (let i = 0; i < scaledSeries.length; i++) {
+    const v = scaledSeries[i];
+    if (v == null) continue;
+    if (accepted != null && v < accepted) continue;
+    if (accepted != null) {
+      const elapsed = Math.max(1, i - acceptedIdx);
+      const increase = v - accepted;
+      const rate = increase / elapsed;
+      if (rate >= RN_DAY_SPIKE_EXTREME_RATE_PER_MIN || increase >= RN_DAY_SPIKE_REPEAT_JUMP_MIN) {
+        if (countTrailingMissing(scaledSeries, i + 1) >= RN_DAY_SPIKE_LONG_MISSING_MIN) {
+          rejects.add(i);
+          continue;
+        }
+      }
+    }
+    accepted = v;
+    acceptedIdx = i;
+  }
+  return rejects;
+}
+
+/**
+ * Offline per-station QC.
+ * status: valid | suspect-retained | rejected | missing | counterRegression
+ */
+function qcRnDayStationSeries(scaledSeries, crossSeries, hhmmSeries) {
+  const n = scaledSeries.length;
+  const pack = new Array(n);
+  const rolling = new Array(n);
+  const reason = new Array(n);
+  const status = new Array(n);
+
+  const rejectMask = new Set([
+    ...findMechanicalRepeatRejects(scaledSeries),
+    ...findIsolatedPeakResetRejects(scaledSeries),
+    ...findExtremeThenLongMissingRejects(scaledSeries)
+  ]);
+
+  let accepted = null;
+  let acceptedIdx = null;
+  let pendingSuspect = null;
+  let recoveryStreak = 0;
+  let afterReject = false;
+
+  for (let i = 0; i < n; i++) {
+    const v = scaledSeries[i];
+    const hhmm = hhmmSeries ? hhmmSeries[i] : null;
+    const cross = crossSeries ? crossSeries[i] : null;
+
+    if (v == null) {
+      pack[i] = null;
+      rolling[i] = null;
+      reason[i] = 'source_missing';
+      status[i] = 'missing';
+      recoveryStreak = 0;
+      continue;
+    }
+
+    if (hhmm === '0000' && v === 0) {
+      accepted = 0;
+      acceptedIdx = i;
+      pendingSuspect = null;
+      afterReject = false;
+      recoveryStreak = 0;
+      pack[i] = 0;
+      rolling[i] = 0;
+      reason[i] = null;
+      status[i] = 'valid';
+      continue;
+    }
+
+    if (rejectMask.has(i)) {
+      pack[i] = null;
+      // Prefer missing for RN_24HR when no confirmed accepted (safer than inventing).
+      rolling[i] = accepted;
+      reason[i] = 'upwardSpikeRejected';
+      status[i] = 'rejected';
+      pendingSuspect = null;
+      afterReject = true;
+      recoveryStreak = 0;
+      continue;
+    }
+
+    if (accepted != null && v < accepted) {
+      pack[i] = null;
+      rolling[i] = accepted;
+      reason[i] = 'counterRegression';
+      status[i] = 'counterRegression';
+      recoveryStreak = 0;
+      pendingSuspect = null;
+      continue;
+    }
+
+    if (accepted == null) {
+      const cls0 = classifyRnDayIncrease(v, 0, 1, cross);
+      if (cls0.extremeCandidate) {
+        pendingSuspect = { value: v, idx: i };
+        pack[i] = v;
+        rolling[i] = v;
+        reason[i] = 'suspectRetained';
+        status[i] = 'suspect-retained';
+        continue;
+      }
+      accepted = v;
+      acceptedIdx = i;
+      pack[i] = v;
+      rolling[i] = v;
+      reason[i] = null;
+      status[i] = 'valid';
+      continue;
+    }
+
+    const elapsed = Math.max(1, i - acceptedIdx);
+    const cls = classifyRnDayIncrease(v, accepted, elapsed, cross);
+
+    if (pendingSuspect) {
+      if (!cls.extremeCandidate && cls.increase >= 0 && cls.increase <= RN_DAY_SPIKE_SOFT_JUMP) {
+        accepted = pendingSuspect.value;
+        acceptedIdx = pendingSuspect.idx;
+        pendingSuspect = null;
+      } else {
+        pendingSuspect = null;
+      }
+    }
+
+    // Extreme alone, or soft+cross contradiction → suspect-retained (Yeongdeok), not reject
+    if (cls.extremeCandidate || (cls.softCandidate && cls.crossContradiction)) {
+      pendingSuspect = { value: v, idx: i };
+      pack[i] = v;
+      rolling[i] = v;
+      reason[i] = 'suspectRetained';
+      status[i] = 'suspect-retained';
+      continue;
+    }
+
+    if (afterReject) {
+      recoveryStreak += 1;
+      if (recoveryStreak < RN_DAY_SPIKE_RECOVERY_STREAK) {
+        pack[i] = null;
+        rolling[i] = accepted;
+        reason[i] = 'spikeRecoveryPending';
+        status[i] = 'rejected';
+        continue;
+      }
+      afterReject = false;
+      recoveryStreak = 0;
+      accepted = v;
+      acceptedIdx = i;
+      pack[i] = v;
+      rolling[i] = v;
+      reason[i] = 'spikeRecovery';
+      status[i] = 'valid';
+      continue;
+    }
+
+    accepted = v;
+    acceptedIdx = i;
+    pendingSuspect = null;
+    pack[i] = v;
+    rolling[i] = v;
+    reason[i] = cls.softCandidate ? 'softCandidateAccepted' : null;
+    status[i] = 'valid';
+  }
+
+  return { pack, rolling, reason, status, rejectMask };
+}
+
+/**
+ * Regression-focused tracker for simple unit tests.
+ * Full spike safety uses qcRnDayStationSeries inside applyRnDayCounterRegression.
  */
 function createRnDayRunningMaxTracker() {
   let acceptedRnDay = null;
-  let acceptedFrameIndex = null;
   let hadRegression = false;
-  let spikeContamination = false;
-  let recoveryStreak = 0;
   return {
-    /**
-     * @param {number|null} scaled midnight-normalized scaled RN_DAY
-     * @param {{ frameIndex?: number, cross?: {rn15:number|null,rn60:number|null,rn12:number|null}, hhmm?: string }} [meta]
-     */
     push(scaled, meta = {}) {
-      const frameIndex = meta.frameIndex == null ? 0 : meta.frameIndex;
-      const cross = meta.cross || null;
-      const hhmm = meta.hhmm != null ? String(meta.hhmm) : null;
-
       if (scaled == null) {
-        recoveryStreak = 0;
-        return { packValue: null, forRolling: null, reason: 'source_missing', spikeEval: null };
+        return {
+          packValue: null,
+          forRolling: null,
+          reason: 'source_missing',
+          status: 'missing',
+          spikeEval: null
+        };
       }
-
-      // Normal KST midnight reset (already normalized to 0 for valid 00:00).
+      const hhmm = meta.hhmm != null ? String(meta.hhmm) : null;
       if (hhmm === '0000' && scaled === 0) {
         acceptedRnDay = 0;
-        acceptedFrameIndex = frameIndex;
-        spikeContamination = false;
-        recoveryStreak = 0;
-        return { packValue: 0, forRolling: 0, reason: null, spikeEval: null };
+        return { packValue: 0, forRolling: 0, reason: null, status: 'valid', spikeEval: null };
       }
-
       if (acceptedRnDay != null && scaled < acceptedRnDay) {
         hadRegression = true;
-        recoveryStreak = 0;
         return {
           packValue: null,
           forRolling: acceptedRnDay,
           reason: 'counterRegression',
+          status: 'counterRegression',
           spikeEval: null
         };
       }
-
-      // First valid sample of the KST day: do not treat absolute day-total as a 1-min rate.
-      // Only reject isolated multi-field equality glitches (북강릉-style).
-      if (acceptedRnDay == null) {
-        if (isMultiFieldEqualSpike(scaled, cross)) {
-          spikeContamination = true;
-          recoveryStreak = 0;
-          return {
-            packValue: null,
-            forRolling: null,
-            reason: 'upwardSpikeRejected',
-            spikeEval: {
-              spike: true,
-              candidate: true,
-              rejected: true,
-              reason: 'multi_field_equal',
-              ratePerMinute: scaled,
-              increase: scaled,
-              elapsedMinutes: 1
-            }
-          };
-        }
-        acceptedRnDay = scaled;
-        acceptedFrameIndex = frameIndex;
-        recoveryStreak = 0;
-        return { packValue: scaled, forRolling: scaled, reason: null, spikeEval: null };
-      }
-
-      const elapsed = Math.max(1, frameIndex - acceptedFrameIndex);
-      const spikeEval = evaluateRnDayUpwardSpike(scaled, acceptedRnDay, elapsed, cross);
-
-      if (spikeEval.rejected) {
-        spikeContamination = true;
-        recoveryStreak = 0;
-        return {
-          packValue: null,
-          forRolling: acceptedRnDay,
-          reason: 'upwardSpikeRejected',
-          spikeEval
-        };
-      }
-
-      if (spikeContamination) {
-        // No accepted lock yet: first non-spike sample becomes accepted immediately
-        // (e.g. isolated multi-equal spike then return to 0).
-        if (acceptedRnDay == null) {
-          spikeContamination = false;
-          recoveryStreak = 0;
-          acceptedRnDay = scaled;
-          acceptedFrameIndex = frameIndex;
-          return {
-            packValue: scaled,
-            forRolling: scaled,
-            reason: 'spikeRecovery',
-            spikeEval
-          };
-        }
-        recoveryStreak += 1;
-        if (recoveryStreak < RN_DAY_SPIKE_RECOVERY_STREAK) {
-          return {
-            packValue: null,
-            forRolling: acceptedRnDay,
-            reason: 'spikeRecoveryPending',
-            spikeEval
-          };
-        }
-        spikeContamination = false;
-        recoveryStreak = 0;
-        acceptedRnDay = scaled;
-        acceptedFrameIndex = frameIndex;
-        return {
-          packValue: scaled,
-          forRolling: scaled,
-          reason: 'spikeRecovery',
-          spikeEval
-        };
-      }
-
+      const spikeEval = evaluateRnDayUpwardSpike(scaled, acceptedRnDay, 1, meta.cross || null);
       acceptedRnDay = scaled;
-      acceptedFrameIndex = frameIndex;
-      recoveryStreak = 0;
       return {
         packValue: scaled,
         forRolling: scaled,
-        reason: spikeEval.candidate ? 'upwardSpikeCandidateAccepted' : null,
+        reason: spikeEval.candidate ? 'softCandidateAccepted' : null,
+        status: spikeEval.extremeCandidate ? 'suspect-retained' : 'valid',
         spikeEval
       };
     },
@@ -911,9 +1022,6 @@ function createRnDayRunningMaxTracker() {
     },
     get hadRegression() {
       return hadRegression;
-    },
-    get spikeContamination() {
-      return spikeContamination;
     }
   };
 }
@@ -927,11 +1035,14 @@ function emptyRnDayRegressionStats() {
     upwardSpikeCandidateSampleCount: 0,
     upwardSpikeRejectedSampleCount: 0,
     upwardSpikeStationCount: 0,
+    extremeCandidateSampleCount: 0,
+    suspectRetainedSampleCount: 0,
     spikeRecoverySampleCount: 0,
     byReason: {
       counterRegression: 0,
       sourceMissing: 0,
       upwardSpikeRejected: 0,
+      suspectRetained: 0,
       spikeRecoveryPending: 0,
       spikeRecovery: 0
     }
@@ -939,10 +1050,7 @@ function emptyRnDayRegressionStats() {
 }
 
 /**
- * Apply RN_DAY QC (spike then regression) to midnight-normalized grids.
- * @param {Array<number|null>} scaledGrid
- * @param {Array<object|null>|null} crossGrid parallel {rn15,rn60,rn12} or null entries
- * @param {string[]} timestamps
+ * Apply RN_DAY QC (offline multi-signal spike → regression) to midnight-normalized grids.
  */
 function applyRnDayCounterRegression(scaledGrid, frameCount, stationCount, options = {}) {
   const crossGrid = options.crossGrid || null;
@@ -950,50 +1058,64 @@ function applyRnDayCounterRegression(scaledGrid, frameCount, stationCount, optio
   const packGrid = new Array(frameCount * stationCount);
   const rollingGrid = new Array(frameCount * stationCount);
   const reasonGrid = new Array(frameCount * stationCount);
+  const statusGrid = new Array(frameCount * stationCount);
   const stats = emptyRnDayRegressionStats();
   const stationHadRegression = new Uint8Array(stationCount);
   const stationHadSpike = new Uint8Array(stationCount);
 
   for (let si = 0; si < stationCount; si++) {
-    const tracker = createRnDayRunningMaxTracker();
+    const scaledSeries = new Array(frameCount);
+    const crossSeries = new Array(frameCount);
+    const hhmmSeries = new Array(frameCount);
     for (let fi = 0; fi < frameCount; fi++) {
       const idx = fi * stationCount + si;
-      const hhmm = timestamps ? timestamps[fi].slice(8, 12) : null;
-      const cross = crossGrid ? crossGrid[idx] : null;
-      const result = tracker.push(scaledGrid[idx], { frameIndex: fi, cross, hhmm });
-      packGrid[idx] = result.packValue;
-      rollingGrid[idx] = result.forRolling;
-      reasonGrid[idx] = result.reason;
+      scaledSeries[fi] = scaledGrid[idx];
+      crossSeries[fi] = crossGrid ? crossGrid[idx] : null;
+      hhmmSeries[fi] = timestamps ? timestamps[fi].slice(8, 12) : null;
+    }
 
-      if (result.spikeEval && result.spikeEval.candidate) {
-        stats.upwardSpikeCandidateSampleCount += 1;
-      }
+    const qc = qcRnDayStationSeries(scaledSeries, crossSeries, hhmmSeries);
+    for (let fi = 0; fi < frameCount; fi++) {
+      const idx = fi * stationCount + si;
+      packGrid[idx] = qc.pack[fi];
+      rollingGrid[idx] = qc.rolling[fi];
+      reasonGrid[idx] = qc.reason[fi];
+      statusGrid[idx] = qc.status[fi];
 
-      if (result.reason === 'counterRegression') {
+      const st = qc.status[fi];
+      const rs = qc.reason[fi];
+      if (st === 'missing' || rs === 'source_missing') {
+        stats.sourceMissingSampleCount += 1;
+        stats.byReason.sourceMissing += 1;
+      } else if (rs === 'counterRegression') {
         stats.regressionSampleCount += 1;
         stats.counterRegressionFilledSampleCount += 1;
         stats.byReason.counterRegression += 1;
         stationHadRegression[si] = 1;
-      } else if (result.reason === 'source_missing') {
-        stats.sourceMissingSampleCount += 1;
-        stats.byReason.sourceMissing += 1;
-      } else if (result.reason === 'upwardSpikeRejected') {
+      } else if (st === 'rejected' || rs === 'upwardSpikeRejected') {
         stats.upwardSpikeRejectedSampleCount += 1;
         stats.byReason.upwardSpikeRejected += 1;
         stationHadSpike[si] = 1;
-      } else if (result.reason === 'spikeRecoveryPending') {
+      } else if (st === 'suspect-retained' || rs === 'suspectRetained') {
+        stats.suspectRetainedSampleCount += 1;
+        stats.extremeCandidateSampleCount += 1;
+        stats.upwardSpikeCandidateSampleCount += 1;
+        stats.byReason.suspectRetained += 1;
+      } else if (rs === 'spikeRecoveryPending') {
         stats.byReason.spikeRecoveryPending += 1;
         stationHadSpike[si] = 1;
-      } else if (result.reason === 'spikeRecovery') {
+      } else if (rs === 'spikeRecovery') {
         stats.spikeRecoverySampleCount += 1;
         stats.byReason.spikeRecovery += 1;
+      } else if (rs === 'softCandidateAccepted') {
+        stats.upwardSpikeCandidateSampleCount += 1;
       }
     }
     if (stationHadRegression[si]) stats.regressionStationCount += 1;
     if (stationHadSpike[si]) stats.upwardSpikeStationCount += 1;
   }
 
-  return { packGrid, rollingGrid, reasonGrid, stats };
+  return { packGrid, rollingGrid, reasonGrid, statusGrid, stats };
 }
 
 /**
@@ -1031,7 +1153,7 @@ function buildQcRnDayScaledGrid(frames, timestamps, stationIds) {
     }
   }
 
-  const { packGrid, rollingGrid, reasonGrid, stats: regression } = applyRnDayCounterRegression(
+  const { packGrid, rollingGrid, reasonGrid, statusGrid, stats: regression } = applyRnDayCounterRegression(
     scaledGrid,
     frameCount,
     stationCount,
@@ -1041,6 +1163,7 @@ function buildQcRnDayScaledGrid(frames, timestamps, stationIds) {
     packGrid,
     rollingGrid,
     reasonGrid,
+    statusGrid,
     scaledGrid: packGrid,
     midnightNormalizedCount,
     jsonPresentCount,
@@ -1548,10 +1671,14 @@ async function buildAwsVariablePack(awsJsonDir, fromKor, toKor, variable, option
         spec.derive === 'rolling24hFromDayCounters'
           ? rollingQc.counterRegressionFilledSampleCount
           : rnDayRegression.counterRegressionFilledSampleCount,
+      extremeCandidateSampleCount: rnDayRegression.extremeCandidateSampleCount,
+      suspectRetainedSampleCount: rnDayRegression.suspectRetainedSampleCount,
       upwardSpikeCandidateSampleCount: rnDayRegression.upwardSpikeCandidateSampleCount,
       upwardSpikeRejectedSampleCount: rnDayRegression.upwardSpikeRejectedSampleCount,
+      upwardSpikeRejectedStationCount: rnDayRegression.upwardSpikeStationCount,
       upwardSpikeStationCount: rnDayRegression.upwardSpikeStationCount,
-      spikeRecoverySampleCount: rnDayRegression.spikeRecoverySampleCount
+      spikeRecoverySampleCount: rnDayRegression.spikeRecoverySampleCount,
+      recoverySampleCount: rnDayRegression.spikeRecoverySampleCount
     };
   }
 
@@ -1750,6 +1877,8 @@ module.exports = {
   createRnDayRunningMaxTracker,
   applyRnDayCounterRegression,
   evaluateRnDayUpwardSpike,
+  classifyRnDayIncrease,
+  qcRnDayStationSeries,
   readRainCrossScaled,
   deriveRolling24hScaled,
   prevYmd,

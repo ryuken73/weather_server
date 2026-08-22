@@ -226,8 +226,8 @@ NODE_ENV=production node kma_fetch/warm_aws_ta_pack.js --yesterday
 
 ## 1분 변수별 pack
 
-- Builder: `kma_fetch/utils/aws_min_pack.js` (`schemaVersion: 4`, `contractRevision: 6`)
-- RN_DAY 주간 역행 → pack missing; upward spike → pack missing + accepted 미갱신; RN_24HR은 last accepted (`counterRegressionFilledSampleCount` / `upwardSpikeContaminationPreventedSampleCount`). 우선 재워밍: `--from 20260820 --to 20260821 --variables RN_24HR,RN_DAY --force`
+- Builder: `kma_fetch/utils/aws_min_pack.js` (`schemaVersion: 4`, `contractRevision: 7`)
+- RN_DAY spike: extreme/soft는 후보, reject는 복수 신호만. `suspect-retained` 보존. 우선 재워밍: `--from 20260820 --to 20260821 --variables RN_24HR,RN_DAY --force` (안전성 수정 후)
 - 변수별 일파일: `TA, RN_15M, RN_60M, RN_12HR, RN_24HR, RN_DAY, WS_INS, WS, WD_INS, WD, HM, TD`. `variable=FULL` 없음. `RN_1HR`/`RN_6HR`/`RN_48HR`/`RN_YN` 제외
 - API: `GET /api/aws/min/pack?date=YYYYMMDD&variable=TA|RN_60M|RN_24HR|RN_DAY|WS_INS|...` (레거시 `from`/`to`, comma 복수)
 - `RN_24HR` rolling 생성 시 전일 JSON 필요. 없으면 `dependency-missing`

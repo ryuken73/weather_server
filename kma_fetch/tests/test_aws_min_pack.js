@@ -30,6 +30,7 @@ const {
   createRnDayRunningMaxTracker,
   applyRnDayCounterRegression,
   evaluateRnDayUpwardSpike,
+  qcRnDayStationSeries,
   PACK_SCHEMA_VERSION,
   PACK_CONTRACT_REVISION,
   PACK_VARIABLES,
@@ -114,13 +115,38 @@ async function main() {
   assert.strictEqual(tracker.push(null, { frameIndex: 4 }).reason, 'source_missing');
 
   const hard = evaluateRnDayUpwardSpike(1015, 0, 1, { rn15: 1015, rn60: 1015, rn12: 1015 });
-  assert.strictEqual(hard.rejected, true);
-  assert.strictEqual(hard.reason, 'hard_rate');
+  assert.strictEqual(hard.rejected, false);
+  assert.strictEqual(hard.extremeCandidate, true);
   const multi = evaluateRnDayUpwardSpike(310, 0, 5, { rn15: 310, rn60: 310, rn12: 310 });
-  assert.strictEqual(multi.rejected, true);
-  assert.strictEqual(multi.reason, 'multi_field_equal');
+  assert.strictEqual(multi.rejected, false);
   const okHeavy = evaluateRnDayUpwardSpike(50, 0, 1, { rn15: 50, rn60: 80, rn12: 100 });
   assert.strictEqual(okHeavy.rejected, false);
+
+  // Offline: mechanical repeat rejects 동래-style run; equality-only is valid
+  const dongrae = qcRnDayStationSeries(
+    [0, 1015, 2215, 3415, 4615, null, null, null, null, null, null, null, null, null, null, null],
+    null,
+    null
+  );
+  assert.strictEqual(dongrae.pack[0], 0);
+  assert.strictEqual(dongrae.status[1], 'rejected');
+  assert.strictEqual(dongrae.status[4], 'rejected');
+  const eqOnly = qcRnDayStationSeries([80], [{ rn15: 80, rn60: 80, rn12: 80 }], ['1200']);
+  assert.strictEqual(eqOnly.status[0], 'valid');
+  assert.strictEqual(eqOnly.pack[0], 80);
+  const extremeOk = qcRnDayStationSeries(
+    [0, 210, 220, 230, 240],
+    [
+      { rn15: 0, rn60: 0 },
+      { rn15: 210, rn60: 210 },
+      { rn15: 220, rn60: 220 },
+      { rn15: 230, rn60: 230 },
+      { rn15: 240, rn60: 240 }
+    ],
+    null
+  );
+  assert.notStrictEqual(extremeOk.status[1], 'rejected');
+  assert.ok(extremeOk.pack[1] === 210 || extremeOk.status[1] === 'suspect-retained' || extremeOk.status[1] === 'valid');
 
   const grid = [10, 0, 3, 12];
   const { packGrid, rollingGrid, stats: regStats } = applyRnDayCounterRegression(grid, 4, 1);
@@ -129,7 +155,7 @@ async function main() {
   assert.strictEqual(regStats.regressionSampleCount, 2);
   assert.strictEqual(regStats.counterRegressionFilledSampleCount, 2);
   assert.strictEqual(regStats.regressionStationCount, 1);
-  assert.strictEqual(PACK_CONTRACT_REVISION, 6);
+  assert.strictEqual(PACK_CONTRACT_REVISION, 7);
 
   assert.strictEqual(encodeRainToI16(0), 0);
   assert.strictEqual(encodeRainToI16(15), 15);
@@ -605,7 +631,7 @@ async function main() {
   const regDay = await buildAwsVariablePack(regRoot, '202608200701', '202608200801', 'RN_DAY', {
     catalog: regCatalog
   });
-  assert.strictEqual(regDay.manifest.contractRevision, 6);
+  assert.strictEqual(regDay.manifest.contractRevision, 7);
   assert.ok(regDay.manifest.qc.rnDayRegression.regressionSampleCount >= 3);
   assert.ok(regDay.manifest.qc.rnDayRegression.regressionStationCount >= 2);
   const rd = new Int16Array(regDay.binary.buffer, regDay.binary.byteOffset, regDay.binary.length / 2);
@@ -908,7 +934,52 @@ async function main() {
   const yIdx = new Map(yeong.manifest.stations.map((s, i) => [s.STN_ID, i]));
   const ysc = yeong.manifest.stationCount;
   assert.strictEqual(yd[0 * ysc + yIdx.get(277)], 4);
-  assert.strictEqual(yd[1 * ysc + yIdx.get(277)], MISSING_I16);
+  // 영덕: extreme+cross contradiction → suspect-retained (keep value), not hard reject
+  assert.strictEqual(yd[1 * ysc + yIdx.get(277)], 648);
+  assert.ok(yeong.manifest.qc.rnDayQc.suspectRetainedSampleCount >= 1);
+
+  // Fixture A: 21mm/min extreme with consistent follow-up — not rejected
+  const extremeRoot = path.join(tmp, 'aws-extreme-ok');
+  const extremeCat = { byId: new Map(), stations: [{ STN_ID: 1 }] };
+  await writeFrame(extremeRoot, '202608210000', [{ STN_ID: 1, RN_DAY: 0 }]);
+  await writeFrame(extremeRoot, '202608211000', [
+    { STN_ID: 1, RN_DAY: 0, RN_15M: 0, RN_60M: 0 }
+  ]);
+  await writeFrame(extremeRoot, '202608211001', [
+    { STN_ID: 1, RN_DAY: 210, RN_15M: 210, RN_60M: 210 }
+  ]);
+  await writeFrame(extremeRoot, '202608211002', [
+    { STN_ID: 1, RN_DAY: 220, RN_15M: 220, RN_60M: 220 }
+  ]);
+  await writeFrame(extremeRoot, '202608211003', [
+    { STN_ID: 1, RN_DAY: 230, RN_15M: 230, RN_60M: 230 }
+  ]);
+  await writeFrame(extremeRoot, '202608211004', [
+    { STN_ID: 1, RN_DAY: 240, RN_15M: 240, RN_60M: 240 }
+  ]);
+  const extremeDay = await buildAwsVariablePack(extremeRoot, '202608211000', '202608211004', 'RN_DAY', {
+    catalog: extremeCat
+  });
+  const ed = new Int16Array(
+    extremeDay.binary.buffer,
+    extremeDay.binary.byteOffset,
+    extremeDay.binary.length / 2
+  );
+  assert.notStrictEqual(ed[1], MISSING_I16);
+  assert.ok(ed[1] === 210);
+  assert.strictEqual(ed[4], 240);
+
+  // Fixture B: normal multi-field equality after dry spell
+  const eqRoot = path.join(tmp, 'aws-eq-ok');
+  await writeFrame(eqRoot, '202608210000', [{ STN_ID: 1, RN_DAY: 0 }]);
+  await writeFrame(eqRoot, '202608211200', [
+    { STN_ID: 1, RN_DAY: 80, RN_15M: 80, RN_60M: 80 }
+  ]);
+  const eqDay = await buildAwsVariablePack(eqRoot, '202608211200', '202608211200', 'RN_DAY', {
+    catalog: extremeCat
+  });
+  const eqv = new Int16Array(eqDay.binary.buffer, eqDay.binary.byteOffset, eqDay.binary.length / 2);
+  assert.strictEqual(eqv[0], 80);
 
   const spike24 = await buildAwsVariablePack(upwardSpikeRoot, '202608210923', '202608210927', 'RN_24HR', {
     catalog: spikeCatalog
