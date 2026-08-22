@@ -344,29 +344,8 @@ const convertKSTToGMTString = (dateString) => {
    */
   fastify.get('/api/aws/min/pack', async (request, reply) => {
     const { date, from, to, variable } = request.query;
-    const cacheburst = request.query.cacheburst;
     let fromKor = from;
     let toKor = to;
-    // #region agent log
-    fetch('http://127.0.0.1:7495/ingest/4e8f361a-c016-424c-8879-cfc9e033966f', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'f4be02' },
-      body: JSON.stringify({
-        sessionId: 'f4be02',
-        location: 'server.js:/api/aws/min/pack',
-        message: 'request',
-        data: {
-          date: date || null,
-          variable: variable || null,
-          cacheburst: cacheburst || null,
-          force: request.query.force || null,
-          heapUsed: process.memoryUsage().heapUsed
-        },
-        hypothesisId: 'H1',
-        timestamp: Date.now()
-      })
-    }).catch(() => {});
-    // #endregion
     try {
       if (date) {
         const bounds = packDayBounds(date);

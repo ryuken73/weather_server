@@ -15,6 +15,7 @@ const {
   publishAwsTaPack,
   publishAwsVariablePack,
   warmAwsDayPack,
+  getOrBuildAwsVariablePack,
   encodeTaToI16,
   encodeRainToI16,
   encodeWindSpeedToI16,
@@ -762,6 +763,64 @@ async function main() {
   assert.ok(String(warmRn24.manifest.data.url).includes('rn_24hr_rolling'));
   assert.strictEqual(warmRn24.manifest.schemaVersion, PACK_SCHEMA_VERSION);
   assert.strictEqual(warmRn24.manifest.contractRevision, PACK_CONTRACT_REVISION);
+
+  const moBounds = packDayBounds('20260815');
+  const moRoot = path.join(tmp, 'pack-mo');
+  const moJson = path.join(tmp, 'aws-mo');
+  const moDayDir = path.join(moJson, '2026-08-15');
+  await fsp.mkdir(moDayDir, { recursive: true });
+  const moPayload = JSON.stringify([{ STN_ID: 1, TA: 200 }]);
+  for (let m = 0; m < 1440; m++) {
+    const hh = String(Math.floor(m / 60)).padStart(2, '0');
+    const mm = String(m % 60).padStart(2, '0');
+    await fsp.writeFile(
+      path.join(moDayDir, `AWS_MIN_20260815${hh}${mm}.json`),
+      moPayload,
+      'utf8'
+    );
+  }
+  const moBuilt = await buildAwsVariablePack(moJson, moBounds.from, moBounds.to, 'TA', {
+    catalog: { byId: new Map(), stations: [{ STN_ID: 1 }] }
+  });
+  assert.strictEqual(moBuilt.manifest.complete, true);
+  await publishAwsVariablePack(moRoot, moBuilt);
+  const manifestHit = await getOrBuildAwsVariablePack(
+    moJson,
+    moRoot,
+    moBounds.from,
+    moBounds.to,
+    'TA',
+    { manifestOnly: true }
+  );
+  assert.strictEqual(manifestHit.fromCache, true);
+  assert.strictEqual(manifestHit.manifest.datasetId, moBuilt.manifest.datasetId);
+
+  const coldBounds = packDayBounds('20990101');
+  await assert.rejects(
+    () =>
+      getOrBuildAwsVariablePack(
+        moJson,
+        moRoot,
+        coldBounds.from,
+        coldBounds.to,
+        'TA',
+        { manifestOnly: true }
+      ),
+    (err) => err.code === 'PACK_NOT_WARMED'
+  );
+
+  await assert.rejects(
+    () =>
+      getOrBuildAwsVariablePack(
+        warmJson,
+        warmRoot,
+        packDayBounds('20260814').from,
+        packDayBounds('20260814').to,
+        'RN_DAY',
+        { manifestOnly: true }
+      ),
+    (err) => err.code === 'PACK_STALE'
+  );
 
   const emptyTd = await buildAwsVariablePack(warmJson, '202608141000', '202608141000', 'TD', {
     catalog: { byId: new Map(), stations: [{ STN_ID: 1 }] }

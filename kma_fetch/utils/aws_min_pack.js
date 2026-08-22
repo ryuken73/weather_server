@@ -54,24 +54,6 @@ const RN_24HR_SUBSTITUTION_MAX_MINUTES = 30;
 /** Coalesce concurrent pack builds for the same day+variable (API force / warm). */
 const packBuildInFlight = new Map();
 
-function debugAgentLog(location, message, data, hypothesisId) {
-  // #region agent log
-  fetch('http://127.0.0.1:7495/ingest/4e8f361a-c016-424c-8879-cfc9e033966f', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'f4be02' },
-    body: JSON.stringify({
-      sessionId: 'f4be02',
-      location,
-      message,
-      data,
-      hypothesisId,
-      timestamp: Date.now(),
-      heapUsed: process.memoryUsage().heapUsed
-    })
-  }).catch(() => {});
-  // #endregion
-}
-
 /**
  * Hub nph-aws2_min: 물리기온 ≤ -50℃ 결측.
  * JSON/MSSQL TA는 ×10 정수. DB 관례 sentinel `-999`(= -99.9℃)도 결측.
@@ -2337,15 +2319,6 @@ async function getOrBuildAwsVariablePack(awsJsonDir, packRoot, fromKor, toKor, v
   const isToday = from.slice(0, 8) === todayYmd || to.slice(0, 8) === todayYmd;
   const flightKey = `${dayKey}:${name}`;
 
-  debugAgentLog('aws_min_pack.js:getOrBuildAwsVariablePack', 'enter', {
-    dayKey,
-    variable: name,
-    force,
-    manifestOnly,
-    isToday,
-    inFlightSize: packBuildInFlight.size
-  }, 'H2');
-
   const tryReturnCached = async (allowIncomplete) => {
     const cached = await loadCachedManifest(packRoot, dayKey, name);
     if (!cached) return null;
@@ -2358,20 +2331,10 @@ async function getOrBuildAwsVariablePack(awsJsonDir, packRoot, fromKor, toKor, v
     if (!isToday && isFullPastDay(from, to)) {
       const cached = await tryReturnCached(false);
       if (cached) {
-        debugAgentLog('aws_min_pack.js:getOrBuildAwsVariablePack', 'disk-hit-reusable', {
-          dayKey,
-          variable: name,
-          datasetId: cached.datasetId
-        }, 'H2');
         return { manifest: cached, fromCache: true, variable: name };
       }
       if (manifestOnly) {
         const stale = await loadCachedManifest(packRoot, dayKey, name);
-        debugAgentLog('aws_min_pack.js:getOrBuildAwsVariablePack', 'manifest-only-miss', {
-          dayKey,
-          variable: name,
-          hadManifest: Boolean(stale)
-        }, 'H2');
         const err = new Error(
           stale
             ? `Pack manifest stale or incomplete for ${dayKey} ${name}. Run warm_aws_min_packs.js --force.`
@@ -2385,11 +2348,6 @@ async function getOrBuildAwsVariablePack(awsJsonDir, packRoot, fromKor, toKor, v
     } else if (manifestOnly) {
       const cached = await tryReturnCached(isToday);
       if (cached) {
-        debugAgentLog('aws_min_pack.js:getOrBuildAwsVariablePack', 'disk-hit-today-or-partial', {
-          dayKey,
-          variable: name,
-          complete: cached.complete
-        }, 'H2');
         return { manifest: cached, fromCache: true, variable: name };
       }
       const err = new Error(`Pack not available for ${dayKey} ${name}. Warm required.`);
@@ -2401,29 +2359,13 @@ async function getOrBuildAwsVariablePack(awsJsonDir, packRoot, fromKor, toKor, v
   }
 
   if (packBuildInFlight.has(flightKey)) {
-    debugAgentLog('aws_min_pack.js:getOrBuildAwsVariablePack', 'single-flight-wait', {
-      dayKey,
-      variable: name
-    }, 'H3');
     return packBuildInFlight.get(flightKey);
   }
 
   const buildPromise = (async () => {
-    const t0 = Date.now();
-    debugAgentLog('aws_min_pack.js:getOrBuildAwsVariablePack', 'build-start', {
-      dayKey,
-      variable: name,
-      force
-    }, 'H2');
     try {
       const built = await buildAwsVariablePack(awsJsonDir, from, to, name, options);
       await publishAwsVariablePack(packRoot, built);
-      debugAgentLog('aws_min_pack.js:getOrBuildAwsVariablePack', 'build-done', {
-        dayKey,
-        variable: name,
-        ms: Date.now() - t0,
-        byteLength: built.binary && built.binary.length
-      }, 'H5');
       return { manifest: built.manifest, fromCache: false, variable: name };
     } finally {
       packBuildInFlight.delete(flightKey);
