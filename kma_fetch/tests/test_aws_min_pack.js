@@ -737,6 +737,27 @@ async function main() {
   const ldIdx = new Map(legacyDay.manifest.stations.map((s, i) => [s.STN_ID, i]));
   assert.strictEqual(ld[ldIdx.get(1)], 100);
 
+  const cleanRnRoot = path.join(tmp, 'aws-clean-rn');
+  await writeFrame(cleanRnRoot, '202607101200', [{ STN_ID: 1, RN_DAY: 80, RN_15M: 80, RN_60M: 80 }]);
+  const cleanRnDay = await buildAwsVariablePack(cleanRnRoot, '202607101200', '202607101200', 'RN_DAY', {
+    catalog: { byId: new Map(), stations: [{ STN_ID: 1 }] }
+  });
+  assert.ok(cleanRnDay.manifest.qcDetailUrl);
+  assert.ok(String(cleanRnDay.manifest.qcDetailUrl).includes('qc-v'));
+  assert.ok(cleanRnDay.manifest.qcDetailSha256);
+  assert.deepStrictEqual(cleanRnDay.manifest.qc.qcStates, {
+    suspectRetainedSampleCount: 0,
+    rejectedSampleCount: 0,
+    substitutedSampleCount: 0,
+    substitutionExpiredSampleCount: 0,
+    recordCount: 0
+  });
+  assert.strictEqual(cleanRnDay.qcDetail.records.length, 0);
+  const cleanPub = await publishAwsVariablePack(path.join(tmp, 'pack-clean-rn'), cleanRnDay);
+  assert.ok(await fsp.stat(cleanPub.qcDetailPath));
+  const cleanQcBytes = await fsp.readFile(cleanPub.qcDetailPath, 'utf8');
+  assert.strictEqual(crypto.createHash('sha256').update(cleanQcBytes, 'utf8').digest('hex'), cleanRnDay.manifest.qcDetailSha256);
+
   const warmRoot = path.join(tmp, 'pack-all');
   const warmJson = path.join(tmp, 'aws-warm');
   await writeFrame(warmJson, '202608141000', [
@@ -758,6 +779,11 @@ async function main() {
     assert.ok(item.manifest.sourceField, `${v} sourceField`);
     assert.ok(typeof item.manifest.validSampleCount === 'number', `${v} validSampleCount`);
     assert.ok(item.manifest.coverage && item.manifest.coverage.status, `${v} coverage`);
+    if (v === 'RN_DAY' || v === 'RN_24HR') {
+      assert.ok(item.manifest.qcDetailUrl, `${v} qcDetailUrl`);
+      assert.ok(item.manifest.qcDetailSha256, `${v} qcDetailSha256`);
+      assert.ok(item.manifest.qc && item.manifest.qc.qcStates, `${v} qc.qcStates`);
+    }
   }
   const warmRn24 = warmed.items.find((i) => i.variable === 'RN_24HR');
   assert.ok(String(warmRn24.manifest.data.url).includes('rn_24hr_rolling'));

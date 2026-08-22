@@ -483,6 +483,61 @@ function hashQcDetailJson(qcJson) {
   return crypto.createHash('sha256').update(qcJson, 'utf8').digest('hex');
 }
 
+function summarizeSparseQcStates(sparseQcRecords) {
+  const records = Array.isArray(sparseQcRecords) ? sparseQcRecords : [];
+  return {
+    suspectRetainedSampleCount: records.filter((r) => r.state === 'suspect-retained').length,
+    rejectedSampleCount: records.filter((r) => r.state === 'rejected').length,
+    substitutedSampleCount: records.filter((r) => r.state === 'substituted').length,
+    substitutionExpiredSampleCount: records.filter((r) => r.state === 'substitution-expired')
+      .length,
+    recordCount: records.length
+  };
+}
+
+/** contract v8: RN_DAY/RN_24HR always emit qc-v sidecar (records may be empty). */
+function buildRnSparseQcDetail({
+  manifest,
+  sparseQcRecords,
+  spec,
+  dayKey,
+  name,
+  from,
+  datasetId
+}) {
+  const records = Array.isArray(sparseQcRecords) ? sparseQcRecords : [];
+  const qcStates = summarizeSparseQcStates(records);
+  const qcBody = {
+    schemaVersion: 1,
+    contractRevision: PACK_CONTRACT_REVISION,
+    datasetId,
+    date: from.slice(0, 8),
+    variable: name,
+    generatedAt: manifest.generatedAt,
+    scale: 0.1,
+    unit: 'mm',
+    note:
+      'Sparse QC only: suspect-retained | rejected | substituted | substitution-expired. Lookup by (TM, STN_ID). rawValue=Int16×10, valueMm=rawValue*0.1',
+    qcStates,
+    records
+  };
+  const qcJson = serializeQcDetailJson(qcBody);
+  const qcSha256 = hashQcDetailJson(qcJson);
+  const qcFileName = packQcDetailFileName(qcSha256);
+  return {
+    qcStates,
+    qcUrl: packQcDetailUrl(spec, dayKey, qcSha256),
+    qcSha256,
+    qcFileName,
+    qcDetail: {
+      ...qcBody,
+      _publishJson: qcJson,
+      _publishFileName: qcFileName,
+      _publishAlsoAs: 'qc.json'
+    }
+  };
+}
+
 /**
  * `variable` query. 기본 TA. comma 복수(TA,RN_60M). FULL 불가.
  * @returns {string[]}
@@ -2100,55 +2155,21 @@ async function buildAwsVariablePack(awsJsonDir, fromKor, toKor, variable, option
       recoverySampleCount: rnDayRegression.spikeRecoverySampleCount
     };
   }
-  if (
-    (name === 'RN_DAY' || name === 'RN_24HR') &&
-    Array.isArray(sparseQcRecords) &&
-    sparseQcRecords.length > 0
-  ) {
-    const suspectRetainedSampleCount = sparseQcRecords.filter(
-      (r) => r.state === 'suspect-retained'
-    ).length;
-    const rejectedSampleCount = sparseQcRecords.filter((r) => r.state === 'rejected').length;
-    const substitutedSampleCount = sparseQcRecords.filter((r) => r.state === 'substituted').length;
-    const substitutionExpiredSampleCount = sparseQcRecords.filter(
-      (r) => r.state === 'substitution-expired'
-    ).length;
-    const qcStates = {
-      suspectRetainedSampleCount,
-      rejectedSampleCount,
-      substitutedSampleCount,
-      substitutionExpiredSampleCount,
-      recordCount: sparseQcRecords.length
-    };
-    // Hash the exact bytes that will be written to disk (no in-file sha256 field).
-    const qcBody = {
-      schemaVersion: 1,
-      contractRevision: PACK_CONTRACT_REVISION,
-      datasetId,
-      date: from.slice(0, 8),
-      variable: name,
-      generatedAt: manifest.generatedAt,
-      scale: 0.1,
-      unit: 'mm',
-      note:
-        'Sparse QC only: suspect-retained | rejected | substituted | substitution-expired. Lookup by (TM, STN_ID). rawValue=Int16×10, valueMm=rawValue*0.1',
-      qcStates,
-      records: sparseQcRecords
-    };
-    const qcJson = serializeQcDetailJson(qcBody);
-    const qcSha256 = hashQcDetailJson(qcJson);
-    const qcUrl = packQcDetailUrl(spec, dayKey, qcSha256);
-    const qcFileName = packQcDetailFileName(qcSha256);
-    manifest.qcDetailUrl = qcUrl;
-    manifest.qcDetailSha256 = qcSha256;
-    manifest.qcDetailFile = qcFileName;
-    manifest.qc.qcStates = qcStates;
-    qcDetail = {
-      ...qcBody,
-      _publishJson: qcJson,
-      _publishFileName: qcFileName,
-      _publishAlsoAs: 'qc.json'
-    };
+  if (name === 'RN_DAY' || name === 'RN_24HR') {
+    const rnQc = buildRnSparseQcDetail({
+      manifest,
+      sparseQcRecords,
+      spec,
+      dayKey,
+      name,
+      from,
+      datasetId
+    });
+    manifest.qcDetailUrl = rnQc.qcUrl;
+    manifest.qcDetailSha256 = rnQc.qcSha256;
+    manifest.qcDetailFile = rnQc.qcFileName;
+    manifest.qc.qcStates = rnQc.qcStates;
+    qcDetail = rnQc.qcDetail;
   }
 
   return {
