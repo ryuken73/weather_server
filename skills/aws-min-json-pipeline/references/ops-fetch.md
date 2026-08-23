@@ -15,7 +15,8 @@
 | `AWS_TA_QC_SPIKE_NEIGHBOR_MAX_DEGC` | 고립 스파이크: 양 이웃 허용 차 (기본 1.5℃) |
 | `AWS_TA_QC_SPIKE_MIN_DEGC` | 고립 스파이크: 가운데 vs 이웃 최소 차 (기본 2.5℃) |
 | `AWS_TODAY_PACK_REFRESH` | 오늘 전 변수 partial pack warm. 기본 on. `0`이면 off. legacy `AWS_TODAY_RAIN_PACK_REFRESH` fallback |
-| `AWS_TODAY_PACK_DEBOUNCE_MS` | 수집 hook debounce (ms). 기본 10000, 허용 5000~15000. 1분 scheduler는 즉시 실행 |
+| `AWS_TODAY_PACK_DEBOUNCE_MS` | 수집 hook debounce (ms). 기본 10000, 허용 5000~15000. scheduler는 즉시 실행 |
+| `AWS_TODAY_PACK_INTERVAL` | today pack scheduler 주기. 기본 `5min`. 허용 `1min`/`2min`/`5min`/`10min` |
 
 권장 운영(1분 + auto fallback):
 
@@ -131,7 +132,7 @@ NODE_ENV=production node kma_fetch/warm_aws_min_packs.js \
 
 ### D. 오늘 partial pack (Method B, registry, 자동)
 
-`main_AWS`가 매분 `warmTodayPacks`를 실행한다 (API rebuild 없음). 수집 tick은 debounce 후 동일 함수 호출.
+`main_AWS`가 **5분마다**(기본) scheduler + 수집 tick debounce로 `warmTodayPacks`를 실행한다 (API rebuild 없음). 기동 시 1회 immediate warm.
 
 - Registry: `TODAY_PACK_REGISTRY` — `TA`, 강수 5종, `WS_INS`/`WS`/`WD_INS`/`WD`/`HM`/`TD`
 - `RN_24HR`는 `RN_DAY` 이후 빌드 (`dependencies`)
@@ -206,7 +207,7 @@ USE_API=false NODE_ENV=production node kma_fetch/probe_aws_min_cadence.js --day 
 - `jsonData.length === 0` → `no data to save` 후 continue
 - 저장: `in_data/aws/{yyyy-MM-dd}/AWS_MIN_{tm}.json`
 - 저장 전 `patchAwsRowsForSave` (STN_NAME). `LAW_ADDR_*`는 디스크에 안 넣음
-- 매분 pack을 만들지 않음. 틱마다 **어제** 전 변수 pack 워밍 + **오늘** partial pack (debounce) + 1분 scheduler
+- 매분 pack을 만들지 않음. 틱마다 **어제** 전 변수 pack 워밍 + **오늘** partial pack (수집 debounce) + **5분** scheduler(백업) + 기동 1회 warm
 
 ## 일단위 backfill: `backfill_aws_min.js`
 

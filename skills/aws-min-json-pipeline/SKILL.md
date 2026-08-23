@@ -39,7 +39,7 @@ description: AWS_MIN station JSON 수집·누락 복구·과거 backfill·1분 �
 - Hub JSON: `RN-15m→RN_15M`, `RN-60m→RN_60M`(+호환 `RN_1HR` 별칭), `RN-12H→RN_12HR`, `RN-DAY→RN_DAY`(+legacy mirror `RN_24HR`), `WS1→WS`, `WSS→WS_INS`, `WD1→WD`, `WDS→WD_INS`, `HM`, `TD`. pack 이름은 `RN_1HR`를 쓰지 않음
 - Pack: 변수별 일파일 `TA, RN_15M, RN_60M, RN_12HR, RN_24HR, RN_DAY, WS_INS, WS, WD_INS, WD, HM, TD`. `FULL` 없음. backfill 후·어제 워밍. HTTP `variable` 기본 `TA`
 - HTTP: `GET /api/aws/min/pack?date=YYYYMMDD&variable=TA|RN_60M|RN_24HR|RN_DAY|...` → `/datasets/aws/{slug}/1m/{day}/{slug}-v{sha8}.i16le`
-- **오늘(KST) partial pack**: `main_AWS`가 **1분마다** `warmTodayPacks` (registry 기반 Method B). TA·강수·풍속·풍향·습도·이슬점 포함. API는 manifest-only (요청 경로 rebuild 금지)
+- **오늘(KST) partial pack**: `main_AWS`가 **5분마다** scheduler + 수집 hook debounce로 `warmTodayPacks` (registry 기반 Method B). TA·강수·풍속·풍향·습도·이슬점 포함. API는 manifest-only (요청 경로 rebuild 금지)
 - 임의 구간 JSON은 `/api/aws/min/range` (2분). 과거 완결일은 warm/`main_AWS` 어제 워밍으로 사전 생성
 - Gate0: `probe_aws_min_cadence.js` (홀수분). 배포 후 `main_AWS`+`server` 재기동; 과거 파일은 backfill/Hub 복사 별도.
 - 운영 체크리스트 상세: `references/ops-fetch.md`
@@ -50,7 +50,7 @@ description: AWS_MIN station JSON 수집·누락 복구·과거 backfill·1분 �
 
 | 항목 | 내용 |
 | --- | --- |
-| Trigger | `main_AWS` 1분 scheduler (즉시) + download tick (debounce 5~15초) |
+| Trigger | `main_AWS` **5분** scheduler (즉시, env로 변경 가능) + download tick (debounce 5~15초) |
 | Registry | `TODAY_PACK_REGISTRY` in `aws_min_pack.js` — `refreshToday`, `sourceFields`, `dependencies` |
 | 변수 | `TA`, `RN_15M`~`RN_DAY`, `RN_24HR`(RN_DAY 의존), `WS_INS`, `WS`, `WD_INS`, `WD`, `HM`, `TD` |
 | Lock | day+variables single-flight + 변수별 `getOrBuildAwsVariablePack` single-flight |
@@ -61,6 +61,7 @@ description: AWS_MIN station JSON 수집·누락 복구·과거 backfill·1분 �
 | API | `GET /api/aws/min/pack` = manifest-only. miss → `404 PACK_NOT_WARMED` / stale → `PACK_STALE` |
 | Disable | `AWS_TODAY_PACK_REFRESH=0` (legacy `AWS_TODAY_RAIN_PACK_REFRESH=0`) |
 | Debounce | `AWS_TODAY_PACK_DEBOUNCE_MS` (기본 10000, 5000~15000) — 수집 hook만 |
+| Scheduler | `AWS_TODAY_PACK_INTERVAL` (기본 `5min`, 허용 `1min`/`2min`/`5min`/`10min`) |
 
 코드: `warmTodayPacks`, `getTodayPackRefreshVariables` in `kma_fetch/utils/aws_min_pack.js`. rain-only alias: `warmTodayRainPacks`. Consumer: `docs/rainfall-consumer-today-pack-guide.md`.
 
@@ -99,7 +100,7 @@ node kma_fetch/warm_aws_min_packs.js \
 
 ## 관련 원천
 
-- 실시간: `kma_fetch/main_AWS.js` (어제 전변수 warm + **오늘 전 변수 1분 warm**)
+- 실시간: `kma_fetch/main_AWS.js` (어제 전변수 warm + **오늘 전 변수 5분 scheduler + 수집 debounce warm**)
 - Backfill: `kma_fetch/backfill_aws_min.js` (1440 slots/day, `--refresh-fields RN_12HR,TD` 는 Hub merge, 빈/부분 Hub로 덮어쓰지 않음)
 - Hub client: `kma_fetch/services/aws_apihub_min.js`
 - Pack: `kma_fetch/utils/aws_min_pack.js` (`warmTodayPacks`, `warmTodayRainPacks`, `warmAwsDayPack`), `kma_fetch/warm_aws_min_packs.js`

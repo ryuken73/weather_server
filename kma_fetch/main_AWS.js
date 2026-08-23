@@ -41,6 +41,16 @@ const TODAY_PACK_DEBOUNCE_MS = (() => {
   return Math.min(15000, Math.max(5000, raw));
 })();
 
+const TODAY_PACK_SCHEDULER_INTERVAL = (() => {
+  const allowed = new Set(['1min', '2min', '5min', '10min']);
+  const raw = String(process.env.AWS_TODAY_PACK_INTERVAL || '5min').trim();
+  if (!allowed.has(raw)) {
+    console.warn(`Invalid AWS_TODAY_PACK_INTERVAL=${raw}, using 5min`);
+    return '5min';
+  }
+  return raw;
+})();
+
 let todayPackDebounceTimer = null;
 
 function kstHourMinute() {
@@ -127,7 +137,7 @@ function runTodayPackWarm() {
     });
 }
 
-/** immediate=true: 1분 scheduler. false: 수집 hook debounce (5~15초). */
+/** immediate=true: scheduler tick / 기동 1회. false: 수집 hook debounce (5~15초). */
 function scheduleTodayPackWarm(immediate = false) {
   if (!TODAY_PACK_REFRESH_ENABLED) return;
 
@@ -318,12 +328,15 @@ downloadConfigs.forEach((config) => {
   schedule.scheduleTask(`${dataType}-${interval}`, interval, () => downloadLatestData(config));
 });
 
-// Method B: 1분마다 오늘 전 변수 partial pack 갱신 (download tick debounce와 병행)
+// Method B: 주기적으로 오늘 전 변수 partial pack 갱신 (수집 hook debounce와 병행)
 if (TODAY_PACK_REFRESH_ENABLED) {
   const refreshVars = getTodayPackRefreshVariables();
-  schedule.scheduleTask('AWS-TODAY-PACK', '1min', () => scheduleTodayPackWarm(true));
+  schedule.scheduleTask('AWS-TODAY-PACK', TODAY_PACK_SCHEDULER_INTERVAL, () =>
+    scheduleTodayPackWarm(true)
+  );
+  scheduleTodayPackWarm(true);
   console.log(
-    `Today pack refresh: enabled (1min debounce=${TODAY_PACK_DEBOUNCE_MS}ms on collect, ${refreshVars.length} vars)`
+    `Today pack refresh: enabled (scheduler=${TODAY_PACK_SCHEDULER_INTERVAL}, debounce=${TODAY_PACK_DEBOUNCE_MS}ms on collect, ${refreshVars.length} vars)`
   );
 } else {
   console.log('Today pack refresh: disabled (AWS_TODAY_PACK_REFRESH=0)');
