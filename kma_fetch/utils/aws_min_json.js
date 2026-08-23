@@ -76,6 +76,41 @@ function awsMinJsonPath(awsJsonDir, timestampKor) {
   );
 }
 
+const AWS_MIN_FILE_RE = /^AWS_MIN_(\d{12})\.json$/;
+
+/**
+ * KST 하루 폴더의 AWS_MIN_*.json 시각 목록 (오름차순).
+ * @returns {Promise<string[]>} YYYYMMDDHHmm[]
+ */
+async function listAwsMinTimestampsForDay(awsJsonDir, yyyymmdd) {
+  const day = String(yyyymmdd || '').replace(/-/g, '');
+  if (!/^\d{8}$/.test(day)) return [];
+  const folder = `${day.slice(0, 4)}-${day.slice(4, 6)}-${day.slice(6, 8)}`;
+  const dir = path.join(awsJsonDir, folder);
+  let names;
+  try {
+    names = await fs.readdir(dir);
+  } catch (err) {
+    if (err && err.code === 'ENOENT') return [];
+    throw err;
+  }
+  const out = [];
+  for (const name of names) {
+    const m = AWS_MIN_FILE_RE.exec(name);
+    if (!m) continue;
+    if (m[1].slice(0, 8) !== day) continue;
+    out.push(m[1]);
+  }
+  out.sort();
+  return out;
+}
+
+/** @returns {Promise<string|null>} 최신 YYYYMMDDHHmm 또는 null */
+async function latestAwsMinTimestampForDay(awsJsonDir, yyyymmdd) {
+  const list = await listAwsMinTimestampsForDay(awsJsonDir, yyyymmdd);
+  return list.length ? list[list.length - 1] : null;
+}
+
 function parseTimestampKor(timestampKor) {
   if (!/^\d{12}$/.test(timestampKor)) {
     const err = new Error(`Invalid timestamp format. Expected YYYYMMDDHHMM, got: ${timestampKor}`);
@@ -221,6 +256,8 @@ module.exports = {
   AWS_READ_CONCURRENCY,
   deriveAwsJsonDir,
   awsMinJsonPath,
+  listAwsMinTimestampsForDay,
+  latestAwsMinTimestampForDay,
   enumerateTimestamps,
   readAwsMinFile,
   readAwsMinFiles,

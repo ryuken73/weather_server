@@ -67,7 +67,9 @@ Pack binary: `out_data/aws/pack/` → `/datasets/aws/...` (env `AWS_PACK_DIR`).
 - Hub RN-DAY 00:00 잔여(전일 총량)는 pack에서 **0으로 정규화** (실제 reset은 보통 00:01). RN_24HR derive도 동일.
 - RN_DAY 날짜 중간 역행은 **missing** (`qc.rnDayRegression`). RN_24HR은 QC된 RN_DAY 사용.
 - Pack temporal QC는 **TA만**. 강수·바람·습도·이슬점은 프레임 간 보정 없음. `/exact`는 원천 유지
-- 생성: backfill 종료 후, `main_AWS`가 어제 워밍, 또는 `warm_aws_min_packs.js`. 오늘은 요청 시 재빌드
+- 생성: backfill 종료 후, `main_AWS`가 어제 전변수 워밍 + **오늘 강수 1분 워밍** (`warmTodayRainPacks`), 또는 `warm_aws_min_packs.js`
+- **오늘 pack**: `complete:false`, `to`=이용 가능 최신 1분, manifest `Cache-Control: no-store`. API는 manifest-only (요청 시 rebuild 없음). miss → `404 PACK_NOT_WARMED`
+- Consumer 오늘 강수: `docs/rainfall-consumer-today-pack-guide.md`
 - Binary URL도 동일 캐시 정책 (전용 route, ETag=sha256)
 - `400` (`FULL`·미지원 변수·date 누락) / `404` (원자료 전무) / `500`
 

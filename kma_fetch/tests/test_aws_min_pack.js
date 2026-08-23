@@ -15,6 +15,7 @@ const {
   publishAwsTaPack,
   publishAwsVariablePack,
   warmAwsDayPack,
+  warmTodayRainPacks,
   getOrBuildAwsVariablePack,
   encodeTaToI16,
   encodeRainToI16,
@@ -1272,6 +1273,63 @@ async function main() {
   });
   assert.ok(headers['Cache-Control'].includes('immutable'));
   assert.ok(headers.ETag);
+
+  // --- today rain pack refresh (Method B): truncate to latest source, skip if unchanged ---
+  const todayRainJson = path.join(tmp, 'aws-today-rain');
+  const todayRainPack = path.join(tmp, 'pack-today-rain');
+  const todayDay = '20260823';
+  const prevDay = '20260822';
+  await writeFrame(todayRainJson, `${prevDay}2359`, [{ STN_ID: 1, RN_DAY: 50 }]);
+  await writeFrame(todayRainJson, `${todayDay}0000`, [
+    { STN_ID: 1, RN_DAY: 0, RN_15M: 0, RN_60M: 0, RN_12HR: 0 }
+  ]);
+  await writeFrame(todayRainJson, `${todayDay}0010`, [
+    { STN_ID: 1, RN_DAY: 30, RN_15M: 10, RN_60M: 20, RN_12HR: 30 }
+  ]);
+  const todayCatalog = { byId: new Map(), stations: [{ STN_ID: 1 }] };
+  const todayFirst = await warmTodayRainPacks(todayRainJson, todayRainPack, {
+    dayKey: todayDay,
+    catalog: todayCatalog
+  });
+  assert.strictEqual(todayFirst.result, 'updated');
+  assert.strictEqual(todayFirst.publishedThrough, `${todayDay}0010`);
+  assert.strictEqual(todayFirst.sourceAvailableThrough, `${todayDay}0010`);
+  assert.strictEqual(todayFirst.items.length, 5);
+  assert.ok(todayFirst.items.every((i) => i.ok), JSON.stringify(todayFirst.items.filter((i) => !i.ok)));
+  for (const item of todayFirst.items) {
+    assert.strictEqual(item.manifest.complete, false);
+    assert.strictEqual(item.manifest.from, `${todayDay}0000`);
+    assert.strictEqual(item.manifest.to, `${todayDay}0010`);
+    assert.strictEqual(item.manifest.intervalMinutes, 1);
+  }
+  assert.ok(todayFirst.items.find((i) => i.variable === 'RN_DAY').manifest.qcDetailUrl);
+  assert.ok(todayFirst.items.find((i) => i.variable === 'RN_24HR').manifest.qcDetailUrl);
+
+  const todaySecond = await warmTodayRainPacks(todayRainJson, todayRainPack, {
+    dayKey: todayDay,
+    catalog: todayCatalog
+  });
+  assert.strictEqual(todaySecond.result, 'unchanged');
+  assert.strictEqual(todaySecond.reason, 'source-unchanged');
+
+  await writeFrame(todayRainJson, `${todayDay}0011`, [
+    { STN_ID: 1, RN_DAY: 31, RN_15M: 1, RN_60M: 21, RN_12HR: 31 }
+  ]);
+  const todayThird = await warmTodayRainPacks(todayRainJson, todayRainPack, {
+    dayKey: todayDay,
+    catalog: todayCatalog
+  });
+  assert.strictEqual(todayThird.result, 'updated');
+  assert.strictEqual(todayThird.publishedThrough, `${todayDay}0011`);
+  assert.ok(todayThird.items.every((i) => i.ok));
+  assert.strictEqual(todayThird.items[0].manifest.to, `${todayDay}0011`);
+
+  const [flightA, flightB] = await Promise.all([
+    warmTodayRainPacks(todayRainJson, todayRainPack, { dayKey: todayDay, catalog: todayCatalog }),
+    warmTodayRainPacks(todayRainJson, todayRainPack, { dayKey: todayDay, catalog: todayCatalog })
+  ]);
+  assert.strictEqual(flightA.result, 'unchanged');
+  assert.strictEqual(flightB.result, 'unchanged');
 
   console.log('OK test_aws_min_pack');
   await fsp.rm(tmp, { recursive: true, force: true });

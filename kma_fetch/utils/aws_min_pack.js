@@ -8,7 +8,8 @@ const path = require('path');
 const crypto = require('crypto');
 const {
   awsMinJsonPath,
-  enumerateTimestamps
+  enumerateTimestamps,
+  latestAwsMinTimestampForDay
 } = require('./aws_min_json');
 const { loadStationCatalog } = require('./aws_stn_catalog');
 const {
@@ -271,7 +272,23 @@ const REQUIRED_PACK_VARIABLES = Object.freeze([
   'RN_DAY',
   'WS_INS'
 ]);
+
+/** 오늘 KST 실시간 강수 pack (Method B scheduler). */
+const TODAY_RAIN_PACK_VARIABLES = Object.freeze([
+  'RN_15M',
+  'RN_60M',
+  'RN_12HR',
+  'RN_24HR',
+  'RN_DAY'
+]);
+
 const SUPPORTED_PACK_VARIABLES = Object.freeze(Object.keys(PACK_VARIABLES));
+const todayRainPackInFlight = new Map();
+
+function memUsageSnapshot() {
+  const m = process.memoryUsage();
+  return { rss: m.rss, heapUsed: m.heapUsed };
+}
 const EXCLUDED_PACK_ALIASES = Object.freeze({ RN_1HR: 'RN_60M' });
 const EXCLUDED_PACK_FIELDS = Object.freeze(['RN_6HR', 'RN_48HR', 'RN_YN']);
 const PACK_SLUG_TO_VARIABLE = Object.freeze(
@@ -2206,8 +2223,6 @@ async function publishAwsVariablePack(packRoot, built) {
 
   await fsp.writeFile(binTmp, binary);
   await fsp.rename(binTmp, binFinal);
-  await fsp.writeFile(manTmp, JSON.stringify(manifest, null, 2), 'utf8');
-  await fsp.rename(manTmp, manFinal);
 
   let qcDetailPath = null;
   if (qcDetail) {
@@ -2245,6 +2260,10 @@ async function publishAwsVariablePack(packRoot, built) {
     await fsp.writeFile(aliasTmp, json, 'utf8');
     await fsp.rename(aliasTmp, aliasFinal);
   }
+
+  // Manifest last: only points at fully published binary (+ QC when required).
+  await fsp.writeFile(manTmp, JSON.stringify(manifest, null, 2), 'utf8');
+  await fsp.rename(manTmp, manFinal);
 
   if (manifest.qcDetailUrl) {
     const expectedQc =
@@ -2444,6 +2463,158 @@ async function warmAwsDayPack(awsJsonDir, packRoot, yyyymmdd, options = {}) {
   };
 }
 
+async function todayRainPacksCoverThrough(packRoot, dayKey, variables, throughTm) {
+  for (const variable of variables) {
+    const cached = await loadCachedManifest(packRoot, dayKey, variable);
+    if (!cached) return false;
+    if (cached.contractRevision !== PACK_CONTRACT_REVISION) return false;
+    if (cached.schemaVersion !== PACK_SCHEMA_VERSION) return false;
+    if (String(cached.to) !== String(throughTm)) return false;
+    if (cached.complete === true) return false;
+    if ((variable === 'RN_DAY' || variable === 'RN_24HR') && !cached.qcDetailUrl) return false;
+  }
+  return true;
+}
+
+/**
+ * KST 오늘 강수 pack 주기 갱신 (Method B).
+ * - to = 디스크에 존재하는 최신 1분 JSON 시각 (미래 프레임 미포함)
+ * - 원천 미전진 시 unchanged
+ * - day 단위 single-flight
+ * - API 경로와 무관 (warm 전용)
+ */
+async function warmTodayRainPacks(awsJsonDir, packRoot, options = {}) {
+  const dayKey = options.dayKey || kstTodayYmd();
+  const variables = options.variables
+    ? parsePackVariables(
+        Array.isArray(options.variables) ? options.variables.join(',') : options.variables
+      )
+    : [...TODAY_RAIN_PACK_VARIABLES];
+  const force = options.force === true;
+  const flightKey = `today-rain:${dayKey}:${variables.join(',')}`;
+
+  if (todayRainPackInFlight.has(flightKey)) {
+    return todayRainPackInFlight.get(flightKey);
+  }
+
+  const run = (async () => {
+    const startedAt = new Date().toISOString();
+    const t0 = Date.now();
+    const rssBefore = memUsageSnapshot();
+    const sourceAvailableThrough = await latestAwsMinTimestampForDay(awsJsonDir, dayKey);
+
+    const baseStatus = {
+      date: dayKey,
+      variables,
+      sourceAvailableThrough,
+      publishedThrough: null,
+      startedAt,
+      finishedAt: null,
+      durationMs: 0,
+      rssBefore: rssBefore.rss,
+      rssAfter: null,
+      heapUsedBefore: rssBefore.heapUsed,
+      heapUsedAfter: null,
+      lockWaitMs: 0,
+      result: 'failed',
+      items: []
+    };
+
+    if (!sourceAvailableThrough) {
+      const rssAfter = memUsageSnapshot();
+      return {
+        ...baseStatus,
+        finishedAt: new Date().toISOString(),
+        durationMs: Date.now() - t0,
+        rssAfter: rssAfter.rss,
+        heapUsedAfter: rssAfter.heapUsed,
+        result: 'unchanged',
+        reason: 'no-source'
+      };
+    }
+
+    if (!force && (await todayRainPacksCoverThrough(packRoot, dayKey, variables, sourceAvailableThrough))) {
+      const rssAfter = memUsageSnapshot();
+      return {
+        ...baseStatus,
+        publishedThrough: sourceAvailableThrough,
+        finishedAt: new Date().toISOString(),
+        durationMs: Date.now() - t0,
+        rssAfter: rssAfter.rss,
+        heapUsedAfter: rssAfter.heapUsed,
+        result: 'unchanged',
+        reason: 'source-unchanged'
+      };
+    }
+
+    const from = `${dayKey}0000`;
+    const to = sourceAvailableThrough;
+    const items = [];
+    try {
+      for (const variable of variables) {
+        try {
+          const result = await getOrBuildAwsVariablePack(awsJsonDir, packRoot, from, to, variable, {
+            ...options,
+            force: true,
+            manifestOnly: false
+          });
+          items.push({
+            variable,
+            ok: true,
+            fromCache: result.fromCache,
+            complete: Boolean(result.manifest && result.manifest.complete),
+            to: result.manifest && result.manifest.to,
+            datasetId: result.manifest && result.manifest.datasetId,
+            manifest: result.manifest
+          });
+        } catch (err) {
+          items.push({
+            variable,
+            ok: false,
+            fromCache: false,
+            complete: false,
+            error: err,
+            message: err && err.message ? err.message : String(err),
+            code: err && err.code
+          });
+        }
+      }
+
+      const allOk = items.every((i) => i.ok);
+      const rssAfter = memUsageSnapshot();
+      return {
+        ...baseStatus,
+        publishedThrough: allOk ? to : null,
+        finishedAt: new Date().toISOString(),
+        durationMs: Date.now() - t0,
+        rssAfter: rssAfter.rss,
+        heapUsedAfter: rssAfter.heapUsed,
+        result: allOk ? 'updated' : 'failed',
+        items
+      };
+    } catch (err) {
+      const rssAfter = memUsageSnapshot();
+      return {
+        ...baseStatus,
+        finishedAt: new Date().toISOString(),
+        durationMs: Date.now() - t0,
+        rssAfter: rssAfter.rss,
+        heapUsedAfter: rssAfter.heapUsed,
+        result: 'failed',
+        error: err && err.message ? err.message : String(err),
+        items
+      };
+    }
+  })();
+
+  todayRainPackInFlight.set(flightKey, run);
+  try {
+    return await run;
+  } finally {
+    todayRainPackInFlight.delete(flightKey);
+  }
+}
+
 function isPackImmutableCacheable(manifest) {
   return (
     manifest &&
@@ -2474,6 +2645,7 @@ module.exports = {
   VARIABLE_TA,
   PACK_VARIABLES,
   REQUIRED_PACK_VARIABLES,
+  TODAY_RAIN_PACK_VARIABLES,
   SUPPORTED_PACK_VARIABLES,
   PACK_SLUG_TO_VARIABLE,
   TA_PHYSICAL_MISSING_MAX_C,
@@ -2516,6 +2688,7 @@ module.exports = {
   getOrBuildAwsVariablePack,
   getOrBuildAwsTaPack,
   warmAwsDayPack,
+  warmTodayRainPacks,
   parsePackVariables,
   parseTimestampKorStrict,
   packDayBounds,

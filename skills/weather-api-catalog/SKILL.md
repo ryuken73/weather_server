@@ -62,7 +62,9 @@ description: weather_api 서버가 노출하는 HTTP API 카탈로그(producer).
 | 한 시각 전 지점 JSON | `GET /api/aws/min?timestamp_kor=` (기본 2분 snap) |
 | pack 값 vs 원본 1분 대조 | `GET /api/aws/min/exact` 또는 `intervalMinutes=1` |
 
-일 pack은 서버가 어제/backfill 후 디스크에 만든다. 첫 요청 전에 워밍되면 바로 binary만 받는다. 오늘은 미완이라 요청 시 재빌드.
+일 pack은 서버가 어제/backfill 후 디스크에 만든다. 첫 요청 전에 워밍되면 바로 binary만 받는다.
+
+**오늘(KST) 강수** (`RN_15M`/`RN_60M`/`RN_12HR`/`RN_24HR`/`RN_DAY`)는 `main_AWS`가 **1분마다** pack을 갱신한다. API는 manifest만 반환하며 요청 경로에서 rebuild하지 않는다. `complete:false`, `to`=최신 원천 분, Cache-Control `no-store`. 상세: `docs/rainfall-consumer-today-pack-guide.md`.
 
 Pack binary 계약 (consumer):
 

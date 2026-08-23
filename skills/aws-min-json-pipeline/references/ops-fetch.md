@@ -14,6 +14,7 @@
 | `AWS_TA_QC_MAX_DELTA_DEGC` | 직전 유효 분 대비 최대 |ΔTA| (기본 3℃) |
 | `AWS_TA_QC_SPIKE_NEIGHBOR_MAX_DEGC` | 고립 스파이크: 양 이웃 허용 차 (기본 1.5℃) |
 | `AWS_TA_QC_SPIKE_MIN_DEGC` | 고립 스파이크: 가운데 vs 이웃 최소 차 (기본 2.5℃) |
+| `AWS_TODAY_RAIN_PACK_REFRESH` | 오늘 강수 pack 1분 warm. 기본 on. `0`이면 off |
 
 권장 운영(1분 + auto fallback):
 
@@ -126,6 +127,40 @@ NODE_ENV=production node kma_fetch/warm_aws_min_packs.js \
 ```
 
 `--refresh-fields`는 필드 coverage < 80%일 때만 Hub 값을 기존 JSON에 merge한다. `--force-refetch`는 통째 교체이며 빈/부분 Hub(< 기존 지점의 50%)는 거부한다.
+
+### D. 오늘 강수 pack (Method B, 자동)
+
+`main_AWS`가 매분 `warmTodayRainPacks`를 실행한다 (API rebuild 없음).
+
+- 대상: `RN_15M`, `RN_60M`, `RN_12HR`, `RN_24HR`, `RN_DAY`
+- `to` = 최신 `AWS_MIN_*.json` 시각, `complete:false`
+- 원천 미전진 → `unchanged` (재빌드 없음)
+- single-flight: 동일 날짜 중복 warm 방지
+- 끄기: `AWS_TODAY_RAIN_PACK_REFRESH=0`
+
+수동 1회:
+
+```bash
+NODE_ENV=production node -e "
+const path=require('path');
+const root=process.cwd();
+const { deriveAwsJsonDir } = require('./kma_fetch/utils/aws_min_json');
+const { deriveAwsPackDir, warmTodayRainPacks } = require('./kma_fetch/utils/aws_min_pack');
+warmTodayRainPacks(deriveAwsJsonDir(root), deriveAwsPackDir(root), { force:true })
+  .then((s)=>console.log(JSON.stringify(s,null,2)))
+  .catch((e)=>{ console.error(e); process.exit(1); });
+"
+```
+
+확인:
+
+```bash
+TODAY=$(TZ=Asia/Seoul date +%Y%m%d)
+for v in RN_15M RN_60M RN_12HR RN_24HR RN_DAY; do
+  curl -sS "https://weather-map.sbs.co.kr/api/aws/min/pack?date=$TODAY&variable=$v" \
+    | jq -c '{variable, complete, to, datasetId}'
+done
+```
 
 산출:
 
