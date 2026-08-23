@@ -15,7 +15,9 @@ const {
   publishAwsTaPack,
   publishAwsVariablePack,
   warmAwsDayPack,
+  warmTodayPacks,
   warmTodayRainPacks,
+  getTodayPackRefreshVariables,
   pruneUnreferencedPackArtifacts,
   getOrBuildAwsVariablePack,
   encodeTaToI16,
@@ -1666,6 +1668,98 @@ async function main() {
   ]);
   assert.strictEqual(flightA.result, 'unchanged');
   assert.strictEqual(flightB.result, 'unchanged');
+
+  // --- today all-variable pack refresh: TA + registry vars, RN_24HR after RN_DAY ---
+  const todayAllJson = path.join(tmp, 'aws-today-all');
+  const todayAllPack = path.join(tmp, 'pack-today-all');
+  await writeFrame(todayAllJson, `${prevDay}2359`, [{ STN_ID: 1, TA: 20, RN_DAY: 50 }]);
+  await writeFrame(todayAllJson, `${todayDay}0000`, [
+    {
+      STN_ID: 1,
+      TA: 25,
+      RN_DAY: 0,
+      RN_15M: 0,
+      RN_60M: 0,
+      RN_12HR: 0,
+      WS_INS: 1,
+      WS: 2,
+      WD_INS: 90,
+      WD: 180,
+      HM: 60,
+      TD: 15
+    }
+  ]);
+  await writeFrame(todayAllJson, `${todayDay}0010`, [
+    {
+      STN_ID: 1,
+      TA: 26,
+      RN_DAY: 30,
+      RN_15M: 10,
+      RN_60M: 20,
+      RN_12HR: 30,
+      WS_INS: 3,
+      WS: 4,
+      WD_INS: 100,
+      WD: 190,
+      HM: 65,
+      TD: 16
+    }
+  ]);
+  const refreshVars = getTodayPackRefreshVariables();
+  assert.ok(refreshVars.indexOf('RN_DAY') < refreshVars.indexOf('RN_24HR'));
+  const allFirst = await warmTodayPacks(todayAllJson, todayAllPack, {
+    dayKey: todayDay,
+    catalog: todayCatalog
+  });
+  assert.strictEqual(allFirst.result, 'updated');
+  assert.strictEqual(allFirst.publishedThrough, `${todayDay}0010`);
+  assert.strictEqual(allFirst.items.length, refreshVars.length);
+  assert.ok(allFirst.items.every((i) => i.ok), JSON.stringify(allFirst.items.filter((i) => !i.ok)));
+  const taItem = allFirst.items.find((i) => i.variable === 'TA');
+  assert.ok(taItem);
+  assert.strictEqual(taItem.manifest.complete, false);
+  assert.strictEqual(taItem.manifest.from, `${todayDay}0000`);
+  assert.strictEqual(taItem.manifest.to, `${todayDay}0010`);
+  assert.strictEqual(taItem.manifest.frameCount, 11);
+  const allSecond = await warmTodayPacks(todayAllJson, todayAllPack, {
+    dayKey: todayDay,
+    catalog: todayCatalog
+  });
+  assert.strictEqual(allSecond.result, 'unchanged');
+  assert.strictEqual(allSecond.reason, 'source-unchanged');
+
+  await writeFrame(todayAllJson, `${todayDay}0011`, [
+    {
+      STN_ID: 1,
+      TA: 27,
+      RN_DAY: 31,
+      RN_15M: 1,
+      RN_60M: 21,
+      RN_12HR: 31,
+      WS_INS: 3.1,
+      WS: 4.1,
+      WD_INS: 101,
+      WD: 191,
+      HM: 66,
+      TD: 16.1
+    }
+  ]);
+  const allThird = await warmTodayPacks(todayAllJson, todayAllPack, {
+    dayKey: todayDay,
+    catalog: todayCatalog
+  });
+  assert.strictEqual(allThird.result, 'updated');
+  assert.strictEqual(allThird.items.find((i) => i.variable === 'TA').manifest.to, `${todayDay}0011`);
+  assert.strictEqual(allThird.items.find((i) => i.variable === 'TA').manifest.frameCount, 12);
+
+  // warmTodayRainPacks remains rain-only subset (separate pack root)
+  const rainOnlyPack = path.join(tmp, 'pack-rain-only-subset');
+  const rainOnly = await warmTodayRainPacks(todayAllJson, rainOnlyPack, {
+    dayKey: todayDay,
+    catalog: todayCatalog
+  });
+  assert.strictEqual(rainOnly.items.length, 5);
+  assert.ok(rainOnly.items.every((i) => i.ok));
 
   // publish prune: superseded content-addressed binary/QC removed
   const pruneDir = path.join(tmp, 'pack-prune', 'rn_day', '1m', todayDay);

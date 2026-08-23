@@ -17,7 +17,8 @@ const {
 const {
   deriveAwsPackDir,
   warmAwsDayPack,
-  warmTodayRainPacks,
+  warmTodayPacks,
+  getTodayPackRefreshVariables,
   kstYmdDaysAgo,
   SUPPORTED_PACK_VARIABLES
 } = require('./utils/aws_min_pack');
@@ -29,9 +30,18 @@ const awsPackDir = deriveAwsPackDir(PROJECT_ROOT);
 let yesterdayPackWarmed = null;
 let yesterdayPackWarmInFlight = null;
 
-/** AWS_TODAY_RAIN_PACK_REFRESH=0 이면 오늘 강수 pack 주기 warm 비활성 */
-const TODAY_RAIN_PACK_REFRESH_ENABLED =
-  String(process.env.AWS_TODAY_RAIN_PACK_REFRESH || '1').trim() !== '0';
+/** AWS_TODAY_PACK_REFRESH=0 (또는 legacy AWS_TODAY_RAIN_PACK_REFRESH=0) 이면 오늘 pack 주기 warm 비활성 */
+const TODAY_PACK_REFRESH_ENABLED =
+  String(process.env.AWS_TODAY_PACK_REFRESH ?? process.env.AWS_TODAY_RAIN_PACK_REFRESH ?? '1').trim() !==
+  '0';
+
+const TODAY_PACK_DEBOUNCE_MS = (() => {
+  const raw = Number(process.env.AWS_TODAY_PACK_DEBOUNCE_MS || 10000);
+  if (!Number.isFinite(raw)) return 10000;
+  return Math.min(15000, Math.max(5000, raw));
+})();
+
+let todayPackDebounceTimer = null;
 
 function kstHourMinute() {
   const fmt = new Intl.DateTimeFormat('en-GB', {
@@ -87,34 +97,54 @@ function scheduleYesterdayPackWarm(catalog) {
   })();
 }
 
-function scheduleTodayRainPackWarm() {
-  if (!TODAY_RAIN_PACK_REFRESH_ENABLED) return;
-  // fire-and-forget; warmTodayRainPacks 내부 single-flight
-  warmTodayRainPacks(awsJsonDir, awsPackDir, {
+function logTodayPackWarmStatus(status) {
+  const itemSummary = (status.items || [])
+    .map((i) => `${i.variable}:${i.ok ? (i.fromCache ? 'cache' : 'built') : 'fail'}`)
+    .join(' ');
+  console.log(
+    'today packs',
+    status.date,
+    status.result,
+    status.publishedThrough || status.sourceAvailableThrough || '-',
+    `${status.durationMs}ms`,
+    `rss=${status.rssAfter}`,
+    itemSummary || status.reason || ''
+  );
+  for (const item of status.items || []) {
+    if (!item.ok) {
+      console.error('today pack FAILED', status.date, item.variable, item.message);
+    }
+  }
+}
+
+function runTodayPackWarm() {
+  return warmTodayPacks(awsJsonDir, awsPackDir, {
     catalog: loadStationCatalog()
   })
-    .then((status) => {
-      const itemSummary = (status.items || [])
-        .map((i) => `${i.variable}:${i.ok ? (i.fromCache ? 'cache' : 'built') : 'fail'}`)
-        .join(' ');
-      console.log(
-        'today rain packs',
-        status.date,
-        status.result,
-        status.publishedThrough || status.sourceAvailableThrough || '-',
-        `${status.durationMs}ms`,
-        `rss=${status.rssAfter}`,
-        itemSummary || status.reason || ''
-      );
-      for (const item of status.items || []) {
-        if (!item.ok) {
-          console.error('today rain pack FAILED', status.date, item.variable, item.message);
-        }
-      }
-    })
+    .then(logTodayPackWarmStatus)
     .catch((err) => {
-      console.error('today rain pack warm failed', err && err.message ? err.message : err);
+      console.error('today pack warm failed', err && err.message ? err.message : err);
     });
+}
+
+/** immediate=true: 1분 scheduler. false: 수집 hook debounce (5~15초). */
+function scheduleTodayPackWarm(immediate = false) {
+  if (!TODAY_PACK_REFRESH_ENABLED) return;
+
+  if (immediate) {
+    if (todayPackDebounceTimer) {
+      clearTimeout(todayPackDebounceTimer);
+      todayPackDebounceTimer = null;
+    }
+    runTodayPackWarm();
+    return;
+  }
+
+  if (todayPackDebounceTimer) clearTimeout(todayPackDebounceTimer);
+  todayPackDebounceTimer = setTimeout(() => {
+    todayPackDebounceTimer = null;
+    runTodayPackWarm();
+  }, TODAY_PACK_DEBOUNCE_MS);
 }
 
 const AWS_DATA_ROOT = 'in_data';
@@ -186,7 +216,7 @@ async function fetchRowsForTm(tm, pool, stnCatalog) {
 async function downloadLatestData(config) {
   const { subDirName, compressed, fileExt, getCandidate, candiateCount, candidateMinute } = config;
   scheduleYesterdayPackWarm(loadStationCatalog());
-  scheduleTodayRainPackWarm();
+  scheduleTodayPackWarm(false);
   try {
     const timeCandidatesRaw = getCandidate(candidateMinute, candiateCount);
     const [, , ...timeCandidates] = timeCandidatesRaw;
@@ -288,12 +318,15 @@ downloadConfigs.forEach((config) => {
   schedule.scheduleTask(`${dataType}-${interval}`, interval, () => downloadLatestData(config));
 });
 
-// Method B: 1분마다 오늘 강수 pack 갱신 (download tick과 독립 — 수집 실패해도 pack 재시도)
-if (TODAY_RAIN_PACK_REFRESH_ENABLED) {
-  schedule.scheduleTask('AWS-TODAY-RAIN-PACK', '1min', () => scheduleTodayRainPackWarm());
-  console.log('Today rain pack refresh: enabled (1min, RN_15M/RN_60M/RN_12HR/RN_24HR/RN_DAY)');
+// Method B: 1분마다 오늘 전 변수 partial pack 갱신 (download tick debounce와 병행)
+if (TODAY_PACK_REFRESH_ENABLED) {
+  const refreshVars = getTodayPackRefreshVariables();
+  schedule.scheduleTask('AWS-TODAY-PACK', '1min', () => scheduleTodayPackWarm(true));
+  console.log(
+    `Today pack refresh: enabled (1min debounce=${TODAY_PACK_DEBOUNCE_MS}ms on collect, ${refreshVars.length} vars)`
+  );
 } else {
-  console.log('Today rain pack refresh: disabled (AWS_TODAY_RAIN_PACK_REFRESH=0)');
+  console.log('Today pack refresh: disabled (AWS_TODAY_PACK_REFRESH=0)');
 }
 
 console.log('Watcher started. Waiting for scheduled tasks...');

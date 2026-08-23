@@ -278,7 +278,36 @@ const REQUIRED_PACK_VARIABLES = Object.freeze([
   'WS_INS'
 ]);
 
-/** 오늘 KST 실시간 강수 pack (Method B scheduler). */
+/**
+ * 오늘 KST partial pack 자동 갱신 registry.
+ * refreshToday=true 변수만 scheduler 대상. dependencies는 빌드 순서(선행)용.
+ */
+const TODAY_PACK_REGISTRY = Object.freeze([
+  { variable: 'TA', sourceFields: ['TA'], dependencies: [], refreshToday: true },
+  { variable: 'RN_15M', sourceFields: ['RN_15M'], dependencies: [], refreshToday: true },
+  { variable: 'RN_60M', sourceFields: ['RN_60M'], dependencies: [], refreshToday: true },
+  { variable: 'RN_12HR', sourceFields: ['RN_12HR'], dependencies: [], refreshToday: true },
+  { variable: 'RN_DAY', sourceFields: ['RN_DAY', 'RN_24HR'], dependencies: [], refreshToday: true },
+  {
+    variable: 'RN_24HR',
+    sourceFields: [],
+    dependencies: ['RN_DAY'],
+    refreshToday: true,
+    derived: true
+  },
+  { variable: 'WS_INS', sourceFields: ['WS_INS'], dependencies: [], refreshToday: true },
+  { variable: 'WS', sourceFields: ['WS'], dependencies: [], refreshToday: true },
+  { variable: 'WD_INS', sourceFields: ['WD_INS'], dependencies: [], refreshToday: true },
+  { variable: 'WD', sourceFields: ['WD'], dependencies: [], refreshToday: true },
+  { variable: 'HM', sourceFields: ['HM'], dependencies: [], refreshToday: true },
+  { variable: 'TD', sourceFields: ['TD'], dependencies: [], refreshToday: true }
+]);
+
+const TODAY_PACK_REGISTRY_BY_VARIABLE = Object.freeze(
+  Object.fromEntries(TODAY_PACK_REGISTRY.map((entry) => [entry.variable, entry]))
+);
+
+/** @deprecated use getTodayPackRefreshVariables(); rain-only subset for backward compat */
 const TODAY_RAIN_PACK_VARIABLES = Object.freeze([
   'RN_15M',
   'RN_60M',
@@ -288,7 +317,59 @@ const TODAY_RAIN_PACK_VARIABLES = Object.freeze([
 ]);
 
 const SUPPORTED_PACK_VARIABLES = Object.freeze(Object.keys(PACK_VARIABLES));
-const todayRainPackInFlight = new Map();
+const todayPackInFlight = new Map();
+
+function sortTodayPackVariablesTopologically(variables) {
+  const selected = [...new Set(variables)];
+  const sorted = [];
+  const visiting = new Set();
+  const visited = new Set();
+
+  function visit(variable) {
+    if (visited.has(variable)) return;
+    if (visiting.has(variable)) {
+      throw new Error(`Today pack dependency cycle at ${variable}`);
+    }
+    visiting.add(variable);
+    const entry = TODAY_PACK_REGISTRY_BY_VARIABLE[variable];
+    if (entry) {
+      for (const dep of entry.dependencies || []) {
+        if (selected.includes(dep)) visit(dep);
+      }
+    }
+    visiting.delete(variable);
+    visited.add(variable);
+    sorted.push(variable);
+  }
+
+  for (const variable of selected) visit(variable);
+  return sorted;
+}
+
+function getTodayPackRefreshVariables() {
+  const variables = TODAY_PACK_REGISTRY.filter((entry) => entry.refreshToday).map(
+    (entry) => entry.variable
+  );
+  return sortTodayPackVariablesTopologically(variables);
+}
+
+function resolveTodayPackRefreshVariables(input) {
+  const parsed = parsePackVariables(
+    Array.isArray(input) ? input.join(',') : input
+  );
+  const invalid = parsed.filter((name) => {
+    const entry = TODAY_PACK_REGISTRY_BY_VARIABLE[name];
+    return !entry || !entry.refreshToday;
+  });
+  if (invalid.length) {
+    const err = new Error(
+      `Unsupported today pack variable(s): ${invalid.join(', ')}. Refreshable: ${getTodayPackRefreshVariables().join(', ')}`
+    );
+    err.code = 'BAD_QUERY';
+    throw err;
+  }
+  return sortTodayPackVariablesTopologically(parsed);
+}
 
 function memUsageSnapshot() {
   const m = process.memoryUsage();
@@ -2936,13 +3017,18 @@ async function warmAwsDayPack(awsJsonDir, packRoot, yyyymmdd, options = {}) {
   };
 }
 
-async function todayRainPacksCoverThrough(packRoot, dayKey, variables, throughTm) {
+async function todayPacksCoverThrough(packRoot, dayKey, variables, throughTm) {
   for (const variable of variables) {
     const cached = await loadCachedManifest(packRoot, dayKey, variable);
     if (!cached) return false;
     if (cached.contractRevision !== PACK_CONTRACT_REVISION) return false;
     if (cached.schemaVersion !== PACK_SCHEMA_VERSION) return false;
-    if (cached.rnDayQcLogicRevision !== RN_DAY_QC_LOGIC_REVISION) return false;
+    if (
+      (variable === 'RN_DAY' || variable === 'RN_24HR') &&
+      cached.rnDayQcLogicRevision !== RN_DAY_QC_LOGIC_REVISION
+    ) {
+      return false;
+    }
     if (String(cached.to) !== String(throughTm)) return false;
     if (cached.complete === true) return false;
     if ((variable === 'RN_DAY' || variable === 'RN_24HR') && !cached.qcDetailUrl) return false;
@@ -2950,25 +3036,28 @@ async function todayRainPacksCoverThrough(packRoot, dayKey, variables, throughTm
   return true;
 }
 
+/** @deprecated alias */
+async function todayRainPacksCoverThrough(packRoot, dayKey, variables, throughTm) {
+  return todayPacksCoverThrough(packRoot, dayKey, variables, throughTm);
+}
+
 /**
- * KST 오늘 강수 pack 주기 갱신 (Method B).
+ * KST 오늘 partial pack 주기 갱신 (registry 기반 Method B).
  * - to = 디스크에 존재하는 최신 1분 JSON 시각 (미래 프레임 미포함)
  * - 원천 미전진 시 unchanged
- * - day 단위 single-flight
+ * - day+variables 단위 single-flight; 변수별 build는 getOrBuildAwsVariablePack single-flight
  * - API 경로와 무관 (warm 전용)
  */
-async function warmTodayRainPacks(awsJsonDir, packRoot, options = {}) {
+async function warmTodayPacks(awsJsonDir, packRoot, options = {}) {
   const dayKey = options.dayKey || kstTodayYmd();
   const variables = options.variables
-    ? parsePackVariables(
-        Array.isArray(options.variables) ? options.variables.join(',') : options.variables
-      )
-    : [...TODAY_RAIN_PACK_VARIABLES];
+    ? resolveTodayPackRefreshVariables(options.variables)
+    : getTodayPackRefreshVariables();
   const force = options.force === true;
-  const flightKey = `today-rain:${dayKey}:${variables.join(',')}`;
+  const flightKey = `today-pack:${dayKey}:${variables.join(',')}`;
 
-  if (todayRainPackInFlight.has(flightKey)) {
-    return todayRainPackInFlight.get(flightKey);
+  if (todayPackInFlight.has(flightKey)) {
+    return todayPackInFlight.get(flightKey);
   }
 
   const run = (async () => {
@@ -3007,7 +3096,7 @@ async function warmTodayRainPacks(awsJsonDir, packRoot, options = {}) {
       };
     }
 
-    if (!force && (await todayRainPacksCoverThrough(packRoot, dayKey, variables, sourceAvailableThrough))) {
+    if (!force && (await todayPacksCoverThrough(packRoot, dayKey, variables, sourceAvailableThrough))) {
       const rssAfter = memUsageSnapshot();
       return {
         ...baseStatus,
@@ -3081,12 +3170,20 @@ async function warmTodayRainPacks(awsJsonDir, packRoot, options = {}) {
     }
   })();
 
-  todayRainPackInFlight.set(flightKey, run);
+  todayPackInFlight.set(flightKey, run);
   try {
     return await run;
   } finally {
-    todayRainPackInFlight.delete(flightKey);
+    todayPackInFlight.delete(flightKey);
   }
+}
+
+/** @deprecated rain-only subset; use warmTodayPacks */
+async function warmTodayRainPacks(awsJsonDir, packRoot, options = {}) {
+  const variables = options.variables
+    ? resolveTodayPackRefreshVariables(options.variables)
+    : [...TODAY_RAIN_PACK_VARIABLES];
+  return warmTodayPacks(awsJsonDir, packRoot, { ...options, variables });
 }
 
 function isPackImmutableCacheable(manifest) {
@@ -3119,7 +3216,11 @@ module.exports = {
   VARIABLE_TA,
   PACK_VARIABLES,
   REQUIRED_PACK_VARIABLES,
+  TODAY_PACK_REGISTRY,
   TODAY_RAIN_PACK_VARIABLES,
+  getTodayPackRefreshVariables,
+  resolveTodayPackRefreshVariables,
+  sortTodayPackVariablesTopologically,
   SUPPORTED_PACK_VARIABLES,
   PACK_SLUG_TO_VARIABLE,
   TA_PHYSICAL_MISSING_MAX_C,
@@ -3172,7 +3273,9 @@ module.exports = {
   getOrBuildAwsVariablePack,
   getOrBuildAwsTaPack,
   warmAwsDayPack,
+  warmTodayPacks,
   warmTodayRainPacks,
+  todayPacksCoverThrough,
   parsePackVariables,
   parseTimestampKorStrict,
   packDayBounds,

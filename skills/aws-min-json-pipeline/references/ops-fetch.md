@@ -14,7 +14,8 @@
 | `AWS_TA_QC_MAX_DELTA_DEGC` | 직전 유효 분 대비 최대 |ΔTA| (기본 3℃) |
 | `AWS_TA_QC_SPIKE_NEIGHBOR_MAX_DEGC` | 고립 스파이크: 양 이웃 허용 차 (기본 1.5℃) |
 | `AWS_TA_QC_SPIKE_MIN_DEGC` | 고립 스파이크: 가운데 vs 이웃 최소 차 (기본 2.5℃) |
-| `AWS_TODAY_RAIN_PACK_REFRESH` | 오늘 강수 pack 1분 warm. 기본 on. `0`이면 off |
+| `AWS_TODAY_PACK_REFRESH` | 오늘 전 변수 partial pack warm. 기본 on. `0`이면 off. legacy `AWS_TODAY_RAIN_PACK_REFRESH` fallback |
+| `AWS_TODAY_PACK_DEBOUNCE_MS` | 수집 hook debounce (ms). 기본 10000, 허용 5000~15000. 1분 scheduler는 즉시 실행 |
 
 권장 운영(1분 + auto fallback):
 
@@ -128,15 +129,16 @@ NODE_ENV=production node kma_fetch/warm_aws_min_packs.js \
 
 `--refresh-fields`는 필드 coverage < 80%일 때만 Hub 값을 기존 JSON에 merge한다. `--force-refetch`는 통째 교체이며 빈/부분 Hub(< 기존 지점의 50%)는 거부한다.
 
-### D. 오늘 강수 pack (Method B, 자동)
+### D. 오늘 partial pack (Method B, registry, 자동)
 
-`main_AWS`가 매분 `warmTodayRainPacks`를 실행한다 (API rebuild 없음).
+`main_AWS`가 매분 `warmTodayPacks`를 실행한다 (API rebuild 없음). 수집 tick은 debounce 후 동일 함수 호출.
 
-- 대상: `RN_15M`, `RN_60M`, `RN_12HR`, `RN_24HR`, `RN_DAY`
+- Registry: `TODAY_PACK_REGISTRY` — `TA`, 강수 5종, `WS_INS`/`WS`/`WD_INS`/`WD`/`HM`/`TD`
+- `RN_24HR`는 `RN_DAY` 이후 빌드 (`dependencies`)
 - `to` = 최신 `AWS_MIN_*.json` 시각, `complete:false`
 - 원천 미전진 → `unchanged` (재빌드 없음)
-- single-flight: 동일 날짜 중복 warm 방지
-- 끄기: `AWS_TODAY_RAIN_PACK_REFRESH=0`
+- single-flight: day+variables + 변수별 build lock
+- 끄기: `AWS_TODAY_PACK_REFRESH=0`
 
 수동 1회:
 
@@ -145,8 +147,8 @@ NODE_ENV=production node -e "
 const path=require('path');
 const root=process.cwd();
 const { deriveAwsJsonDir } = require('./kma_fetch/utils/aws_min_json');
-const { deriveAwsPackDir, warmTodayRainPacks } = require('./kma_fetch/utils/aws_min_pack');
-warmTodayRainPacks(deriveAwsJsonDir(root), deriveAwsPackDir(root), { force:true })
+const { deriveAwsPackDir, warmTodayPacks } = require('./kma_fetch/utils/aws_min_pack');
+warmTodayPacks(deriveAwsJsonDir(root), deriveAwsPackDir(root), { force:true })
   .then((s)=>console.log(JSON.stringify(s,null,2)))
   .catch((e)=>{ console.error(e); process.exit(1); });
 "
@@ -156,9 +158,11 @@ warmTodayRainPacks(deriveAwsJsonDir(root), deriveAwsPackDir(root), { force:true 
 
 ```bash
 TODAY=$(TZ=Asia/Seoul date +%Y%m%d)
-for v in RN_15M RN_60M RN_12HR RN_24HR RN_DAY; do
+curl -sS "https://weather-map.sbs.co.kr/api/aws/min/pack?date=$TODAY&variable=TA" \
+  | jq -c '{variable, complete, to, frameCount, datasetId}'
+for v in RN_15M RN_60M RN_12HR RN_24HR RN_DAY WS_INS HM TD; do
   curl -sS "https://weather-map.sbs.co.kr/api/aws/min/pack?date=$TODAY&variable=$v" \
-    | jq -c '{variable, complete, to, datasetId}'
+    | jq -c '{variable, complete, to, frameCount, datasetId}'
 done
 ```
 
@@ -202,7 +206,7 @@ USE_API=false NODE_ENV=production node kma_fetch/probe_aws_min_cadence.js --day 
 - `jsonData.length === 0` → `no data to save` 후 continue
 - 저장: `in_data/aws/{yyyy-MM-dd}/AWS_MIN_{tm}.json`
 - 저장 전 `patchAwsRowsForSave` (STN_NAME). `LAW_ADDR_*`는 디스크에 안 넣음
-- 매분 pack을 만들지 않음. 틱마다 **어제** `0000–2359` TA pack을 한 번 워밍 (`warmAwsDayPack`)
+- 매분 pack을 만들지 않음. 틱마다 **어제** 전 변수 pack 워밍 + **오늘** partial pack (debounce) + 1분 scheduler
 
 ## 일단위 backfill: `backfill_aws_min.js`
 
