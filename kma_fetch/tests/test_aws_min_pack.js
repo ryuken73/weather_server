@@ -1293,6 +1293,28 @@ async function main() {
     assert.ok(iso574Repeat.signals[fi].includes('mechanical_repeat'));
   }
 
+  // Hub JSON: RN_DAY stays cumulative after spike; short-window fields reset to 0.
+  const iso574ProdJson = qcRnDayStationSeries(
+    [0, 245, 280, 0, 245, 280, 280, 245, 280],
+    [
+      { rn15: 0, rn60: 0, rn12: 0 },
+      { rn15: 245, rn60: 245, rn12: 245 },
+      { rn15: 0, rn60: 0, rn12: 0 },
+      { rn15: 0, rn60: 0, rn12: 0 },
+      { rn15: 245, rn60: 245, rn12: 245 },
+      { rn15: 0, rn60: 0, rn12: 0 },
+      { rn15: 0, rn60: 0, rn12: 0 },
+      { rn15: 245, rn60: 245, rn12: 245 },
+      { rn15: 0, rn60: 0, rn12: 0 }
+    ],
+    ['1050', '1051', '1052', '1055', '1056', '1057', '1132', '1133', '1134']
+  );
+  for (const fi of [1, 4, 7]) {
+    assert.strictEqual(iso574ProdJson.status[fi], 'rejected', `prod-json frame ${fi}`);
+    assert.ok(iso574ProdJson.signals[fi].includes('isolated_peak_reset'), `prod-json ${fi}`);
+    assert.ok(iso574ProdJson.signals[fi].includes('mechanical_repeat'), `prod-json ${fi}`);
+  }
+
   const stn574Root = path.join(tmp, 'aws-stn574');
   const stn574Cat = { byId: new Map(), stations: [{ STN_ID: 574 }] };
   await writeFrame(stn574Root, '202608230000', [
@@ -1331,16 +1353,113 @@ async function main() {
   await writeFrame(stn574Root, '202608222359', [{ STN_ID: 574, RN_DAY: 280 }]);
   await writeFrame(stn574Root, '202608221050', [{ STN_ID: 574, RN_DAY: 0 }]);
 
+  const stn574ProdRoot = path.join(tmp, 'aws-stn574-prodjson');
+  await writeFrame(stn574ProdRoot, '202608230000', [
+    { STN_ID: 574, RN_DAY: 0, RN_15M: 0, RN_60M: 0, RN_12HR: 0, RN_24HR: 280 }
+  ]);
+  await writeFrame(stn574ProdRoot, '202608231050', [
+    { STN_ID: 574, RN_DAY: 0, RN_15M: 0, RN_60M: 0, RN_12HR: 0, RN_24HR: 280 }
+  ]);
+  await writeFrame(stn574ProdRoot, '202608231051', [
+    { STN_ID: 574, RN_DAY: 245, RN_15M: 245, RN_60M: 245, RN_12HR: 245, RN_24HR: 280 }
+  ]);
+  await writeFrame(stn574ProdRoot, '202608231052', [
+    { STN_ID: 574, RN_DAY: 280, RN_15M: 0, RN_60M: 0, RN_12HR: 0, RN_24HR: 280 }
+  ]);
+  await writeFrame(stn574ProdRoot, '202608231055', [
+    { STN_ID: 574, RN_DAY: 0, RN_15M: 0, RN_60M: 0, RN_12HR: 0, RN_24HR: 280 }
+  ]);
+  await writeFrame(stn574ProdRoot, '202608231056', [
+    { STN_ID: 574, RN_DAY: 245, RN_15M: 245, RN_60M: 245, RN_12HR: 245, RN_24HR: 280 }
+  ]);
+  await writeFrame(stn574ProdRoot, '202608231057', [
+    { STN_ID: 574, RN_DAY: 280, RN_15M: 0, RN_60M: 0, RN_12HR: 0, RN_24HR: 280 }
+  ]);
+  await writeFrame(stn574ProdRoot, '202608231132', [
+    { STN_ID: 574, RN_DAY: 280, RN_15M: 0, RN_60M: 0, RN_12HR: 0, RN_24HR: 280 }
+  ]);
+  await writeFrame(stn574ProdRoot, '202608231133', [
+    { STN_ID: 574, RN_DAY: 245, RN_15M: 245, RN_60M: 245, RN_12HR: 245, RN_24HR: 280 }
+  ]);
+  await writeFrame(stn574ProdRoot, '202608231134', [
+    { STN_ID: 574, RN_DAY: 280, RN_15M: 0, RN_60M: 0, RN_12HR: 0, RN_24HR: 280 }
+  ]);
+  await writeFrame(stn574ProdRoot, '202608231448', [
+    { STN_ID: 574, RN_DAY: 280, RN_15M: 0, RN_60M: 0, RN_12HR: 0, RN_24HR: 280 }
+  ]);
+  await writeFrame(stn574ProdRoot, '202608231449', [
+    { STN_ID: 574, RN_DAY: 245, RN_15M: 245, RN_60M: 245, RN_12HR: 245, RN_24HR: 280 }
+  ]);
+  await writeFrame(stn574ProdRoot, '202608231450', [
+    { STN_ID: 574, RN_DAY: 280, RN_15M: 0, RN_60M: 0, RN_12HR: 0, RN_24HR: 280 }
+  ]);
+  await writeFrame(stn574ProdRoot, '202608222359', [{ STN_ID: 574, RN_DAY: 280 }]);
+  await writeFrame(stn574ProdRoot, '202608221050', [{ STN_ID: 574, RN_DAY: 0 }]);
+
+  const stn574ProdDay = await buildAwsVariablePack(
+    stn574ProdRoot,
+    '202608230000',
+    '202608231450',
+    'RN_DAY',
+    { catalog: stn574Cat }
+  );
+  const frameIdxFromMidnight = (manifest, hhmm) => {
+    assert.strictEqual(manifest.from.slice(8), '0000');
+    return Number(hhmm.slice(0, 2)) * 60 + Number(hhmm.slice(2, 4));
+  };
+  const s574ProdIdx = new Map(stn574ProdDay.manifest.stations.map((s, i) => [s.STN_ID, i]));
+  const sc574Prod = stn574ProdDay.manifest.stationCount;
+  const s574Prod = new Int16Array(
+    stn574ProdDay.binary.buffer,
+    stn574ProdDay.binary.byteOffset,
+    stn574ProdDay.binary.length / 2
+  );
+  const tm574Prod = (hhmm) =>
+    frameIdxFromMidnight(stn574ProdDay.manifest, hhmm) * sc574Prod + s574ProdIdx.get(574);
+  for (const hhmm of ['1051', '1056', '1133', '1449']) {
+    assert.strictEqual(s574Prod[tm574Prod(hhmm)], MISSING_I16, `prod-json RN_DAY ${hhmm}`);
+  }
+  const stn574Prod15 = await buildAwsVariablePack(
+    stn574ProdRoot,
+    '202608230000',
+    '202608231450',
+    'RN_15M',
+    { catalog: stn574Cat }
+  );
+  const s574Prod15 = new Int16Array(
+    stn574Prod15.binary.buffer,
+    stn574Prod15.binary.byteOffset,
+    stn574Prod15.binary.length / 2
+  );
+  const tm574Prod15 = (hhmm) =>
+    frameIdxFromMidnight(stn574Prod15.manifest, hhmm) * sc574Prod + s574ProdIdx.get(574);
+  for (const hhmm of ['1051', '1056', '1133', '1449']) {
+    assert.strictEqual(s574Prod15[tm574Prod15(hhmm)], 0, `prod-json RN_15M ${hhmm}`);
+  }
+  const stn574Prod24 = await buildAwsVariablePack(
+    stn574ProdRoot,
+    '202608230000',
+    '202608231450',
+    'RN_24HR',
+    { catalog: stn574Cat }
+  );
+  const s574Prod24 = new Int16Array(
+    stn574Prod24.binary.buffer,
+    stn574Prod24.binary.byteOffset,
+    stn574Prod24.binary.length / 2
+  );
+  const tm574Prod24 = (hhmm) =>
+    frameIdxFromMidnight(stn574Prod24.manifest, hhmm) * sc574Prod + s574ProdIdx.get(574);
+  for (const hhmm of ['1051', '1056', '1133', '1449']) {
+    assert.strictEqual(s574Prod24[tm574Prod24(hhmm)], 280, `prod-json RN_24HR ${hhmm}`);
+  }
+
   const stn574Day = await buildAwsVariablePack(stn574Root, '202608230000', '202608231450', 'RN_DAY', {
     catalog: stn574Cat
   });
   const s574 = new Int16Array(stn574Day.binary.buffer, stn574Day.binary.byteOffset, stn574Day.binary.length / 2);
   const s574Idx = new Map(stn574Day.manifest.stations.map((s, i) => [s.STN_ID, i]));
   const sc574 = stn574Day.manifest.stationCount;
-  const frameIdxFromMidnight = (manifest, hhmm) => {
-    assert.strictEqual(manifest.from.slice(8), '0000');
-    return Number(hhmm.slice(0, 2)) * 60 + Number(hhmm.slice(2, 4));
-  };
   const tm574 = (hhmm) => frameIdxFromMidnight(stn574Day.manifest, hhmm) * sc574 + s574Idx.get(574);
   for (const hhmm of ['1051', '1056', '1133', '1449']) {
     assert.strictEqual(s574[tm574(hhmm)], MISSING_I16, `RN_DAY ${hhmm}`);

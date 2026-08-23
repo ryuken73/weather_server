@@ -835,7 +835,7 @@ function isBaselineResetPeak(scaledSeries, prevIdx, i, nextIdx) {
  * Isolated peak then reset to baseline (0→spike→0 adjacent, or gap-separated 북강릉).
  * Equality alone is not sufficient — requires baseline reset or gap context.
  */
-function isIsolatedPeakResetIndex(scaledSeries, i) {
+function isIsolatedPeakResetIndex(scaledSeries, i, crossSeries) {
   const v = scaledSeries[i];
   if (v == null || v < RN_DAY_SPIKE_ISOLATED_PEAK_MIN) return false;
   const prev = prevNonNullIndex(scaledSeries, i - 1);
@@ -845,13 +845,14 @@ function isIsolatedPeakResetIndex(scaledSeries, i) {
       const gapAfter = next - i >= 2;
       if (!gapAfter) return false;
       const nv = scaledSeries[next];
-      return nv <= RN_DAY_EPISODE_LOW_MAX || nv <= v * 0.2;
+      if (nv <= RN_DAY_EPISODE_LOW_MAX || nv <= v * 0.2) return true;
+      return isCrossWindowPeakReset(scaledSeries, crossSeries, i);
     }
     if (next < 0 && prev >= 0) {
       const gapBefore = i - prev >= 2;
       if (gapBefore && countTrailingMissing(scaledSeries, i + 1) >= 1) return true;
     }
-    return false;
+    return isCrossWindowPeakReset(scaledSeries, crossSeries, i);
   }
 
   // Adjacent or baseline-only separators then immediate reset (대신 STN 574).
@@ -861,9 +862,9 @@ function isIsolatedPeakResetIndex(scaledSeries, i) {
   const gapAfter = next - i >= 2;
   if (gapBefore && gapAfter) {
     const nv = scaledSeries[next];
-    return nv <= RN_DAY_EPISODE_LOW_MAX || nv <= v * 0.2;
+    if (nv <= RN_DAY_EPISODE_LOW_MAX || nv <= v * 0.2) return true;
   }
-  return false;
+  return isCrossWindowPeakReset(scaledSeries, crossSeries, i);
 }
 
 function crossFieldsReplicatePeak(cross, peakScaled) {
@@ -871,6 +872,42 @@ function crossFieldsReplicatePeak(cross, peakScaled) {
   const fields = [cross.rn15, cross.rn60, cross.rn12].filter((x) => x != null);
   if (fields.length === 0) return true;
   return fields.every((f) => peakValuesMatch(f, peakScaled));
+}
+
+/** Short-window rain fields back to dry (RN_15M/RN_60M/RN_12HR). */
+function crossFieldsNearDry(cross) {
+  if (!cross) return false;
+  const fields = [cross.rn15, cross.rn60, cross.rn12].filter((x) => x != null);
+  if (fields.length === 0) return false;
+  return fields.every((f) => f <= RN_DAY_EPISODE_LOW_MAX);
+}
+
+function nearestCrossDry(crossSeries, i, direction, maxSteps = 2) {
+  for (let step = 1; step <= maxSteps; step++) {
+    const j = i + direction * step;
+    if (j < 0 || j >= crossSeries.length) return false;
+    const cross = crossSeries[j];
+    if (cross == null) continue;
+    return crossFieldsNearDry(cross);
+  }
+  return false;
+}
+
+/**
+ * Window fields reset to dry while RN_DAY counter stays at cumulative total (Hub JSON shape).
+ * Example: RN_DAY 0→245→280 with RN_15M 0→245→0 (대신 STN 574 production JSON).
+ */
+function isCrossWindowPeakReset(scaledSeries, crossSeries, i) {
+  if (!crossSeries || i <= 0 || i >= scaledSeries.length - 1) return false;
+  const v = scaledSeries[i];
+  if (v == null || v < RN_DAY_SPIKE_ISOLATED_PEAK_MIN) return false;
+  const cross = crossSeries[i];
+  if (!crossFieldsReplicatePeak(cross, v)) return false;
+  if (!nearestCrossDry(crossSeries, i, -1) || !nearestCrossDry(crossSeries, i, 1)) return false;
+  const prevIdx = prevNonNullIndex(scaledSeries, i - 1);
+  const pv = prevIdx >= 0 ? scaledSeries[prevIdx] : null;
+  const baseline = isNearDryBaseline(pv) ? pv : 0;
+  return v - baseline >= RN_DAY_SPIKE_SOFT_JUMP;
 }
 
 /**
@@ -1143,10 +1180,10 @@ function findMechanicalRepeatRejects(scaledSeries) {
 }
 
 /** Isolated peak then reset (adjacent 0→spike→0 or gap-separated 북강릉). */
-function findIsolatedPeakResetRejects(scaledSeries) {
+function findIsolatedPeakResetRejects(scaledSeries, crossSeries) {
   const rejects = new Set();
   for (let i = 0; i < scaledSeries.length; i++) {
-    if (isIsolatedPeakResetIndex(scaledSeries, i)) rejects.add(i);
+    if (isIsolatedPeakResetIndex(scaledSeries, i, crossSeries)) rejects.add(i);
   }
   return rejects;
 }
@@ -1159,7 +1196,7 @@ function findRepeatedIsolatedSpikeRejects(scaledSeries, crossSeries) {
   const rejects = new Set();
   const byPeak = new Map();
   for (let i = 0; i < scaledSeries.length; i++) {
-    if (!isIsolatedPeakResetIndex(scaledSeries, i)) continue;
+    if (!isIsolatedPeakResetIndex(scaledSeries, i, crossSeries)) continue;
     const v = scaledSeries[i];
     if (crossSeries && !crossFieldsReplicatePeak(crossSeries[i], v)) continue;
     let key = null;
@@ -1262,7 +1299,7 @@ function qcRnDayStationSeries(scaledSeries, crossSeries, hhmmSeries) {
   const dongraeRejects = findMechanicalRepeatRejects(scaledSeries);
   const repeatedIsolatedRejects = findRepeatedIsolatedSpikeRejects(scaledSeries, crossSeries);
   const mechRejects = new Set([...dongraeRejects, ...repeatedIsolatedRejects]);
-  const isolatedRejects = findIsolatedPeakResetRejects(scaledSeries);
+  const isolatedRejects = findIsolatedPeakResetRejects(scaledSeries, crossSeries);
   const episodeResult = findContaminatedPeakEpisodeRejects(scaledSeries, crossSeries, hhmmSeries);
   const episodeRejects = episodeResult.rejects;
   for (const [idx, meta] of episodeResult.episodeMeta.entries()) {
