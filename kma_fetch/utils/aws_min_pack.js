@@ -51,6 +51,8 @@ const RN_DAY_EPISODE_MAX_SPAN_MINUTES = 120;
 const RN_DAY_LARGE_STEP_SUSPECT_MIN = 500; // 50.0 mm single-step → suspect-retained
 /** RN_24HR may use last-confirmed RN_DAY for rejected frames only up to this many consecutive minutes. */
 const RN_24HR_SUBSTITUTION_MAX_MINUTES = 30;
+/** Rolling rain packs reuse RN_DAY spike reject mask from this set. */
+const ROLLING_RAIN_SPIKE_QC_VARIABLES = new Set(['RN_15M', 'RN_60M', 'RN_12HR']);
 
 /** Coalesce concurrent pack builds for the same day+variable (API force / warm). */
 const packBuildInFlight = new Map();
@@ -804,6 +806,66 @@ function isEpisodeSeparatorValue(v) {
   return v == null || v <= RN_DAY_EPISODE_LOW_MAX;
 }
 
+function isNearDryBaseline(v) {
+  return v == null || v <= RN_DAY_EPISODE_LOW_MAX;
+}
+
+function onlyBaselineBetween(scaledSeries, fromIdx, toIdx) {
+  for (let j = fromIdx + 1; j < toIdx; j++) {
+    if (!isEpisodeSeparatorValue(scaledSeries[j])) return false;
+  }
+  return true;
+}
+
+function isBaselineResetPeak(scaledSeries, prevIdx, i, nextIdx) {
+  const v = scaledSeries[i];
+  const pv = scaledSeries[prevIdx];
+  const nv = scaledSeries[nextIdx];
+  if (pv == null || nv == null || v == null) return false;
+  if (!onlyBaselineBetween(scaledSeries, prevIdx, i)) return false;
+  if (nextIdx <= i || prevIdx >= i) return false;
+  const baseline = Math.min(pv, nv);
+  if (v - baseline < RN_DAY_SPIKE_SOFT_JUMP) return false;
+  if (isNearDryBaseline(pv) && isNearDryBaseline(nv)) return true;
+  if (peakValuesMatch(pv, nv) && (nv <= RN_DAY_EPISODE_LOW_MAX || nv <= v * 0.2)) return true;
+  return false;
+}
+
+/**
+ * Isolated peak then reset to baseline (0→spike→0 adjacent, or gap-separated 북강릉).
+ * Equality alone is not sufficient — requires baseline reset or gap context.
+ */
+function isIsolatedPeakResetIndex(scaledSeries, i) {
+  const v = scaledSeries[i];
+  if (v == null || v < RN_DAY_SPIKE_ISOLATED_PEAK_MIN) return false;
+  const prev = prevNonNullIndex(scaledSeries, i - 1);
+  const next = nextNonNullIndex(scaledSeries, i + 1);
+  if (prev < 0 || next < 0) {
+    if (prev < 0 && next >= 0) {
+      const gapAfter = next - i >= 2;
+      if (!gapAfter) return false;
+      const nv = scaledSeries[next];
+      return nv <= RN_DAY_EPISODE_LOW_MAX || nv <= v * 0.2;
+    }
+    if (next < 0 && prev >= 0) {
+      const gapBefore = i - prev >= 2;
+      if (gapBefore && countTrailingMissing(scaledSeries, i + 1) >= 1) return true;
+    }
+    return false;
+  }
+
+  // Adjacent or baseline-only separators then immediate reset (대신 STN 574).
+  if (next === i + 1 && isBaselineResetPeak(scaledSeries, prev, i, next)) return true;
+
+  const gapBefore = i - prev >= 2;
+  const gapAfter = next - i >= 2;
+  if (gapBefore && gapAfter) {
+    const nv = scaledSeries[next];
+    return nv <= RN_DAY_EPISODE_LOW_MAX || nv <= v * 0.2;
+  }
+  return false;
+}
+
 function crossFieldsReplicatePeak(cross, peakScaled) {
   if (!cross) return true;
   const fields = [cross.rn15, cross.rn60, cross.rn12].filter((x) => x != null);
@@ -888,7 +950,22 @@ function findContaminatedPeakEpisodeRejects(scaledSeries, crossSeries, hhmmSerie
   return { rejects, episodeMeta };
 }
 
-function stampEpisode(scaledSeries, hhmmSeries, indices, peakValue, rejects, episodeMeta) {
+function splitEpisodeIndicesByMaxSpan(hhmmSeries, indices, maxSpanMinutes) {
+  if (indices.length < 2) return [];
+  const chunks = [];
+  let chunkStart = 0;
+  for (let k = 1; k < indices.length; k++) {
+    const span = elapsedMinutesBetween(hhmmSeries, indices[chunkStart], indices[k]);
+    if (span > maxSpanMinutes) {
+      if (k - chunkStart >= 2) chunks.push(indices.slice(chunkStart, k));
+      chunkStart = k;
+    }
+  }
+  if (indices.length - chunkStart >= 2) chunks.push(indices.slice(chunkStart));
+  return chunks;
+}
+
+function stampEpisodeChunk(scaledSeries, hhmmSeries, indices, peakValue, rejects, episodeMeta) {
   const firstIdx = indices[0];
   let baseline = 0;
   for (let j = 0; j < firstIdx; j++) {
@@ -898,7 +975,6 @@ function stampEpisode(scaledSeries, hhmmSeries, indices, peakValue, rejects, epi
   const peakMax = Math.max(...indices.map((i) => scaledSeries[i]));
   const peakMin = Math.min(...indices.map((i) => scaledSeries[i]));
   if (peakMax - peakMin > RN_DAY_EPISODE_PEAK_TOL) return;
-  // Repeated pollution must jump well above recent baseline (not monotonic rain recovery).
   if (peakMax - baseline <= RN_DAY_SPIKE_SOFT_JUMP) return;
   if (peakValue <= baseline + RN_DAY_SPIKE_ISOLATED_PEAK_MIN) return;
   if (hhmmSeries && indices.length >= 2) {
@@ -915,6 +991,17 @@ function stampEpisode(scaledSeries, hhmmSeries, indices, peakValue, rejects, epi
   for (const idx of indices) {
     rejects.add(idx);
     episodeMeta.set(idx, meta);
+  }
+}
+
+function stampEpisode(scaledSeries, hhmmSeries, indices, peakValue, rejects, episodeMeta) {
+  const chunks =
+    hhmmSeries && indices.length >= 2
+      ? splitEpisodeIndicesByMaxSpan(hhmmSeries, indices, RN_DAY_EPISODE_MAX_SPAN_MINUTES)
+      : [indices];
+  for (const chunk of chunks) {
+    if (chunk.length < 2) continue;
+    stampEpisodeChunk(scaledSeries, hhmmSeries, chunk, peakValue, rejects, episodeMeta);
   }
 }
 
@@ -1055,27 +1142,96 @@ function findMechanicalRepeatRejects(scaledSeries) {
   return rejects;
 }
 
-/**
- * Isolated peak between missings then reset low (북강릉). Equality alone is not used.
- */
+/** Isolated peak then reset (adjacent 0→spike→0 or gap-separated 북강릉). */
 function findIsolatedPeakResetRejects(scaledSeries) {
   const rejects = new Set();
   for (let i = 0; i < scaledSeries.length; i++) {
-    const v = scaledSeries[i];
-    if (v == null || v < RN_DAY_SPIKE_ISOLATED_PEAK_MIN) continue;
-    const prev = prevNonNullIndex(scaledSeries, i - 1);
-    const next = nextNonNullIndex(scaledSeries, i + 1);
-    const gapBefore = prev < 0 ? true : i - prev >= 2;
-    const gapAfter = next < 0 ? i < scaledSeries.length - 1 : next - i >= 2;
-    if (!gapBefore || !gapAfter) continue;
-    if (next < 0) {
-      if (countTrailingMissing(scaledSeries, i + 1) >= 1) rejects.add(i);
-      continue;
-    }
-    const nv = scaledSeries[next];
-    if (nv <= 20 || nv <= v * 0.2) rejects.add(i);
+    if (isIsolatedPeakResetIndex(scaledSeries, i)) rejects.add(i);
   }
   return rejects;
+}
+
+/**
+ * Same abnormal isolated peak repeats with immediate reset (대신 STN 574).
+ * Adds mechanical_repeat when the same peak value appears ≥2 times.
+ */
+function findRepeatedIsolatedSpikeRejects(scaledSeries, crossSeries) {
+  const rejects = new Set();
+  const byPeak = new Map();
+  for (let i = 0; i < scaledSeries.length; i++) {
+    if (!isIsolatedPeakResetIndex(scaledSeries, i)) continue;
+    const v = scaledSeries[i];
+    if (crossSeries && !crossFieldsReplicatePeak(crossSeries[i], v)) continue;
+    let key = null;
+    for (const k of byPeak.keys()) {
+      if (peakValuesMatch(k, v)) {
+        key = k;
+        break;
+      }
+    }
+    if (key == null) {
+      key = v;
+      byPeak.set(key, []);
+    }
+    byPeak.get(key).push(i);
+  }
+  for (const indices of byPeak.values()) {
+    if (indices.length < 2) continue;
+    for (const i of indices) rejects.add(i);
+  }
+  return rejects;
+}
+
+function isRnDaySpikeRejectReason(reason) {
+  return (
+    reason === 'upwardSpikeRejected' ||
+    reason === 'isolatedPeakReset' ||
+    reason === 'mechanicalRepeat' ||
+    reason === 'spikeRecoveryPending'
+  );
+}
+
+function substituteSpikeRejectedRainScaled(fi, si, frameCount, stationCount, rawScaledGrid, spikeQc) {
+  const idx = fi * stationCount + si;
+  const st = spikeQc.statusGrid[idx];
+  const rs = spikeQc.reasonGrid[idx];
+  if (st !== 'rejected' || !isRnDaySpikeRejectReason(rs)) return rawScaledGrid[idx];
+  for (let pf = fi - 1; pf >= 0; pf--) {
+    const pidx = pf * stationCount + si;
+    const pst = spikeQc.statusGrid[pidx];
+    const prs = spikeQc.reasonGrid[pidx];
+    if (pst === 'rejected' && isRnDaySpikeRejectReason(prs)) continue;
+    const pv = rawScaledGrid[pidx];
+    if (pv != null) return pv;
+  }
+  return 0;
+}
+
+function buildRollingRainScaledGrid(frames, timestamps, stationIds, jsonField) {
+  const frameCount = timestamps.length;
+  const stationCount = stationIds.length;
+  const scaledGrid = new Array(frameCount * stationCount);
+  const crossGrid = new Array(frameCount * stationCount);
+  for (let fi = 0; fi < frameCount; fi++) {
+    const byId = frames[fi];
+    for (let si = 0; si < stationCount; si++) {
+      const idx = fi * stationCount + si;
+      if (!byId) {
+        scaledGrid[idx] = null;
+        crossGrid[idx] = null;
+        continue;
+      }
+      const row = byId.get(stationIds[si]);
+      if (!row) {
+        scaledGrid[idx] = null;
+        crossGrid[idx] = null;
+        continue;
+      }
+      scaledGrid[idx] = scaledRnDayOrNull(readJsonFieldRaw(row, jsonField));
+      crossGrid[idx] = readRainCrossScaled(row);
+    }
+  }
+  return { scaledGrid, crossGrid };
 }
 
 /**
@@ -1103,7 +1259,9 @@ function qcRnDayStationSeries(scaledSeries, crossSeries, hhmmSeries) {
   const signals = new Array(n);
   const episodeMeta = new Array(n).fill(null);
 
-  const mechRejects = findMechanicalRepeatRejects(scaledSeries);
+  const dongraeRejects = findMechanicalRepeatRejects(scaledSeries);
+  const repeatedIsolatedRejects = findRepeatedIsolatedSpikeRejects(scaledSeries, crossSeries);
+  const mechRejects = new Set([...dongraeRejects, ...repeatedIsolatedRejects]);
   const isolatedRejects = findIsolatedPeakResetRejects(scaledSeries);
   const episodeResult = findContaminatedPeakEpisodeRejects(scaledSeries, crossSeries, hhmmSeries);
   const episodeRejects = episodeResult.rejects;
@@ -1155,7 +1313,10 @@ function qcRnDayStationSeries(scaledSeries, crossSeries, hhmmSeries) {
       signals[i] = sig;
       pack[i] = null;
       rolling[i] = accepted;
-      reason[i] = 'upwardSpikeRejected';
+      if (isolatedRejects.has(i)) reason[i] = 'isolatedPeakReset';
+      else if (repeatedIsolatedRejects.has(i)) reason[i] = 'mechanicalRepeat';
+      else if (dongraeRejects.has(i)) reason[i] = 'mechanicalRepeat';
+      else reason[i] = 'upwardSpikeRejected';
       status[i] = 'rejected';
       pendingSuspect = null;
       afterReject = true;
@@ -1381,7 +1542,12 @@ function applyRnDayCounterRegression(scaledGrid, frameCount, stationCount, optio
         stats.counterRegressionFilledSampleCount += 1;
         stats.byReason.counterRegression += 1;
         stationHadRegression[si] = 1;
-      } else if (st === 'rejected' || rs === 'upwardSpikeRejected') {
+      } else if (
+        st === 'rejected' ||
+        rs === 'upwardSpikeRejected' ||
+        rs === 'isolatedPeakReset' ||
+        rs === 'mechanicalRepeat'
+      ) {
         stats.upwardSpikeRejectedSampleCount += 1;
         stats.byReason.upwardSpikeRejected += 1;
         stationHadSpike[si] = 1;
@@ -1440,7 +1606,13 @@ function buildSparseRnDayQcRecords({
       const rs = reasonGrid[idx];
       let state = null;
       if (st === 'suspect-retained' || rs === 'suspectRetained') state = 'suspect-retained';
-      else if (st === 'rejected' || rs === 'upwardSpikeRejected' || rs === 'spikeRecoveryPending') {
+      else if (
+        st === 'rejected' ||
+        rs === 'upwardSpikeRejected' ||
+        rs === 'isolatedPeakReset' ||
+        rs === 'mechanicalRepeat' ||
+        rs === 'spikeRecoveryPending'
+      ) {
         state = 'rejected';
       } else if (rs === 'counterRegression') {
         // Counter-regression is pack-missing with rolling hold; expose as rejected-style sparse for tracing.
@@ -1796,7 +1968,10 @@ async function buildAwsVariablePack(awsJsonDir, fromKor, toKor, variable, option
         const todayFilled =
           todayQc.packGrid[idx] == null && todayQc.rollingGrid[idx] != null;
         const todaySpikeHold =
-          todayReason === 'upwardSpikeRejected' || todayReason === 'spikeRecoveryPending';
+          todayReason === 'upwardSpikeRejected' ||
+          todayReason === 'isolatedPeakReset' ||
+          todayReason === 'mechanicalRepeat' ||
+          todayReason === 'spikeRecoveryPending';
 
         if (todaySpikeHold && todayScaled != null) {
           const holdMins = consecutiveSpikeRejectMinutes(
@@ -1859,6 +2034,49 @@ async function buildAwsVariablePack(awsJsonDir, fromKor, toKor, variable, option
             rollingQc.overflow += 1;
             overflowCount += 1;
           }
+          if (todaySpikeHold) {
+            let prevRoll = null;
+            for (let pf = fi - 1; pf >= 0; pf--) {
+              const prevIdx = pf * stationCount + si;
+              const held = int16[prevIdx];
+              if (held !== MISSING_I16) {
+                prevRoll = held;
+                break;
+              }
+            }
+            if (prevRoll != null) {
+              const holdMins = consecutiveSpikeRejectMinutes(
+                todayQc.reasonGrid,
+                todayQc.statusGrid,
+                fi,
+                si,
+                stationCount
+              );
+              if (holdMins <= RN_24HR_SUBSTITUTION_MAX_MINUTES) {
+                rollingQc.lastConfirmedSubstitutionSampleCount += 1;
+                rollingQc.upwardSpikeContaminationPreventedSampleCount += 1;
+                rollingQc.upwardSpikeRejectedSampleCount += 1;
+                sparseQcRecords.push({
+                  TM: timestamps[fi],
+                  STN_ID: stnId,
+                  state: 'substituted',
+                  rawValue: todayQc.rawScaledGrid ? todayQc.rawScaledGrid[idx] : null,
+                  scale: 0.1,
+                  valueMm: scaledToMm(todayQc.rawScaledGrid ? todayQc.rawScaledGrid[idx] : null),
+                  signals: ['last_confirmed_rn24hr'],
+                  acceptedUpdated: false,
+                  substitutionUsed: true,
+                  substitutionMinutes: holdMins,
+                  substitutionMaxMinutes: RN_24HR_SUBSTITUTION_MAX_MINUTES,
+                  rn24hrValueMm: scaledToMm(prevRoll),
+                  reason: 'last_confirmed_rn24hr',
+                  date: dayYmd,
+                  variable: 'RN_24HR'
+                });
+              }
+              int16[idx] = prevRoll;
+            }
+          }
           continue;
         }
         if (todaySpikeHold && todayQc.rollingGrid[idx] != null) {
@@ -1912,6 +2130,42 @@ async function buildAwsVariablePack(awsJsonDir, fromKor, toKor, variable, option
         continue;
       }
       int16[i] = scaled;
+    }
+  } else if (ROLLING_RAIN_SPIKE_QC_VARIABLES.has(name)) {
+    const daySpikeQc = buildQcRnDayScaledGrid(frames, timestamps, stationIds, { stations });
+    rnDayRegression = daySpikeQc.regression;
+    const { scaledGrid: rainScaledGrid } = buildRollingRainScaledGrid(
+      frames,
+      timestamps,
+      stationIds,
+      jsonField
+    );
+    for (let fi = 0; fi < frameCount; fi++) {
+      const byId = frames[fi];
+      if (!byId) continue;
+      for (let si = 0; si < stationCount; si++) {
+        const idx = fi * stationCount + si;
+        const row = byId.get(stationIds[si]);
+        if (!row) continue;
+        const raw = readJsonFieldRaw(row, jsonField);
+        if (raw != null && raw !== '') jsonPresentCount += 1;
+        let scaled = rainScaledGrid[idx];
+        if (scaled == null) continue;
+        scaled = substituteSpikeRejectedRainScaled(
+          fi,
+          si,
+          frameCount,
+          stationCount,
+          rainScaledGrid,
+          daySpikeQc
+        );
+        if (scaled > 32767) {
+          overflowCount += 1;
+          continue;
+        }
+        if (scaled < 0 && scaled > HUB_PHYSICAL_MISSING_MAX * 10) negativeRainCount += 1;
+        int16[idx] = encodeRainToI16(scaled);
+      }
     }
   } else {
     for (let fi = 0; fi < frameCount; fi++) {
@@ -2728,6 +2982,9 @@ module.exports = {
   qcRnDayStationSeries,
   findExtremeThenLongMissingRejects,
   findContaminatedPeakEpisodeRejects,
+  findIsolatedPeakResetRejects,
+  findRepeatedIsolatedSpikeRejects,
+  isIsolatedPeakResetIndex,
   evaluateStepSpikeSignals,
   packBinaryUrl,
   packBinaryFileName,

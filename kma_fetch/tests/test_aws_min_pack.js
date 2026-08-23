@@ -1252,6 +1252,202 @@ async function main() {
   const eqv = new Int16Array(eqDay.binary.buffer, eqDay.binary.byteOffset, eqDay.binary.length / 2);
   assert.strictEqual(eqv[0], 80);
 
+  // --- STN 574 repeated isolated spike QC (docs/rainfall-producer-stn574-repeated-spike-qc-request.md) ---
+  const iso574Single = qcRnDayStationSeries(
+    [0, 245, 0],
+    [
+      { rn15: 0, rn60: 0, rn12: 0 },
+      { rn15: 245, rn60: 245, rn12: 245 },
+      { rn15: 0, rn60: 0, rn12: 0 }
+    ],
+    ['1050', '1051', '1052']
+  );
+  assert.strictEqual(iso574Single.status[1], 'rejected');
+  assert.strictEqual(iso574Single.pack[1], null);
+  assert.strictEqual(iso574Single.rolling[1], 0);
+  assert.strictEqual(iso574Single.reason[1], 'isolatedPeakReset');
+  assert.ok(iso574Single.signals[1].includes('isolated_peak_reset'));
+
+  const iso574Repeat = qcRnDayStationSeries(
+    [0, 245, 0, 0, 0, 0, 0, 245, 0, 0, 0, 245, 0],
+    [
+      { rn15: 0, rn60: 0, rn12: 0 },
+      { rn15: 245, rn60: 245, rn12: 245 },
+      { rn15: 0, rn60: 0, rn12: 0 },
+      { rn15: 0, rn60: 0, rn12: 0 },
+      { rn15: 0, rn60: 0, rn12: 0 },
+      { rn15: 0, rn60: 0, rn12: 0 },
+      { rn15: 0, rn60: 0, rn12: 0 },
+      { rn15: 245, rn60: 245, rn12: 245 },
+      { rn15: 0, rn60: 0, rn12: 0 },
+      { rn15: 0, rn60: 0, rn12: 0 },
+      { rn15: 0, rn60: 0, rn12: 0 },
+      { rn15: 245, rn60: 245, rn12: 245 },
+      { rn15: 0, rn60: 0, rn12: 0 }
+    ],
+    ['1050', '1051', '1052', '1053', '1054', '1055', '1056', '1057', '1058', '1059', '1060', '1061', '1062']
+  );
+  for (const fi of [1, 7, 11]) {
+    assert.strictEqual(iso574Repeat.status[fi], 'rejected', `frame ${fi}`);
+    assert.ok(iso574Repeat.signals[fi].includes('isolated_peak_reset'));
+    assert.ok(iso574Repeat.signals[fi].includes('mechanical_repeat'));
+  }
+
+  const stn574Root = path.join(tmp, 'aws-stn574');
+  const stn574Cat = { byId: new Map(), stations: [{ STN_ID: 574 }] };
+  await writeFrame(stn574Root, '202608230000', [
+    { STN_ID: 574, RN_DAY: 0, RN_15M: 0, RN_60M: 0, RN_12HR: 0, RN_24HR: 280 }
+  ]);
+  await writeFrame(stn574Root, '202608231050', [
+    { STN_ID: 574, RN_DAY: 0, RN_15M: 0, RN_60M: 0, RN_12HR: 0, RN_24HR: 280 }
+  ]);
+  await writeFrame(stn574Root, '202608231051', [
+    { STN_ID: 574, RN_DAY: 245, RN_15M: 245, RN_60M: 245, RN_12HR: 245, RN_24HR: 525 }
+  ]);
+  await writeFrame(stn574Root, '202608231052', [
+    { STN_ID: 574, RN_DAY: 0, RN_15M: 0, RN_60M: 0, RN_12HR: 0, RN_24HR: 280 }
+  ]);
+  await writeFrame(stn574Root, '202608231055', [
+    { STN_ID: 574, RN_DAY: 0, RN_15M: 0, RN_60M: 0, RN_12HR: 0, RN_24HR: 280 }
+  ]);
+  await writeFrame(stn574Root, '202608231056', [
+    { STN_ID: 574, RN_DAY: 245, RN_15M: 245, RN_60M: 245, RN_12HR: 245, RN_24HR: 525 }
+  ]);
+  await writeFrame(stn574Root, '202608231057', [
+    { STN_ID: 574, RN_DAY: 0, RN_15M: 0, RN_60M: 0, RN_12HR: 0, RN_24HR: 280 }
+  ]);
+  await writeFrame(stn574Root, '202608231133', [
+    { STN_ID: 574, RN_DAY: 245, RN_15M: 245, RN_60M: 245, RN_12HR: 245, RN_24HR: 525 }
+  ]);
+  await writeFrame(stn574Root, '202608231134', [
+    { STN_ID: 574, RN_DAY: 0, RN_15M: 0, RN_60M: 0, RN_12HR: 0, RN_24HR: 280 }
+  ]);
+  await writeFrame(stn574Root, '202608231449', [
+    { STN_ID: 574, RN_DAY: 245, RN_15M: 245, RN_60M: 245, RN_12HR: 245, RN_24HR: 525 }
+  ]);
+  await writeFrame(stn574Root, '202608231450', [
+    { STN_ID: 574, RN_DAY: 0, RN_15M: 0, RN_60M: 0, RN_12HR: 0, RN_24HR: 280 }
+  ]);
+  await writeFrame(stn574Root, '202608222359', [{ STN_ID: 574, RN_DAY: 280 }]);
+  await writeFrame(stn574Root, '202608221050', [{ STN_ID: 574, RN_DAY: 0 }]);
+
+  const stn574Day = await buildAwsVariablePack(stn574Root, '202608230000', '202608231450', 'RN_DAY', {
+    catalog: stn574Cat
+  });
+  const s574 = new Int16Array(stn574Day.binary.buffer, stn574Day.binary.byteOffset, stn574Day.binary.length / 2);
+  const s574Idx = new Map(stn574Day.manifest.stations.map((s, i) => [s.STN_ID, i]));
+  const sc574 = stn574Day.manifest.stationCount;
+  const frameIdxFromMidnight = (manifest, hhmm) => {
+    assert.strictEqual(manifest.from.slice(8), '0000');
+    return Number(hhmm.slice(0, 2)) * 60 + Number(hhmm.slice(2, 4));
+  };
+  const tm574 = (hhmm) => frameIdxFromMidnight(stn574Day.manifest, hhmm) * sc574 + s574Idx.get(574);
+  for (const hhmm of ['1051', '1056', '1133', '1449']) {
+    assert.strictEqual(s574[tm574(hhmm)], MISSING_I16, `RN_DAY ${hhmm}`);
+  }
+  const stn574Recs = (stn574Day.qcDetail.records || []).filter((r) => r.STN_ID === 574);
+  for (const hhmm of ['1051', '1056', '1133', '1449']) {
+    const rec = stn574Recs.find((r) => r.TM === `20260823${hhmm}`);
+    assert.ok(rec, hhmm);
+    assert.strictEqual(rec.state, 'rejected');
+    assert.ok(rec.signals.includes('isolated_peak_reset'));
+    assert.ok(rec.signals.includes('mechanical_repeat'));
+    assert.strictEqual(rec.reason, 'isolatedPeakReset');
+    assert.strictEqual(rec.substitutionUsed, true);
+  }
+
+  const stn574_15m = await buildAwsVariablePack(stn574Root, '202608230000', '202608231450', 'RN_15M', {
+    catalog: stn574Cat
+  });
+  const s15 = new Int16Array(stn574_15m.binary.buffer, stn574_15m.binary.byteOffset, stn574_15m.binary.length / 2);
+  const s15Idx = new Map(stn574_15m.manifest.stations.map((s, i) => [s.STN_ID, i]));
+  const sc15 = stn574_15m.manifest.stationCount;
+  const tm15 = (hhmm) => frameIdxFromMidnight(stn574_15m.manifest, hhmm) * sc15 + s15Idx.get(574);
+  for (const hhmm of ['1051', '1056', '1133', '1449']) {
+    assert.strictEqual(s15[tm15(hhmm)], 0, `RN_15M ${hhmm}`);
+  }
+
+  const stn574_24hr = await buildAwsVariablePack(stn574Root, '202608230000', '202608231450', 'RN_24HR', {
+    catalog: stn574Cat
+  });
+  const s24h = new Int16Array(
+    stn574_24hr.binary.buffer,
+    stn574_24hr.binary.byteOffset,
+    stn574_24hr.binary.length / 2
+  );
+  const s57424Idx = new Map(stn574_24hr.manifest.stations.map((s, i) => [s.STN_ID, i]));
+  const sc24h = stn574_24hr.manifest.stationCount;
+  const tm24 = (hhmm) => frameIdxFromMidnight(stn574_24hr.manifest, hhmm) * sc24h + s57424Idx.get(574);
+  for (const hhmm of ['1051', '1056', '1133', '1449']) {
+    assert.strictEqual(s24h[tm24(hhmm)], 280, `RN_24HR ${hhmm}`);
+  }
+
+  // Fixture 5: incremental warm retroactively rejects spike when t+1 reset arrives
+  const inc574Root = path.join(tmp, 'aws-stn574-inc');
+  const inc574Pack = path.join(tmp, 'pack-stn574-inc');
+  const incDay = '20260824';
+  await writeFrame(inc574Root, '202608232359', [{ STN_ID: 574, RN_DAY: 0 }]);
+  await writeFrame(inc574Root, `${incDay}0000`, [
+    { STN_ID: 574, RN_DAY: 0, RN_15M: 0, RN_60M: 0, RN_12HR: 0 }
+  ]);
+  await writeFrame(inc574Root, `${incDay}1050`, [
+    { STN_ID: 574, RN_DAY: 0, RN_15M: 0, RN_60M: 0, RN_12HR: 0 }
+  ]);
+  await writeFrame(inc574Root, `${incDay}1051`, [
+    { STN_ID: 574, RN_DAY: 245, RN_15M: 245, RN_60M: 245, RN_12HR: 245 }
+  ]);
+  const incFirst = await warmTodayRainPacks(inc574Root, inc574Pack, {
+    dayKey: incDay,
+    catalog: stn574Cat
+  });
+  assert.strictEqual(incFirst.result, 'updated');
+  const incDayFirst = await buildAwsVariablePack(inc574Root, `${incDay}0000`, `${incDay}1051`, 'RN_DAY', {
+    catalog: stn574Cat
+  });
+  const incFirstArr = new Int16Array(
+    incDayFirst.binary.buffer,
+    incDayFirst.binary.byteOffset,
+    incDayFirst.binary.length / 2
+  );
+  const incIdx = new Map(incDayFirst.manifest.stations.map((s, i) => [s.STN_ID, i]));
+  const incSc = incDayFirst.manifest.stationCount;
+  const fi1051a = frameIdxFromMidnight(incDayFirst.manifest, '1051');
+  assert.strictEqual(incFirstArr[fi1051a * incSc + incIdx.get(574)], 245);
+
+  await writeFrame(inc574Root, `${incDay}1052`, [
+    { STN_ID: 574, RN_DAY: 0, RN_15M: 0, RN_60M: 0, RN_12HR: 0 }
+  ]);
+  await writeFrame(inc574Root, `${incDay}1055`, [
+    { STN_ID: 574, RN_DAY: 0, RN_15M: 0, RN_60M: 0, RN_12HR: 0 }
+  ]);
+  await writeFrame(inc574Root, `${incDay}1056`, [
+    { STN_ID: 574, RN_DAY: 245, RN_15M: 245, RN_60M: 245, RN_12HR: 245 }
+  ]);
+  await writeFrame(inc574Root, `${incDay}1057`, [
+    { STN_ID: 574, RN_DAY: 0, RN_15M: 0, RN_60M: 0, RN_12HR: 0 }
+  ]);
+  const incSecond = await warmTodayRainPacks(inc574Root, inc574Pack, {
+    dayKey: incDay,
+    catalog: stn574Cat
+  });
+  assert.strictEqual(incSecond.result, 'updated');
+  const incDaySecond = await buildAwsVariablePack(inc574Root, `${incDay}0000`, `${incDay}1057`, 'RN_DAY', {
+    catalog: stn574Cat
+  });
+  const incSecondArr = new Int16Array(
+    incDaySecond.binary.buffer,
+    incDaySecond.binary.byteOffset,
+    incDaySecond.binary.length / 2
+  );
+  const fi1051b = frameIdxFromMidnight(incDaySecond.manifest, '1051');
+  assert.strictEqual(incSecondArr[fi1051b * incSc + incIdx.get(574)], MISSING_I16);
+  const incRec1051 = (incDaySecond.qcDetail.records || []).find(
+    (r) => r.STN_ID === 574 && r.TM === `${incDay}1051`
+  );
+  assert.ok(incRec1051);
+  assert.strictEqual(incRec1051.state, 'rejected');
+  assert.notStrictEqual(incFirst.datasetId, incDaySecond.datasetId);
+
   const spike24 = await buildAwsVariablePack(upwardSpikeRoot, '202608210923', '202608210927', 'RN_24HR', {
     catalog: spikeCatalog
   });
