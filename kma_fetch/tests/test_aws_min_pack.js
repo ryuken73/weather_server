@@ -16,6 +16,7 @@ const {
   publishAwsVariablePack,
   warmAwsDayPack,
   warmTodayRainPacks,
+  pruneUnreferencedPackArtifacts,
   getOrBuildAwsVariablePack,
   encodeTaToI16,
   encodeRainToI16,
@@ -1330,6 +1331,36 @@ async function main() {
   ]);
   assert.strictEqual(flightA.result, 'unchanged');
   assert.strictEqual(flightB.result, 'unchanged');
+
+  // publish prune: superseded content-addressed binary/QC removed
+  const pruneDir = path.join(tmp, 'pack-prune', 'rn_day', '1m', todayDay);
+  await fsp.mkdir(pruneDir, { recursive: true });
+  await fsp.writeFile(path.join(pruneDir, 'rn_day-v11111111.i16le'), Buffer.alloc(4));
+  await fsp.writeFile(path.join(pruneDir, 'rn_day-v22222222.i16le'), Buffer.alloc(4));
+  await fsp.writeFile(path.join(pruneDir, 'qc-vaaaaaaaaaaaaaaaa.json'), '{}');
+  await fsp.writeFile(path.join(pruneDir, 'qc-vbbbbbbbbbbbbbbbb.json'), '{}');
+  await fsp.writeFile(path.join(pruneDir, 'manifest.json'), '{}');
+  await fsp.writeFile(path.join(pruneDir, 'qc.json'), '{}');
+  const prunedNames = await pruneUnreferencedPackArtifacts(pruneDir, {
+    slug: 'rn_day',
+    keepBinaryName: 'rn_day-v22222222.i16le',
+    keepQcName: 'qc-vbbbbbbbbbbbbbbbb.json'
+  });
+  assert.ok(prunedNames.includes('rn_day-v11111111.i16le'));
+  assert.ok(prunedNames.includes('qc-vaaaaaaaaaaaaaaaa.json'));
+  assert.ok(!(await fsp.stat(path.join(pruneDir, 'rn_day-v11111111.i16le')).then(() => true).catch(() => false)));
+  assert.ok(await fsp.stat(path.join(pruneDir, 'rn_day-v22222222.i16le')));
+  assert.ok(await fsp.stat(path.join(pruneDir, 'qc-vbbbbbbbbbbbbbbbb.json')));
+  assert.ok(await fsp.stat(path.join(pruneDir, 'manifest.json')));
+  assert.ok(await fsp.stat(path.join(pruneDir, 'qc.json')));
+
+  // warmTodayRainPacks second update should leave only latest hash artifacts on disk
+  const rn24Dir = path.join(todayRainPack, 'rn_24hr_rolling', '1m', todayDay);
+  const rn24Names = await fsp.readdir(rn24Dir);
+  const rn24Bins = rn24Names.filter((n) => /^rn_24hr_rolling-v[a-f0-9]{8}\.i16le$/i.test(n));
+  const rn24Qcs = rn24Names.filter((n) => /^qc-v[a-f0-9]+\.json$/i.test(n));
+  assert.strictEqual(rn24Bins.length, 1, `expected 1 binary, got ${rn24Bins.join(',')}`);
+  assert.strictEqual(rn24Qcs.length, 1, `expected 1 qc-v, got ${rn24Qcs.join(',')}`);
 
   console.log('OK test_aws_min_pack');
   await fsp.rm(tmp, { recursive: true, force: true });

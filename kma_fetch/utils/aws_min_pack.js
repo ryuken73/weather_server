@@ -2291,7 +2291,64 @@ async function publishAwsVariablePack(packRoot, built) {
     }
   }
 
-  return { manifest, binaryPath: binFinal, manifestPath: manFinal, qcDetailPath };
+  // Drop superseded content-addressed artifacts (today 1-min warm leaves orphans otherwise).
+  const keepQcName = qcDetailPath ? path.basename(qcDetailPath) : null;
+  const pruned = await pruneUnreferencedPackArtifacts(outDir, {
+    slug: spec.slug,
+    keepBinaryName: binName,
+    keepQcName
+  });
+
+  return {
+    manifest,
+    binaryPath: binFinal,
+    manifestPath: manFinal,
+    qcDetailPath,
+    pruned
+  };
+}
+
+/**
+ * Remove old content-addressed binary/QC files not referenced by the just-published pack.
+ * Keeps manifest.json, qc.json alias, current binary, current qc-v*.json.
+ * Does not touch *.tmp (in-flight writes).
+ */
+async function pruneUnreferencedPackArtifacts(outDir, { slug, keepBinaryName, keepQcName }) {
+  const deleted = [];
+  let names;
+  try {
+    names = await fsp.readdir(outDir);
+  } catch (err) {
+    if (err && err.code === 'ENOENT') return deleted;
+    throw err;
+  }
+
+  const binRe = new RegExp(
+    `^${String(slug).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}-v[a-f0-9]{8}\\.i16le$`,
+    'i'
+  );
+  const qcRe = /^qc-v[a-f0-9]+\.json$/i;
+
+  for (const name of names) {
+    if (name.endsWith('.tmp')) continue;
+    if (name === 'manifest.json' || name === 'qc.json') continue;
+
+    let shouldDelete = false;
+    if (binRe.test(name) && name !== keepBinaryName) shouldDelete = true;
+    if (qcRe.test(name) && keepQcName && name !== keepQcName) shouldDelete = true;
+    // If this pack has no QC sidecar, still prune stale qc-v* left from prior contract builds.
+    if (qcRe.test(name) && !keepQcName) shouldDelete = true;
+
+    if (!shouldDelete) continue;
+    try {
+      await fsp.unlink(path.join(outDir, name));
+      deleted.push(name);
+    } catch (err) {
+      if (err && err.code === 'ENOENT') continue;
+      throw err;
+    }
+  }
+  return deleted;
 }
 
 async function publishAwsTaPack(packRoot, built) {
@@ -2685,6 +2742,7 @@ module.exports = {
   buildAwsTaPack,
   publishAwsVariablePack,
   publishAwsTaPack,
+  pruneUnreferencedPackArtifacts,
   getOrBuildAwsVariablePack,
   getOrBuildAwsTaPack,
   warmAwsDayPack,
