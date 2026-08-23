@@ -30,6 +30,9 @@ const VARIABLE_TA = 'TA';
 const PACK_SCHEMA_VERSION = 4;
 /** Bump when pack meaning/URL contract changes for cache reuse checks. */
 const PACK_CONTRACT_REVISION = 8;
+/** Bump when RN_DAY spike QC rules change (invalidates today warm skip). */
+const RN_DAY_QC_LOGIC_REVISION = 2;
+const RN_DAY_CROSS_DRY_LOOKBACK_MINUTES = 3;
 
 /**
  * RN_DAY upward-spike QC thresholds (scaled ×10 mm).
@@ -874,6 +877,33 @@ function crossFieldsReplicatePeak(cross, peakScaled) {
   return fields.every((f) => peakValuesMatch(f, peakScaled));
 }
 
+/** Unified cross-field peak when RN_15M/RN_60M/RN_12HR agree (may differ from RN_DAY counter). */
+function crossPeakScaled(cross) {
+  if (!cross) return null;
+  const fields = [cross.rn15, cross.rn60, cross.rn12].filter((x) => x != null);
+  if (fields.length === 0) return null;
+  const peak = Math.max(...fields);
+  if (!fields.every((f) => peakValuesMatch(f, peak))) return null;
+  return peak;
+}
+
+/** Peak value for repeat grouping — prefers agreeing cross-window peak over RN_DAY cumulative. */
+function spikePeakAtIndex(scaledSeries, crossSeries, i) {
+  const v = scaledSeries[i];
+  const cp = crossSeries ? crossPeakScaled(crossSeries[i]) : null;
+  if (cp == null) return v;
+  if (v == null || v < RN_DAY_SPIKE_ISOLATED_PEAK_MIN) return cp;
+  if (peakValuesMatch(v, cp)) return v;
+  return cp;
+}
+
+function isSpikeResetIndex(scaledSeries, crossSeries, i) {
+  return (
+    isIsolatedPeakResetIndex(scaledSeries, i, crossSeries) ||
+    isCrossWindowPeakReset(scaledSeries, crossSeries, i)
+  );
+}
+
 /** Short-window rain fields back to dry (RN_15M/RN_60M/RN_12HR). */
 function crossFieldsNearDry(cross) {
   if (!cross) return false;
@@ -882,7 +912,7 @@ function crossFieldsNearDry(cross) {
   return fields.every((f) => f <= RN_DAY_EPISODE_LOW_MAX);
 }
 
-function nearestCrossDry(crossSeries, i, direction, maxSteps = 2) {
+function nearestCrossDry(crossSeries, i, direction, maxSteps = RN_DAY_CROSS_DRY_LOOKBACK_MINUTES) {
   for (let step = 1; step <= maxSteps; step++) {
     const j = i + direction * step;
     if (j < 0 || j >= crossSeries.length) return false;
@@ -896,18 +926,27 @@ function nearestCrossDry(crossSeries, i, direction, maxSteps = 2) {
 /**
  * Window fields reset to dry while RN_DAY counter stays at cumulative total (Hub JSON shape).
  * Example: RN_DAY 0→245→280 with RN_15M 0→245→0 (대신 STN 574 production JSON).
+ * Also: RN_DAY stays 280 while RN_15M alone spikes 245 (DB / partial Hub merge).
  */
 function isCrossWindowPeakReset(scaledSeries, crossSeries, i) {
   if (!crossSeries || i <= 0 || i >= scaledSeries.length - 1) return false;
-  const v = scaledSeries[i];
-  if (v == null || v < RN_DAY_SPIKE_ISOLATED_PEAK_MIN) return false;
   const cross = crossSeries[i];
-  if (!crossFieldsReplicatePeak(cross, v)) return false;
+  const crossPeak = crossPeakScaled(cross);
+  if (crossPeak == null || crossPeak < RN_DAY_SPIKE_ISOLATED_PEAK_MIN) return false;
   if (!nearestCrossDry(crossSeries, i, -1) || !nearestCrossDry(crossSeries, i, 1)) return false;
+  const v = scaledSeries[i];
+  if (v != null && v >= RN_DAY_SPIKE_ISOLATED_PEAK_MIN && !peakValuesMatch(v, crossPeak)) {
+    // RN_DAY cumulative can stay high while short-window fields spike — still a mechanical window spike.
+    if (!isNearDryBaseline(v) && v > crossPeak) {
+      // cumulative dominates; cross spike is the anomaly
+    } else if (!peakValuesMatch(v, crossPeak)) {
+      return false;
+    }
+  }
   const prevIdx = prevNonNullIndex(scaledSeries, i - 1);
   const pv = prevIdx >= 0 ? scaledSeries[prevIdx] : null;
   const baseline = isNearDryBaseline(pv) ? pv : 0;
-  return v - baseline >= RN_DAY_SPIKE_SOFT_JUMP;
+  return crossPeak - baseline >= RN_DAY_SPIKE_SOFT_JUMP;
 }
 
 /**
@@ -1183,7 +1222,7 @@ function findMechanicalRepeatRejects(scaledSeries) {
 function findIsolatedPeakResetRejects(scaledSeries, crossSeries) {
   const rejects = new Set();
   for (let i = 0; i < scaledSeries.length; i++) {
-    if (isIsolatedPeakResetIndex(scaledSeries, i, crossSeries)) rejects.add(i);
+    if (isSpikeResetIndex(scaledSeries, crossSeries, i)) rejects.add(i);
   }
   return rejects;
 }
@@ -1196,9 +1235,10 @@ function findRepeatedIsolatedSpikeRejects(scaledSeries, crossSeries) {
   const rejects = new Set();
   const byPeak = new Map();
   for (let i = 0; i < scaledSeries.length; i++) {
-    if (!isIsolatedPeakResetIndex(scaledSeries, i, crossSeries)) continue;
-    const v = scaledSeries[i];
-    if (crossSeries && !crossFieldsReplicatePeak(crossSeries[i], v)) continue;
+    if (!isSpikeResetIndex(scaledSeries, crossSeries, i)) continue;
+    const v = spikePeakAtIndex(scaledSeries, crossSeries, i);
+    if (v == null || v < RN_DAY_SPIKE_ISOLATED_PEAK_MIN) continue;
+    if (crossSeries && crossSeries[i] && !crossFieldsReplicatePeak(crossSeries[i], v)) continue;
     let key = null;
     for (const k of byPeak.keys()) {
       if (peakValuesMatch(k, v)) {
@@ -1279,6 +1319,56 @@ function buildRollingRainScaledGrid(frames, timestamps, stationIds, jsonField) {
  */
 function findExtremeThenLongMissingRejects(_scaledSeries) {
   return new Set();
+}
+
+/**
+ * Trace RN_DAY QC branch decisions for one station (operations/debug).
+ * @param {number[]} targetIndices frame indices to log (optional)
+ */
+function debugRnDayQcTrace(scaledSeries, crossSeries, hhmmSeries, targetIndices) {
+  const targetSet =
+    targetIndices && targetIndices.length > 0 ? new Set(targetIndices) : null;
+  const dongraeRejects = findMechanicalRepeatRejects(scaledSeries);
+  const repeatedIsolatedRejects = findRepeatedIsolatedSpikeRejects(scaledSeries, crossSeries);
+  const mechRejects = new Set([...dongraeRejects, ...repeatedIsolatedRejects]);
+  const isolatedRejects = findIsolatedPeakResetRejects(scaledSeries, crossSeries);
+  const episodeResult = findContaminatedPeakEpisodeRejects(scaledSeries, crossSeries, hhmmSeries);
+  const rejectMask = new Set([
+    ...mechRejects,
+    ...isolatedRejects,
+    ...episodeResult.rejects
+  ]);
+  const qc = qcRnDayStationSeries(scaledSeries, crossSeries, hhmmSeries);
+  const lines = [];
+  for (let i = 0; i < scaledSeries.length; i++) {
+    if (targetSet && !targetSet.has(i)) continue;
+    const hhmm = hhmmSeries ? hhmmSeries[i] : String(i);
+    const cross = crossSeries ? crossSeries[i] : null;
+    lines.push({
+      index: i,
+      hhmm,
+      scaled: scaledSeries[i],
+      crossPeak: cross ? crossPeakScaled(cross) : null,
+      cross,
+      isolatedPeakReset: isIsolatedPeakResetIndex(scaledSeries, i, crossSeries),
+      crossWindowReset: isCrossWindowPeakReset(scaledSeries, crossSeries, i),
+      spikeReset: isSpikeResetIndex(scaledSeries, crossSeries, i),
+      inRejectMask: rejectMask.has(i),
+      mechanicalRepeat: mechRejects.has(i),
+      repeatedPeakEpisode: episodeResult.rejects.has(i),
+      qcStatus: qc.status[i],
+      qcReason: qc.reason[i],
+      qcPack: qc.pack[i],
+      qcRolling: qc.rolling[i],
+      qcSignals: qc.signals[i]
+    });
+  }
+  return {
+    rnDayQcLogicRevision: RN_DAY_QC_LOGIC_REVISION,
+    rejectMaskSize: rejectMask.size,
+    traces: lines,
+    qc
+  };
 }
 
 /**
@@ -1452,6 +1542,36 @@ function qcRnDayStationSeries(scaledSeries, crossSeries, hhmmSeries) {
     rolling[i] = v;
     reason[i] = cls.softCandidate ? 'softCandidateAccepted' : null;
     status[i] = 'valid';
+  }
+
+  // Retroactive: offline reject mask always overrides sequential suspect/valid.
+  for (const i of rejectMask) {
+    if (status[i] === 'rejected' && reason[i] !== 'suspectRetained') continue;
+    let roll = 0;
+    for (let j = i - 1; j >= 0; j--) {
+      if (rejectMask.has(j)) continue;
+      if (pack[j] != null) {
+        roll = pack[j];
+        break;
+      }
+      if (rolling[j] != null && status[j] !== 'missing') {
+        roll = rolling[j];
+        break;
+      }
+    }
+    const sig = [];
+    if (mechRejects.has(i)) sig.push('mechanical_repeat');
+    if (isolatedRejects.has(i)) sig.push('isolated_peak_reset');
+    if (episodeRejects.has(i)) sig.push('repeated_peak_episode');
+    signals[i] = sig;
+    pack[i] = null;
+    rolling[i] = roll;
+    reason[i] = isolatedRejects.has(i)
+      ? 'isolatedPeakReset'
+      : repeatedIsolatedRejects.has(i) || dongraeRejects.has(i)
+        ? 'mechanicalRepeat'
+        : 'upwardSpikeRejected';
+    status[i] = 'rejected';
   }
 
   return { pack, rolling, reason, status, signals, rejectMask, episodeMeta };
@@ -2347,6 +2467,7 @@ async function buildAwsVariablePack(awsJsonDir, fromKor, toKor, variable, option
   const manifest = {
     schemaVersion: PACK_SCHEMA_VERSION,
     contractRevision: PACK_CONTRACT_REVISION,
+    rnDayQcLogicRevision: RN_DAY_QC_LOGIC_REVISION,
     datasetId,
     source: spec.source,
     variable: name,
@@ -2692,6 +2813,10 @@ function isReusableCachedManifest(cached, name, from, to) {
     if (!acc || acc.type !== 'day') return false;
     if (!isContentAddressedPackBinaryUrl(cached.data.url, 'rn_day')) return false;
     if (!cached.qcDetailUrl || !String(cached.qcDetailUrl).includes('qc-v')) return false;
+    if (cached.rnDayQcLogicRevision !== RN_DAY_QC_LOGIC_REVISION) return false;
+  }
+  if (name === 'RN_24HR' || ROLLING_RAIN_SPIKE_QC_VARIABLES.has(name)) {
+    if (cached.rnDayQcLogicRevision !== RN_DAY_QC_LOGIC_REVISION) return false;
   }
   return true;
 }
@@ -2817,6 +2942,7 @@ async function todayRainPacksCoverThrough(packRoot, dayKey, variables, throughTm
     if (!cached) return false;
     if (cached.contractRevision !== PACK_CONTRACT_REVISION) return false;
     if (cached.schemaVersion !== PACK_SCHEMA_VERSION) return false;
+    if (cached.rnDayQcLogicRevision !== RN_DAY_QC_LOGIC_REVISION) return false;
     if (String(cached.to) !== String(throughTm)) return false;
     if (cached.complete === true) return false;
     if ((variable === 'RN_DAY' || variable === 'RN_24HR') && !cached.qcDetailUrl) return false;
@@ -3022,6 +3148,12 @@ module.exports = {
   findIsolatedPeakResetRejects,
   findRepeatedIsolatedSpikeRejects,
   isIsolatedPeakResetIndex,
+  isCrossWindowPeakReset,
+  isSpikeResetIndex,
+  spikePeakAtIndex,
+  crossPeakScaled,
+  debugRnDayQcTrace,
+  RN_DAY_QC_LOGIC_REVISION,
   evaluateStepSpikeSignals,
   packBinaryUrl,
   packBinaryFileName,

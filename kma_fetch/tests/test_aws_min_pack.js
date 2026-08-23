@@ -43,6 +43,7 @@ const {
   RN_24HR_SUBSTITUTION_MAX_MINUTES,
   PACK_SCHEMA_VERSION,
   PACK_CONTRACT_REVISION,
+  RN_DAY_QC_LOGIC_REVISION,
   PACK_VARIABLES,
   MISSING_I16,
   SUPPORTED_PACK_VARIABLES,
@@ -947,7 +948,8 @@ async function main() {
         validSampleCount: 1,
         coverage: { status: 'ok' },
         data: { url: '/datasets/aws/rn_24hr_rolling/1m/x/rn_24hr_rolling-vdeadbeef.i16le' },
-        qcDetailUrl: '/datasets/aws/rn_24hr_rolling/1m/x/qc-vabc123.json'
+        qcDetailUrl: '/datasets/aws/rn_24hr_rolling/1m/x/qc-vabc123.json',
+        rnDayQcLogicRevision: RN_DAY_QC_LOGIC_REVISION
       },
       'RN_24HR',
       'a',
@@ -1314,6 +1316,24 @@ async function main() {
     assert.ok(iso574ProdJson.signals[fi].includes('isolated_peak_reset'), `prod-json ${fi}`);
     assert.ok(iso574ProdJson.signals[fi].includes('mechanical_repeat'), `prod-json ${fi}`);
   }
+
+  // DB: RN_DAY cumulative unchanged while RN_15M alone spikes (RN_12HR null).
+  const iso574DbCross = qcRnDayStationSeries(
+    [280, 245, 0, 280, 245, 280],
+    [
+      { rn15: 0, rn60: 0, rn12: null },
+      { rn15: 245, rn60: 245, rn12: null },
+      { rn15: 0, rn60: 0, rn12: null },
+      { rn15: 0, rn60: 0, rn12: null },
+      { rn15: 245, rn60: 245, rn12: null },
+      { rn15: 0, rn60: 0, rn12: null }
+    ],
+    ['1050', '1051', '1052', '1055', '1056', '1057']
+  );
+  assert.strictEqual(iso574DbCross.status[1], 'rejected');
+  assert.strictEqual(iso574DbCross.status[4], 'rejected');
+  assert.ok(iso574DbCross.signals[1].includes('isolated_peak_reset'));
+  assert.ok(iso574DbCross.signals[4].includes('mechanical_repeat'));
 
   const stn574Root = path.join(tmp, 'aws-stn574');
   const stn574Cat = { byId: new Map(), stations: [{ STN_ID: 574 }] };

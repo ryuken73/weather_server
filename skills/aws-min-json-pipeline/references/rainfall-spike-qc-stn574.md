@@ -38,11 +38,20 @@ node kma_fetch/tests/test_aws_min_pack.js
 
 ## 운영 warm (코드 배포 후)
 
+manifest에 **`rnDayQcLogicRevision: 2`** 가 없으면 구 QC 로직 pack — scheduler가 `source-unchanged`로 rebuild를 skip했을 수 있음. 배포 후 반드시:
+
 ```bash
 node kma_fetch/warm_aws_min_packs.js \
   --from 20260823 --to 20260823 \
   --variables RN_15M,RN_60M,RN_12HR,RN_24HR,RN_DAY \
   --force
+```
+
+로컬 trace (Hub exact API → `buildAwsVariablePack` 동일 경로):
+
+```bash
+node kma_fetch/tests/debug_stn574_qc.js
+node kma_fetch/tests/debug_stn574_qc.js --json-dir /path/to/in_data/aws
 ```
 
 ## 기대 pack (STN 574, 네 spike 시각)
