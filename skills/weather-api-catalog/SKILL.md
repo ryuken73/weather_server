@@ -64,7 +64,7 @@ description: weather_api 서버가 노출하는 HTTP API 카탈로그(producer).
 
 일 pack은 서버가 어제/backfill 후 디스크에 만든다. 첫 요청 전에 워밍되면 바로 binary만 받는다.
 
-**오늘(KST) 강수** (`RN_15M`/`RN_60M`/`RN_12HR`/`RN_24HR`/`RN_DAY`)는 `main_AWS`가 **1분마다** pack을 갱신한다. API는 manifest만 반환하며 요청 경로에서 rebuild하지 않는다. `complete:false`, `to`=최신 원천 분, Cache-Control `no-store`. 상세: `docs/rainfall-consumer-today-pack-guide.md`.
+**오늘(KST) pack**은 `main_AWS`가 TA·강수·바람·풍향·습도·이슬점 **전 변수를 기본 5분 scheduler + 수집 완료 후 5–15초 debounce**로 갱신한다. 기동 시에도 1회 즉시 warm한다. API는 기본적으로 manifest만 반환하며 요청 경로에서 rebuild하지 않는다. 준비 전/갱신 지연은 `404 PACK_NOT_WARMED`/`PACK_STALE`, 정상 partial은 `complete:false`, `to`=최신 원천 분, Cache-Control `no-store`. 운영 설정: `AWS_TODAY_PACK_REFRESH`, `AWS_TODAY_PACK_INTERVAL`, `AWS_TODAY_PACK_DEBOUNCE_MS`. 강수 상세: `docs/rainfall-consumer-today-pack-guide.md`.
 
 Pack binary 계약 (consumer):
 
