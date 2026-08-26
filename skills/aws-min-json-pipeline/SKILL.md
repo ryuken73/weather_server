@@ -17,12 +17,12 @@ description: AWS_MIN station JSON 수집·누락 복구·과거 backfill·1분 �
 
 ## 빠른 판단
 
-1. 실시간/준실시간 수집·lookback·누락·**운영 env/재기동/복사** → `references/ops-fetch.md`
+1. 실시간/준실시간 수집·lookback·누락·**운영 env/재기동** → `references/ops-fetch.md` (운영: `sbs@10.10.16.168`, repo `/home/sbs/node_project/weather_server`)
    - 수작업 backfill + pack 생성 → 같은 파일 **수작업 runbook**
 2. 파일 경로·JSON shape·단위·pack → `references/paths-and-schema.md`
 3. `#` 원본 / API 허브 응답 포맷·변환 → `references/formats.md` (Hub 원문 샘플: `assets/nph-aws2_min_202608131200.txt`)
 4. **RN_24HR rolling / RN_DAY 분리** → 아래 **RN_24HR / RN_DAY** 절 + `docs/rainfall-producer-rn24-rnday-change-request.md`
-5. 과거 한 달 등 → API 허브 `work/fetch_aws_apihub.js` (기본 **all-minutes**) → `work/out`를 `in_data/aws`로 복사
+5. **과거(1달+ / DB 없음) Hub fetch + pack** → `references/historical-hub-fetch-pack.md` 또는 **`kma_fetch/run_backfill.sh`**
 6. HTTP로 읽기만 → `skills/weather-api-catalog`
 
 ## 핵심 규칙

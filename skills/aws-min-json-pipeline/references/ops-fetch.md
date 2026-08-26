@@ -28,9 +28,21 @@ AWS_FETCH_SOURCE=auto   # 생략 가능
 
 `USE_API`는 Hub on/off가 아니라 **“API_KEY 필수 검사 on/off”**다. 실제 소스는 `AWS_FETCH_SOURCE`가 결정한다.
 
-운영 스크립트는 repo 루트(`weather_api`)에서 실행한다. `NODE_ENV=production`(또는 `prod`)이면 `kma_fetch/.env.production`을 읽는다.
+## 운영 서버
 
-**운영 고정 경로** (`AWS_JSON_DIR` / `AWS_PACK_DIR` 미설정 시 코드 기본값과 동일):
+| 항목 | 값 |
+| --- | --- |
+| SSH | `sbs@10.10.16.168` |
+| repo (weather_api) | `/home/sbs/node_project/weather_server` |
+
+```bash
+ssh sbs@10.10.16.168
+cd /home/sbs/node_project/weather_server
+```
+
+운영 스크립트는 **repo 루트**에서 실행한다. `NODE_ENV=production`(또는 `prod`)이면 `kma_fetch/.env.production`을 읽는다.
+
+**데이터 경로** (`AWS_JSON_DIR` / `AWS_PACK_DIR` 미설정 시 코드 기본값과 동일):
 
 | 용도 | 경로 |
 | --- | --- |
@@ -46,7 +58,7 @@ JSON과 pack 모두 `weather_data` 아래 (`in_data/aws`, `out_data/aws/pack`). 
 | 상황 | 할 일 |
 | --- | --- |
 | 운영 `in_data/aws`에 그날 파일이 일부만 있음 (DB/Hub로 gap 메움) | **A.** `backfill_aws_min.js` (끝나면 그날 pack 자동 워밍) |
-| 과거 여러 날을 Hub에서 통째로 받을 때 | **B.** `fetch_aws_apihub.js` → `in_data/aws` 복사 → pack |
+| **DB 없음**, 과거 여러 날 Hub에서 통째로 | **B.** `fetch_aws_apihub.js` → `warm_aws_min_packs.js` 또는 **`kma_fetch/run_backfill.sh`** |
 | JSON은 이미 있고 pack만 만들거나 coverage/schema 재빌드 | **C.** `warm_aws_min_packs.js --force` |
 
 날짜는 KST. `backfill_aws_min.js`는 **하루 단위**(1440 슬롯). 여러 날은 날짜를 바꿔 반복하거나 B를 쓴다.
@@ -54,7 +66,7 @@ JSON과 pack 모두 `weather_data` 아래 (`in_data/aws`, `out_data/aws/pack`). 
 ### A. 하루 gap backfill (권장: 운영 서버)
 
 ```bash
-cd /path/to/weather_api
+cd /home/sbs/node_project/weather_server
 
 # 1) 누락만 확인 (조회/저장 없음)
 NODE_ENV=production node kma_fetch/backfill_aws_min.js 20260811 --dry-run
@@ -76,37 +88,53 @@ for d in 20260809 20260810 20260811; do
 done
 ```
 
-### B. Hub 대량 수신 → 운영 경로 복사 → pack
+### B. Hub 대량 수신 → pack (DB 없음, 운영 in_data 직접)
 
-Hub 산출물은 `work/out/{yyyy-MM-dd}/`다. HTTP 서빙 경로는 `in_data/aws`이므로 **복사 후** pack 한다.
+**rsync 불필요.** `fetch_aws_apihub.js`는 `--out-dir` 없이 `NODE_ENV=production`이면 **바로** `in_data/aws`에 저장한다.  
+`--out-dir work/out`은 로컬 검증용일 때만 cp/rsync.
 
-```bash
-cd /path/to/weather_api
-# API_KEY는 셸 또는 .env.production. 키를 문서/git에 넣지 말 것
+전체 runbook: `references/historical-hub-fetch-pack.md`
 
-node work/fetch_aws_apihub.js --from 20260712 --to 20260803 --sleep 300
-
-# 운영 서버 예 (덮어쓰기 전 샘플 확인)
-# rsync -av work/out/2026-07-12/ /data/node_project/weather_data/in_data/aws/2026-07-12/
-
-USE_API=false NODE_ENV=production node kma_fetch/probe_aws_min_cadence.js --day 2026-07-12
-NODE_ENV=production node kma_fetch/warm_aws_ta_pack.js --from 20260712 --to 20260803
-```
-
-복사 없이 `work/out`만 워밍할 때(로컬 검증):
+**빠른 경로 (운영 권장):** `kma_fetch/run_backfill.sh` 상단 `FETCH_*`/`PACK_*`/`PACK_VARIABLES` 수정 후 실행.
 
 ```bash
-USE_API=false node kma_fetch/warm_aws_ta_pack.js --from 20260701 --to 20260811 --json-dir work/out
+cd /home/sbs/node_project/weather_server
+bash kma_fetch/run_backfill.sh
+# 또는 env override:
+FETCH_FROM=20251231 FETCH_TO=20260131 PACK_FROM=20260101 PACK_TO=20260131 \
+  PACK_VARIABLES=TA,TD,HM bash kma_fetch/run_backfill.sh
 ```
 
-이 pack은 운영 `out_data`가 아니다. 운영 서빙하려면 JSON을 `in_data/aws`에 두고 `NODE_ENV=production`으로 다시 워밍한다.
+수동 2단계:
+
+```bash
+cd /home/sbs/node_project/weather_server
+# API_KEY는 kma_fetch/.env.production
+
+# 1) Hub → in_data (JSON만, pack 없음)
+NODE_ENV=production node work/fetch_aws_apihub.js \
+  --from 20260101 --to 20260131 --sleep 300
+
+# 2) pack (필수 별도 단계)
+NODE_ENV=production node kma_fetch/warm_aws_min_packs.js \
+  --from 20260101 --to 20260131 --force
+
+USE_API=false NODE_ENV=production node kma_fetch/probe_aws_min_cadence.js --day 2026-01-15
+```
+
+로컬만 (`work/out`):
+
+```bash
+node work/fetch_aws_apihub.js --from 20260712 --to 20260803 --out-dir work/out --sleep 300
+USE_API=false node kma_fetch/warm_aws_min_packs.js --from 20260701 --to 20260811 --json-dir work/out --force
+```
 
 ### C. pack만 생성 / schema v3 재빌드
 
 JSON이 `in_data/aws`에 있을 때. 구 pack(`schemaVersion < 3`)은 `--force`가 필요하다.
 
 ```bash
-cd /path/to/weather_api
+cd /home/sbs/node_project/weather_server
 
 NODE_ENV=production node kma_fetch/warm_aws_min_packs.js 20260811
 NODE_ENV=production node kma_fetch/warm_aws_ta_pack.js --yesterday   # TA wrapper
