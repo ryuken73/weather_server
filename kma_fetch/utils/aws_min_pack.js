@@ -29,9 +29,11 @@ const VARIABLE_TA = 'TA';
  */
 const PACK_SCHEMA_VERSION = 4;
 /** Bump when pack meaning/URL contract changes for cache reuse checks. */
-const PACK_CONTRACT_REVISION = 8;
+const PACK_CONTRACT_REVISION = 9;
 /** Bump when RN_DAY spike QC rules change (invalidates today warm skip). */
 const RN_DAY_QC_LOGIC_REVISION = 2;
+/** Bump when TA temporal/sparse QC rules change (invalidates today warm skip). */
+const TA_QC_LOGIC_REVISION = 2;
 const RN_DAY_CROSS_DRY_LOOKBACK_MINUTES = 3;
 
 /**
@@ -410,11 +412,41 @@ function parseTimestampKorStrict(timestampKor) {
 
 function readTaQcConfig(env = process.env) {
   const enabled = env.AWS_TA_QC !== '0' && env.AWS_TA_QC !== 'false';
+  const sparseHighDegC = Number(env.AWS_TA_QC_SPARSE_HIGH_DEGC || 44);
+  const sparseMaxValidSamples = Number(env.AWS_TA_QC_SPARSE_MAX_VALID_SAMPLES || 30);
   return {
     enabled,
     maxDeltaScaled: Math.round(Number(env.AWS_TA_QC_MAX_DELTA_DEGC || 3) * 10),
     spikeNeighborMaxScaled: Math.round(Number(env.AWS_TA_QC_SPIKE_NEIGHBOR_MAX_DEGC || 1.5) * 10),
-    spikeMinScaled: Math.round(Number(env.AWS_TA_QC_SPIKE_MIN_DEGC || 2.5) * 10)
+    spikeMinScaled: Math.round(Number(env.AWS_TA_QC_SPIKE_MIN_DEGC || 2.5) * 10),
+    sparseHighDegC,
+    sparseHighDegCScaled: Math.round(sparseHighDegC * 10),
+    sparseMaxValidSamples
+  };
+}
+
+function buildTaOfficialFlagBlock() {
+  return {
+    available: false,
+    excludedSampleCount: 0,
+    note:
+      'No TA official QC column in wx_AWS_MIN or API Hub text shape (2026-08-29 survey); heuristic QC only'
+  };
+}
+
+function taScaledToDegC(scaled) {
+  if (scaled == null || scaled === MISSING_I16) return null;
+  return Number((scaled * 0.1).toFixed(1));
+}
+
+function summarizeTaQcStates(qcRecords) {
+  const records = Array.isArray(qcRecords) ? qcRecords : [];
+  return {
+    rejectedSampleCount: records.filter((r) => r.state === 'rejected').length,
+    temporalJumpRejectedSampleCount: records.filter((r) => r.reason === 'temporal-jump').length,
+    isolatedSpikeRejectedSampleCount: records.filter((r) => r.reason === 'isolated-spike').length,
+    sparseHighRejectedSampleCount: records.filter((r) => r.reason === 'sparse-high').length,
+    recordCount: records.length
   };
 }
 
@@ -422,10 +454,30 @@ function readTaQcConfig(env = process.env) {
  * Pack 전용 temporal QC. /exact·디스크 JSON 원천은 그대로.
  * 1) 직전 유효 분 대비 |ΔTA| > maxDelta → missing
  * 2) 양 이웃은 비슷한데 가운데만 크게 튐 → missing (고립 스파이크)
+ * @returns {{ excluded: number, records: object[] }}
  */
-function applyTaTemporalQc(int16, stationCount, frameCount, config) {
-  if (!config.enabled) return 0;
+function applyTaTemporalQc(int16, stationCount, frameCount, config, meta = {}) {
+  if (!config.enabled) return { excluded: 0, records: [] };
+  const { timestamps, stationIds } = meta;
+  const collectRecords = Array.isArray(timestamps) && Array.isArray(stationIds);
   let excluded = 0;
+  const records = [];
+
+  const pushReject = (fi, si, curr, reason, signals) => {
+    if (collectRecords) {
+      records.push({
+        TM: timestamps[fi],
+        STN_ID: stationIds[si],
+        variable: 'TA',
+        rawValue: curr,
+        valueC: taScaledToDegC(curr),
+        state: 'rejected',
+        reason,
+        signals
+      });
+    }
+    excluded += 1;
+  };
 
   for (let si = 0; si < stationCount; si++) {
     for (let fi = 1; fi < frameCount; fi++) {
@@ -443,8 +495,8 @@ function applyTaTemporalQc(int16, stationCount, frameCount, config) {
       }
       if (prevVal == null) continue;
       if (Math.abs(curr - prevVal) > config.maxDeltaScaled) {
+        pushReject(fi, si, curr, 'temporal-jump', ['delta_exceeds_max_per_minute']);
         int16[idx] = MISSING_I16;
-        excluded += 1;
       }
     }
 
@@ -460,13 +512,68 @@ function applyTaTemporalQc(int16, stationCount, frameCount, config) {
         Math.abs(curr - prev) > config.spikeMinScaled &&
         Math.abs(curr - next) > config.spikeMinScaled
       ) {
+        pushReject(fi, si, curr, 'isolated-spike', ['isolated_spike_neighbors_similar']);
         int16[idx] = MISSING_I16;
-        excluded += 1;
       }
     }
   }
 
-  return excluded;
+  return { excluded, records };
+}
+
+/**
+ * Sparse high TA QC — complete day only, after temporal QC.
+ * station/day valid TA ≤ sparseMaxValidSamples and TA≥sparseHighDegC → reject high samples.
+ * @returns {{ excluded: number, records: object[] }}
+ */
+function applyTaSparseHighQc(int16, stationCount, frameCount, config, timestamps, stationIds) {
+  if (!config.enabled) return { excluded: 0, records: [] };
+  let excluded = 0;
+  const records = [];
+  const threshold = config.sparseHighDegCScaled;
+  const maxValid = config.sparseMaxValidSamples;
+  const signalMaxValid = `station_valid_samples_lte_${maxValid}`;
+  const signalHigh = `ta_gte_${config.sparseHighDegC}c`;
+
+  for (let si = 0; si < stationCount; si++) {
+    const validFrames = [];
+    for (let fi = 0; fi < frameCount; fi++) {
+      const idx = fi * stationCount + si;
+      if (int16[idx] !== MISSING_I16) validFrames.push(fi);
+    }
+    const validCount = validFrames.length;
+    if (validCount > maxValid) continue;
+
+    let hasHigh = false;
+    for (const fi of validFrames) {
+      if (int16[fi * stationCount + si] >= threshold) {
+        hasHigh = true;
+        break;
+      }
+    }
+    if (!hasHigh) continue;
+
+    for (const fi of validFrames) {
+      const idx = fi * stationCount + si;
+      const val = int16[idx];
+      if (val < threshold) continue;
+      records.push({
+        TM: timestamps[fi],
+        STN_ID: stationIds[si],
+        variable: 'TA',
+        rawValue: val,
+        valueC: taScaledToDegC(val),
+        state: 'rejected',
+        reason: 'sparse-high',
+        signals: [signalMaxValid, signalHigh],
+        stationValidSampleCount: validCount
+      });
+      int16[idx] = MISSING_I16;
+      excluded += 1;
+    }
+  }
+
+  return { excluded, records };
 }
 
 async function readFrameRows(awsJsonDir, tm) {
@@ -621,6 +728,41 @@ function buildRnSparseQcDetail({
     unit: 'mm',
     note:
       'Sparse QC only: suspect-retained | rejected | substituted | substitution-expired. Lookup by (TM, STN_ID). rawValue=Int16×10, valueMm=rawValue*0.1',
+    qcStates,
+    records
+  };
+  const qcJson = serializeQcDetailJson(qcBody);
+  const qcSha256 = hashQcDetailJson(qcJson);
+  const qcFileName = packQcDetailFileName(qcSha256);
+  return {
+    qcStates,
+    qcUrl: packQcDetailUrl(spec, dayKey, qcSha256),
+    qcSha256,
+    qcFileName,
+    qcDetail: {
+      ...qcBody,
+      _publishJson: qcJson,
+      _publishFileName: qcFileName,
+      _publishAlsoAs: 'qc.json'
+    }
+  };
+}
+
+/** contract v9: complete TA always emit qc-v sidecar (records may be empty). */
+function buildTaQcDetail({ manifest, qcRecords, spec, dayKey, from, datasetId }) {
+  const records = Array.isArray(qcRecords) ? qcRecords : [];
+  const qcStates = summarizeTaQcStates(records);
+  const qcBody = {
+    schemaVersion: 1,
+    contractRevision: PACK_CONTRACT_REVISION,
+    datasetId,
+    date: from.slice(0, 8),
+    variable: 'TA',
+    generatedAt: manifest.generatedAt,
+    scale: 0.1,
+    unit: 'degC',
+    note:
+      'TA pack QC detail: temporal-jump | isolated-spike | sparse-high rejected samples. Lookup by (TM, STN_ID). rawValue=Int16×10, valueC=rawValue*0.1',
     qcStates,
     records
   };
@@ -2428,11 +2570,35 @@ async function buildAwsVariablePack(awsJsonDir, fromKor, toKor, variable, option
   }
 
   let taQcConfig = null;
-  let taQcExcluded = 0;
+  let taQcTemporalExcluded = 0;
+  let taQcSparseHighExcluded = 0;
+  let taQcRecords = [];
+  const todayYmd = kstTodayYmd();
+  const isToday = from.slice(0, 8) === todayYmd || to.slice(0, 8) === todayYmd;
+  const complete = !isToday && isFullPastDay(from, to) && missingTimestamps.length === 0;
   if (spec.temporalQc === 'ta') {
     taQcConfig = readTaQcConfig(options.env);
-    taQcExcluded = applyTaTemporalQc(int16, stationCount, frameCount, taQcConfig);
+    const temporal = applyTaTemporalQc(int16, stationCount, frameCount, taQcConfig, {
+      timestamps,
+      stationIds
+    });
+    taQcTemporalExcluded = temporal.excluded;
+    taQcRecords = temporal.records;
+    if (complete) {
+      const sparse = applyTaSparseHighQc(
+        int16,
+        stationCount,
+        frameCount,
+        taQcConfig,
+        timestamps,
+        stationIds
+      );
+      taQcSparseHighExcluded = sparse.excluded;
+      taQcRecords = taQcRecords.concat(sparse.records);
+    }
   }
+
+  const taQcExcluded = taQcTemporalExcluded + taQcSparseHighExcluded;
 
   const { validSampleCount, missingSampleCount } = countSamples(int16);
   const coverage = assessPackCoverage(validSampleCount, missingSampleCount);
@@ -2441,9 +2607,6 @@ async function buildAwsVariablePack(awsJsonDir, fromKor, toKor, variable, option
   const binary = Buffer.from(int16.buffer, int16.byteOffset, int16.byteLength);
   const sha256 = crypto.createHash('sha256').update(binary).digest('hex');
   const dayKey = dayKeyFromRange(from, to);
-  const todayYmd = kstTodayYmd();
-  const isToday = from.slice(0, 8) === todayYmd || to.slice(0, 8) === todayYmd;
-  const complete = !isToday && isFullPastDay(from, to) && missingTimestamps.length === 0;
   const revision = sha256.slice(0, 8);
   const datasetId = `aws-${spec.slug}-1m-${dayKey}-v${revision}`;
 
@@ -2597,11 +2760,17 @@ async function buildAwsVariablePack(awsJsonDir, fromKor, toKor, variable, option
   if (spec.temporalQc === 'ta' && taQcConfig) {
     manifest.qc.taTemporal = {
       enabled: taQcConfig.enabled,
+      logicRevision: TA_QC_LOGIC_REVISION,
       maxDeltaDegCPerMinute: taQcConfig.maxDeltaScaled / 10,
       spikeNeighborMaxDegC: taQcConfig.spikeNeighborMaxScaled / 10,
       spikeMinDegCDelta: taQcConfig.spikeMinScaled / 10,
-      excludedSampleCount: taQcExcluded
+      sparseHighDegC: taQcConfig.sparseHighDegC,
+      sparseMaxValidSamples: taQcConfig.sparseMaxValidSamples,
+      excludedSampleCount: taQcExcluded,
+      temporalExcludedSampleCount: taQcTemporalExcluded,
+      sparseHighExcludedSampleCount: taQcSparseHighExcluded
     };
+    manifest.qc.taOfficialFlag = buildTaOfficialFlagBlock();
   }
   if (overflowCount > 0 || negativeRainCount > 0) {
     manifest.qc.encode = {
@@ -2680,6 +2849,21 @@ async function buildAwsVariablePack(awsJsonDir, fromKor, toKor, variable, option
     manifest.qcDetailFile = rnQc.qcFileName;
     manifest.qc.qcStates = rnQc.qcStates;
     qcDetail = rnQc.qcDetail;
+  }
+  if (spec.temporalQc === 'ta' && complete) {
+    const taQc = buildTaQcDetail({
+      manifest,
+      qcRecords: taQcRecords,
+      spec,
+      dayKey,
+      from,
+      datasetId
+    });
+    manifest.qcDetailUrl = taQc.qcUrl;
+    manifest.qcDetailSha256 = taQc.qcSha256;
+    manifest.qcDetailFile = taQc.qcFileName;
+    manifest.qc.taQcStates = taQc.qcStates;
+    qcDetail = taQc.qcDetail;
   }
 
   return {
@@ -2899,6 +3083,12 @@ function isReusableCachedManifest(cached, name, from, to) {
   if (name === 'RN_24HR' || ROLLING_RAIN_SPIKE_QC_VARIABLES.has(name)) {
     if (cached.rnDayQcLogicRevision !== RN_DAY_QC_LOGIC_REVISION) return false;
   }
+  if (name === 'TA') {
+    if (!isContentAddressedPackBinaryUrl(cached.data.url, 'ta')) return false;
+    if (!cached.qcDetailUrl || !String(cached.qcDetailUrl).includes('qc-v')) return false;
+    const taQc = cached.qc && cached.qc.taTemporal;
+    if (!taQc || taQc.logicRevision !== TA_QC_LOGIC_REVISION) return false;
+  }
   return true;
 }
 
@@ -3028,6 +3218,10 @@ async function todayPacksCoverThrough(packRoot, dayKey, variables, throughTm) {
       cached.rnDayQcLogicRevision !== RN_DAY_QC_LOGIC_REVISION
     ) {
       return false;
+    }
+    if (variable === 'TA') {
+      const taQc = cached.qc && cached.qc.taTemporal;
+      if (!taQc || taQc.logicRevision !== TA_QC_LOGIC_REVISION) return false;
     }
     if (String(cached.to) !== String(throughTm)) return false;
     if (cached.complete === true) return false;
@@ -3236,6 +3430,10 @@ module.exports = {
   isReusableCachedManifest,
   readTaQcConfig,
   applyTaTemporalQc,
+  applyTaSparseHighQc,
+  buildTaOfficialFlagBlock,
+  buildTaQcDetail,
+  summarizeTaQcStates,
   getPackVariableSpec,
   readRnDayRaw,
   normalizeRnDayScaledAtHhmm,
@@ -3255,6 +3453,7 @@ module.exports = {
   crossPeakScaled,
   debugRnDayQcTrace,
   RN_DAY_QC_LOGIC_REVISION,
+  TA_QC_LOGIC_REVISION,
   evaluateStepSpikeSignals,
   packBinaryUrl,
   packBinaryFileName,

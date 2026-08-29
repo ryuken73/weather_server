@@ -46,6 +46,7 @@ const {
   PACK_SCHEMA_VERSION,
   PACK_CONTRACT_REVISION,
   RN_DAY_QC_LOGIC_REVISION,
+  TA_QC_LOGIC_REVISION,
   PACK_VARIABLES,
   MISSING_I16,
   SUPPORTED_PACK_VARIABLES,
@@ -168,7 +169,7 @@ async function main() {
   assert.strictEqual(regStats.regressionSampleCount, 2);
   assert.strictEqual(regStats.counterRegressionFilledSampleCount, 2);
   assert.strictEqual(regStats.regressionStationCount, 1);
-  assert.strictEqual(PACK_CONTRACT_REVISION, 8);
+  assert.strictEqual(PACK_CONTRACT_REVISION, 9);
   assert.strictEqual(findExtremeThenLongMissingRejects([0, 210, ...Array(15).fill(null)]).size, 0);
 
   // Fixture A: extreme then long missing → suspect-retained, not rejected
@@ -300,6 +301,8 @@ async function main() {
   assert.strictEqual(manifest.validRatio, manifest.coverage.validRatio);
   assert.strictEqual(manifest.data.sha256.length, 64);
   assert.ok(manifest.qc && manifest.qc.taTemporal);
+  assert.strictEqual(manifest.qc.taTemporal.logicRevision, TA_QC_LOGIC_REVISION);
+  assert.ok(!manifest.qcDetailUrl, 'partial/incomplete TA pack must not emit qcDetailUrl');
 
   // daily max for stnA from pack
   let max = MISSING_I16;
@@ -348,6 +351,69 @@ async function main() {
     assert.strictEqual(gv[fi], MISSING_I16, `frame ${fi} should be QC excluded`);
   }
   assert.ok(glitchBuilt.manifest.qc.taTemporal.excludedSampleCount >= 5);
+
+  // STN 587 유형: complete day sparse high (44℃+, valid≤30) → reject + qc-v sidecar
+  const sparseRoot = path.join(tmp, 'aws-ta-sparse');
+  const stn587 = 587;
+  const stnDense = 100;
+  const sparseDay = '20260828';
+  for (let m = 0; m < 1440; m++) {
+    const hh = String(Math.floor(m / 60)).padStart(2, '0');
+    const mm = String(m % 60).padStart(2, '0');
+    const tm = `${sparseDay}${hh}${mm}`;
+    const rows = [{ STN_ID: stnDense, TM: tm, TA: 250 }];
+    if (tm === '202608281201') rows.push({ STN_ID: stn587, TM: tm, TA: 450 });
+    else if (tm === '202608281215') rows.push({ STN_ID: stn587, TM: tm, TA: 447 });
+    else if (tm === '202608281300') {
+      rows[0] = { STN_ID: stnDense, TM: tm, TA: 253 };
+    }
+    await writeFrame(sparseRoot, tm, rows);
+  }
+  const sparseBuilt = await buildAwsTaPack(sparseRoot, `${sparseDay}0000`, `${sparseDay}2359`, {
+    catalog: {
+      byId: new Map(),
+      stations: [
+        { STN_ID: stn587, STN_NAME: '방산' },
+        { STN_ID: stnDense, STN_NAME: 'dense' }
+      ]
+    }
+  });
+  assert.strictEqual(sparseBuilt.manifest.complete, true);
+  assert.strictEqual(sparseBuilt.manifest.contractRevision, 9);
+  assert.strictEqual(sparseBuilt.manifest.qc.taTemporal.logicRevision, TA_QC_LOGIC_REVISION);
+  assert.ok(sparseBuilt.manifest.qc.taTemporal.sparseHighExcludedSampleCount >= 2);
+  assert.ok(sparseBuilt.manifest.qcDetailUrl);
+  assert.ok(
+    sparseBuilt.manifest.qcDetailUrl.startsWith('/datasets/aws/ta/1m/20260828/qc-v'),
+    `expected final-agreement qcDetailUrl path, got ${sparseBuilt.manifest.qcDetailUrl}`
+  );
+  assert.ok(
+    sparseBuilt.manifest.qcDetailUrl.endsWith(
+      `qc-v${sparseBuilt.manifest.qcDetailSha256.slice(0, 16)}.json`
+    )
+  );
+  assert.ok(sparseBuilt.manifest.qc.taOfficialFlag);
+  assert.strictEqual(sparseBuilt.manifest.qc.taOfficialFlag.available, false);
+  const sparseView = new Int16Array(
+    sparseBuilt.binary.buffer,
+    sparseBuilt.binary.byteOffset,
+    sparseBuilt.binary.length / 2
+  );
+  const sIdx = new Map(sparseBuilt.manifest.stations.map((s, i) => [s.STN_ID, i]));
+  const sSc = sparseBuilt.manifest.stationCount;
+  const sparseFi1201 = 12 * 60 + 1;
+  const sparseFi1215 = 12 * 60 + 15;
+  const sparseFi1300 = 13 * 60 + 0;
+  assert.strictEqual(sparseView[sparseFi1201 * sSc + sIdx.get(stn587)], MISSING_I16);
+  assert.strictEqual(sparseView[sparseFi1215 * sSc + sIdx.get(stn587)], MISSING_I16);
+  assert.strictEqual(sparseView[sparseFi1300 * sSc + sIdx.get(stnDense)], 253);
+  const sparseRec587 = sparseBuilt.qcDetail.records.filter((r) => r.STN_ID === stn587);
+  assert.ok(sparseRec587.some((r) => r.TM === '202608281201' && r.rawValue === 450));
+  assert.ok(sparseRec587.some((r) => r.TM === '202608281215' && r.rawValue === 447));
+  assert.ok(sparseRec587.every((r) => r.reason === 'sparse-high'));
+  const sparsePub = await publishAwsTaPack(path.join(tmp, 'pack-sparse'), sparseBuilt);
+  assert.ok(sparsePub.qcDetailPath);
+  assert.ok(String(sparsePub.qcDetailPath).includes('qc-v'));
 
   const fixtureText = fs.readFileSync(
     path.join(__dirname, '..', '..', 'skills', 'aws-min-json-pipeline', 'assets', 'nph-aws2_min_202608131200.txt'),
@@ -667,7 +733,7 @@ async function main() {
   const regDay = await buildAwsVariablePack(regRoot, '202608200701', '202608200801', 'RN_DAY', {
     catalog: regCatalog
   });
-  assert.strictEqual(regDay.manifest.contractRevision, 8);
+  assert.strictEqual(regDay.manifest.contractRevision, 9);
   assert.ok(regDay.manifest.qc.rnDayRegression.regressionSampleCount >= 3);
   assert.ok(regDay.manifest.qc.rnDayRegression.regressionStationCount >= 2);
   const rd = new Int16Array(regDay.binary.buffer, regDay.binary.byteOffset, regDay.binary.length / 2);
@@ -885,13 +951,36 @@ async function main() {
         to: 'b',
         sourceField: 'TA',
         validSampleCount: 1,
-        coverage: { status: 'ok' }
+        coverage: { status: 'ok' },
+        data: { url: '/datasets/aws/ta/1m/x/ta-v01234567.i16le' },
+        qcDetailUrl: '/datasets/aws/ta/1m/x/qc-v0123456789abcdef.json',
+        qc: { taTemporal: { logicRevision: TA_QC_LOGIC_REVISION } }
       },
       'TA',
       'a',
       'b'
     ),
     true
+  );
+  assert.strictEqual(
+    isReusableCachedManifest(
+      {
+        complete: true,
+        schemaVersion: PACK_SCHEMA_VERSION,
+        contractRevision: PACK_CONTRACT_REVISION,
+        variable: 'TA',
+        from: 'a',
+        to: 'b',
+        sourceField: 'TA',
+        validSampleCount: 1,
+        coverage: { status: 'ok' },
+        data: { url: '/datasets/aws/ta/1m/x/ta-v01234567.i16le' }
+      },
+      'TA',
+      'a',
+      'b'
+    ),
+    false
   );
   // Legacy day-accumulation RN_24HR must not be reused as rolling
   assert.strictEqual(
@@ -1197,7 +1286,7 @@ async function main() {
       `qc-v${yeong.manifest.qcDetailSha256.slice(0, 16)}.json`
     )
   );
-  assert.strictEqual(yeong.qcDetail.contractRevision, 8);
+  assert.strictEqual(yeong.qcDetail.contractRevision, 9);
   assert.strictEqual(yeong.qcDetail.datasetId, yeong.manifest.datasetId);
   const yRec = yeong.qcDetail.records.find((r) => r.STN_ID === 277 && r.rawValue === 648);
   assert.ok(yRec);
