@@ -1,7 +1,7 @@
 # TA pack QC — Producer↔Consumer 최종 합의
 
 작성일: 2026-08-29  
-상태: **합의 완료 — producer 구현 착수 가능**
+상태: **producer 20260828 warm PASS · consumer E2E 대기**
 
 관련 문서:
 - `docs/producer-ta-temperature-qc-request.md` (producer 구현 spec)
@@ -97,7 +97,7 @@ rev 9 이후에도 **물리 plausibility `[-50, 45]℃` 유지**. 상한 43℃ �
 | --- | --- | --- |
 | 1 | **Consumer** | carry seed 규칙, observationValidity 분리, guard auto/on |
 | 2 | **Producer** | rev 9 TA QC + sidecar 구현·배포 |
-| 3 | **Producer** | `20260828` TA + 최근 14일 TA `--force` warm |
+| 3 | **Producer** | `20260828` TA warm **완료** · **최근 14일 TA `--force` warm은 consumer TA rev9 수용 배포 후** |
 | 4 | **공동** | §5 검증 |
 | 5 | **Consumer** | guard `auto`/off 운영 |
 
@@ -105,22 +105,39 @@ rev 9 이후에도 **물리 plausibility `[-50, 45]℃` 유지**. 상한 43℃ �
 
 ## 5. 공동 검증 checklist (587 / 2026-08-28)
 
-### Producer (API)
+### Producer (API) — 2026-08-29 운영 검증
 
-- [ ] `contractRevision >= 9`, `logicRevision >= 2`
-- [ ] `qcDetailUrl` 200, `qcDetailSha256` 일치
-- [ ] `sparseHighExcludedSampleCount >= 2`
-- [ ] qc detail: STN 587 @ 12:01 `450`, 12:15 `447` rejected
-- [ ] binary: STN 587 @ 12:01, 12:15 → `-32768`
-- [ ] exact @ 12:15 TA=447 **유지 OK** (원천 보존)
+- [x] `contractRevision >= 9`, `logicRevision >= 2` (`datasetId: aws-ta-1m-20260828-vbd4acad0`)
+- [x] `qcDetailUrl` 200, `qcDetailSha256` 일치
+- [x] `sparseHighExcludedSampleCount >= 2` (실측 **7**)
+- [x] qc detail: STN 587 @ 12:01 `450`, 12:15 `447` → `reason: sparse-high`
+- [x] binary: STN 587 @ 12:01, 12:15, 12:40, 13:20~13:23, 17:16 → `-32768`
+- [x] exact @ 12:15 TA=447 **유지 OK** (17:16 = 24.0℃)
+- [x] pack TOP10: 방산 없음, 44℃ 이상 0건
 
-### Consumer (UI)
+### Consumer (UI) — **BLOCKED (2026-08-29)**
 
 - [ ] 17시대 방산 **카드** 44.7℃ 없음
 - [ ] 17시대 **tooltip / station label** 44.7℃ 없음
 - [ ] 17시대 **지도 bar/색상** 44.7℃ ghost 없음
 - [ ] TOP10 / 극값 / 기준판에 587 44.7·45.0·49℃대 없음
 - [ ] RN_* pack 회귀 없음
+
+**차단 원인:** consumer `AWS_PACK_CONTRACT_REVISION = 8` 전역 검사 → rev9 TA 로드 시  
+`Unsupported AWS pack contract revision: 9/8` (`awsVariablePack.js`, `awsApiAdapter.js`).
+
+**consumer 선행 작업 (변수별 revision):**
+
+| variable | 허용 `contractRevision` |
+| --- | --- |
+| `TA` | **>= 9** (+ sidecar SHA, `logicRevision >= 2`) |
+| `RN_*` 등 | **8** (기존 유지) |
+
+- 캐시 키: `date`, `variable`, `contractRevision`, `logicRevision`, `datasetId`, `data.sha256`
+- TA rev9 sidecar fetch/SHA fallback (합의 §3.3)
+- **전역 revision을 9로 올리면 안 됨** — manifest `variable` 기준 분기
+
+**producer 조치:** `contractRevision` **변수별 분리** — TA=9, RN_*=8 (`packContractRevisionForVariable`). 전체 TA warm은 consumer TA rev9 배포 전까지 보류.
 
 ---
 
@@ -139,13 +156,22 @@ rev 9 이후에도 **물리 plausibility `[-50, 45]℃` 유지**. 상한 43℃ �
 - [x] Consumer §6 미결정 항목 회신
 - [x] Open points §2.1–2.8 회신
 - [x] Producer `producer-ta-temperature-qc-request.md` §검증·sidecar 경로를 본 합의와 sync (구현 시)
-- [ ] Consumer E2E 587 시나리오 (선배포)
+- [ ] Consumer E2E 587 시나리오 — **blocked: 변수별 contractRevision 수용 필요**
 
-**Blocking 이슈: 없음**
+**Blocking 이슈:** consumer TA `contractRevision >= 9` 미지원 (RN_*는 rev8 유지)
 
 ---
 
 ## 8. 참고
 
 - RN QC sidecar: `docs/aws-rn-qc-consumer-schema.md` (TA sidecar는 동일 publish·SHA 정책)
-- TA consumer schema (구현 후 추가 예정): producer 구현과 함께 `docs/aws-ta-qc-consumer-schema.md` 작성 권장
+- TA consumer schema: `docs/aws-ta-qc-consumer-schema.md`
+
+## 9. 2026-08-29 검증 스냅샷
+
+| 구분 | 결과 |
+| --- | --- |
+| Producer API (20260828 TA) | **PASS** |
+| Consumer browser E2E | **FAIL** — rev9 TA pack 로드 거부 |
+| 다음 producer warm | 최근 14일 TA **보류** (20260828만 rev9 유지) |
+| 다음 consumer | 변수별 revision + sidecar + cache (§5 BLOCKED 참고) |

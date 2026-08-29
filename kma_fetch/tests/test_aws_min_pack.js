@@ -47,6 +47,7 @@ const {
   PACK_CONTRACT_REVISION,
   RN_DAY_QC_LOGIC_REVISION,
   TA_QC_LOGIC_REVISION,
+  TA_PACK_CONTRACT_REVISION,
   PACK_VARIABLES,
   MISSING_I16,
   SUPPORTED_PACK_VARIABLES,
@@ -169,7 +170,8 @@ async function main() {
   assert.strictEqual(regStats.regressionSampleCount, 2);
   assert.strictEqual(regStats.counterRegressionFilledSampleCount, 2);
   assert.strictEqual(regStats.regressionStationCount, 1);
-  assert.strictEqual(PACK_CONTRACT_REVISION, 9);
+  assert.strictEqual(PACK_CONTRACT_REVISION, 8);
+  assert.strictEqual(TA_PACK_CONTRACT_REVISION, 9);
   assert.strictEqual(findExtremeThenLongMissingRejects([0, 210, ...Array(15).fill(null)]).size, 0);
 
   // Fixture A: extreme then long missing → suspect-retained, not rejected
@@ -379,7 +381,7 @@ async function main() {
     }
   });
   assert.strictEqual(sparseBuilt.manifest.complete, true);
-  assert.strictEqual(sparseBuilt.manifest.contractRevision, 9);
+  assert.strictEqual(sparseBuilt.manifest.contractRevision, TA_PACK_CONTRACT_REVISION);
   assert.strictEqual(sparseBuilt.manifest.qc.taTemporal.logicRevision, TA_QC_LOGIC_REVISION);
   assert.ok(sparseBuilt.manifest.qc.taTemporal.sparseHighExcludedSampleCount >= 2);
   assert.ok(sparseBuilt.manifest.qcDetailUrl);
@@ -733,7 +735,7 @@ async function main() {
   const regDay = await buildAwsVariablePack(regRoot, '202608200701', '202608200801', 'RN_DAY', {
     catalog: regCatalog
   });
-  assert.strictEqual(regDay.manifest.contractRevision, 9);
+  assert.strictEqual(regDay.manifest.contractRevision, PACK_CONTRACT_REVISION);
   assert.ok(regDay.manifest.qc.rnDayRegression.regressionSampleCount >= 3);
   assert.ok(regDay.manifest.qc.rnDayRegression.regressionStationCount >= 2);
   const rd = new Int16Array(regDay.binary.buffer, regDay.binary.byteOffset, regDay.binary.length / 2);
@@ -945,7 +947,7 @@ async function main() {
       {
         complete: true,
         schemaVersion: PACK_SCHEMA_VERSION,
-        contractRevision: PACK_CONTRACT_REVISION,
+        contractRevision: TA_PACK_CONTRACT_REVISION,
         variable: 'TA',
         from: 'a',
         to: 'b',
@@ -1286,7 +1288,7 @@ async function main() {
       `qc-v${yeong.manifest.qcDetailSha256.slice(0, 16)}.json`
     )
   );
-  assert.strictEqual(yeong.qcDetail.contractRevision, 9);
+  assert.strictEqual(yeong.qcDetail.contractRevision, PACK_CONTRACT_REVISION);
   assert.strictEqual(yeong.qcDetail.datasetId, yeong.manifest.datasetId);
   const yRec = yeong.qcDetail.records.find((r) => r.STN_ID === 277 && r.rawValue === 648);
   assert.ok(yRec);

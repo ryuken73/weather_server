@@ -28,12 +28,18 @@ const VARIABLE_TA = 'TA';
  * RN_DAY = KST day accumulation. Legacy day-total under rn_24hr/ must not be reused.
  */
 const PACK_SCHEMA_VERSION = 4;
-/** Bump when pack meaning/URL contract changes for cache reuse checks. */
-const PACK_CONTRACT_REVISION = 9;
+/** Bump when pack meaning/URL contract changes for cache reuse checks (non-TA variables). */
+const PACK_CONTRACT_REVISION = 8;
+/** TA-only contract bump (sparse high QC + sidecar). RN_* remain on PACK_CONTRACT_REVISION. */
+const TA_PACK_CONTRACT_REVISION = 9;
 /** Bump when RN_DAY spike QC rules change (invalidates today warm skip). */
 const RN_DAY_QC_LOGIC_REVISION = 2;
 /** Bump when TA temporal/sparse QC rules change (invalidates today warm skip). */
 const TA_QC_LOGIC_REVISION = 2;
+
+function packContractRevisionForVariable(variableName) {
+  return variableName === VARIABLE_TA ? TA_PACK_CONTRACT_REVISION : PACK_CONTRACT_REVISION;
+}
 const RN_DAY_CROSS_DRY_LOOKBACK_MINUTES = 3;
 
 /**
@@ -719,7 +725,7 @@ function buildRnSparseQcDetail({
   const qcStates = summarizeSparseQcStates(records);
   const qcBody = {
     schemaVersion: 1,
-    contractRevision: PACK_CONTRACT_REVISION,
+    contractRevision: packContractRevisionForVariable(name),
     datasetId,
     date: from.slice(0, 8),
     variable: name,
@@ -754,7 +760,7 @@ function buildTaQcDetail({ manifest, qcRecords, spec, dayKey, from, datasetId })
   const qcStates = summarizeTaQcStates(records);
   const qcBody = {
     schemaVersion: 1,
-    contractRevision: PACK_CONTRACT_REVISION,
+    contractRevision: packContractRevisionForVariable(VARIABLE_TA),
     datasetId,
     date: from.slice(0, 8),
     variable: 'TA',
@@ -2710,7 +2716,7 @@ async function buildAwsVariablePack(awsJsonDir, fromKor, toKor, variable, option
 
   const manifest = {
     schemaVersion: PACK_SCHEMA_VERSION,
-    contractRevision: PACK_CONTRACT_REVISION,
+    contractRevision: packContractRevisionForVariable(name),
     rnDayQcLogicRevision: RN_DAY_QC_LOGIC_REVISION,
     datasetId,
     source: spec.source,
@@ -3050,7 +3056,7 @@ function isReusableCachedManifest(cached, name, from, to) {
       cached &&
       cached.complete === true &&
       cached.schemaVersion === PACK_SCHEMA_VERSION &&
-      cached.contractRevision === PACK_CONTRACT_REVISION &&
+      cached.contractRevision === packContractRevisionForVariable(name) &&
       cached.variable === name &&
       cached.from === from &&
       cached.to === to &&
@@ -3211,7 +3217,7 @@ async function todayPacksCoverThrough(packRoot, dayKey, variables, throughTm) {
   for (const variable of variables) {
     const cached = await loadCachedManifest(packRoot, dayKey, variable);
     if (!cached) return false;
-    if (cached.contractRevision !== PACK_CONTRACT_REVISION) return false;
+    if (cached.contractRevision !== packContractRevisionForVariable(variable)) return false;
     if (cached.schemaVersion !== PACK_SCHEMA_VERSION) return false;
     if (
       (variable === 'RN_DAY' || variable === 'RN_24HR') &&
@@ -3407,6 +3413,8 @@ module.exports = {
   PACK_MAX_FRAMES,
   PACK_SCHEMA_VERSION,
   PACK_CONTRACT_REVISION,
+  TA_PACK_CONTRACT_REVISION,
+  packContractRevisionForVariable,
   VARIABLE_TA,
   PACK_VARIABLES,
   REQUIRED_PACK_VARIABLES,

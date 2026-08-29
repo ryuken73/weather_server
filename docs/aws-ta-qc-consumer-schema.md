@@ -118,3 +118,22 @@ AWS_TA_QC_SPARSE_MAX_VALID_SAMPLES=30
 ```
 
 `logicRevision` 또는 sparse env 변경 시 producer bump → consumer cache invalidate.
+
+## Consumer 선행 구현 (2026-08-29 E2E blocked)
+
+현재 consumer는 `AWS_PACK_CONTRACT_REVISION = 8` **전역** 검사로 rev9 TA를 거부한다.  
+**전역을 9로 올리면 RN_*가 깨지므로**, manifest `variable` 기준으로 허용 revision을 분기한다.
+
+| variable | producer `contractRevision` | consumer 허용 |
+| --- | --- | --- |
+| `TA` | **9** | `>= 9` |
+| `RN_DAY`, `RN_24HR`, … | **8** | `8` (또는 `>= 8`) |
+
+필수:
+
+1. `awsVariablePack.js` / `awsApiAdapter.js` — **변수별** expected revision (전역 상수 9 금지)
+2. IndexedDB 캐시 키 — `contractRevision`, `logicRevision`, `datasetId`, `data.sha256`
+3. TA complete pack — `qcDetailUrl` fetch + `qcDetailSha256` 검증, 실패 시 guard ON (§3.3)
+4. carry seed — sparse-high / temporal reject 분 seed 금지
+
+consumer TA rev9 배포 **후** producer가 최근 14일 TA `--force` warm.
