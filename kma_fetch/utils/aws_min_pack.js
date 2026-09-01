@@ -33,7 +33,9 @@ const PACK_CONTRACT_REVISION = 8;
 /** TA-only contract bump (sparse high QC + sidecar). RN_* remain on PACK_CONTRACT_REVISION. */
 const TA_PACK_CONTRACT_REVISION = 9;
 /** Bump when RN_DAY spike QC rules change (invalidates today warm skip). */
-const RN_DAY_QC_LOGIC_REVISION = 3;
+const RN_DAY_QC_LOGIC_REVISION = 4;
+/** RN_DAY/RN_24HR qc-v sidecar schema (v2: removedSpans + rnDayQcLogicRevision). */
+const RN_QC_DETAIL_SCHEMA_VERSION = 2;
 /** Bump when TA temporal/sparse QC rules change (invalidates today warm skip). */
 const TA_QC_LOGIC_REVISION = 2;
 
@@ -718,7 +720,7 @@ function summarizeSparseQcStates(sparseQcRecords) {
   };
 }
 
-/** contract v8: RN_DAY/RN_24HR always emit qc-v sidecar (records may be empty). */
+/** contract v8+: RN_DAY/RN_24HR always emit qc-v sidecar (records may be empty). RN_DAY rev4+ uses schema v2. */
 function buildRnSparseQcDetail({
   manifest,
   sparseQcRecords,
@@ -726,12 +728,16 @@ function buildRnSparseQcDetail({
   dayKey,
   name,
   from,
-  datasetId
+  datasetId,
+  removedSpans,
+  rnDayQcLogicRevision
 }) {
   const records = Array.isArray(sparseQcRecords) ? sparseQcRecords : [];
   const qcStates = summarizeSparseQcStates(records);
+  const useRnQcV2 =
+    name === 'RN_DAY' && (rnDayQcLogicRevision ?? RN_DAY_QC_LOGIC_REVISION) >= 4;
   const qcBody = {
-    schemaVersion: 1,
+    schemaVersion: useRnQcV2 ? RN_QC_DETAIL_SCHEMA_VERSION : 1,
     contractRevision: packContractRevisionForVariable(name),
     datasetId,
     date: from.slice(0, 8),
@@ -739,11 +745,16 @@ function buildRnSparseQcDetail({
     generatedAt: manifest.generatedAt,
     scale: 0.1,
     unit: 'mm',
-    note:
-      'Sparse QC only: suspect-retained | rejected | substituted | substitution-expired. Lookup by (TM, STN_ID). rawValue=Int16×10, valueMm=rawValue*0.1',
+    note: useRnQcV2
+      ? 'Sparse QC + removedSpans. suspect-retained is sidecar-only (binary missing). Lookup by (TM, STN_ID). rawValue=Int16×10, valueMm=rawValue*0.1'
+      : 'Sparse QC only: suspect-retained | rejected | substituted | substitution-expired. Lookup by (TM, STN_ID). rawValue=Int16×10, valueMm=rawValue*0.1',
     qcStates,
     records
   };
+  if (useRnQcV2) {
+    qcBody.rnDayQcLogicRevision = rnDayQcLogicRevision ?? RN_DAY_QC_LOGIC_REVISION;
+    qcBody.removedSpans = Array.isArray(removedSpans) ? removedSpans : [];
+  }
   const qcJson = serializeQcDetailJson(qcBody);
   const qcSha256 = hashQcDetailJson(qcJson);
   const qcFileName = packQcDetailFileName(qcSha256);
@@ -1654,6 +1665,137 @@ function rollingBeforeStaleReject(pack, rolling, status, rejectSet, i) {
   return roll;
 }
 
+function isRnDaySpikeRecoveryPublishable(
+  v,
+  accepted,
+  acceptedIdx,
+  i,
+  scaledSeries,
+  crossSeries,
+  hhmmSeries
+) {
+  if (accepted != null && v < accepted) return false;
+  const elapsed = elapsedMinutesBetween(hhmmSeries, acceptedIdx, i);
+  const cross = crossSeries ? crossSeries[i] : null;
+  const cls = classifyRnDayIncrease(v, accepted, elapsed, cross);
+  const stepSig = evaluateStepSpikeSignals(scaledSeries, hhmmSeries, i);
+  const extremeCandidate =
+    cls.extremeCandidate || stepSig.stepExtreme || stepSig.largeStepSuspect;
+  const softCandidate = cls.softCandidate || stepSig.stepSoft;
+  if (
+    extremeCandidate ||
+    (softCandidate && cls.crossContradiction) ||
+    stepSig.largeStepSuspect
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function rnDayReasonCategory(reason, signals) {
+  if (reason === 'staleSuspectPlateau') return 'sparse-spike-island';
+  if (reason === 'suspectRetained') return 'suspect-excluded-from-binary';
+  if (reason === 'counterRegression') return 'counter-regression';
+  if (
+    reason === 'upwardSpikeRejected' ||
+    reason === 'mechanicalRepeat' ||
+    reason === 'isolatedPeakReset' ||
+    reason === 'spikeRecoveryPending'
+  ) {
+    return 'upward-spike';
+  }
+  const sig = Array.isArray(signals) ? signals : [];
+  if (sig.some((s) => String(s).startsWith('cross_contradiction'))) {
+    return 'cross-window-inconsistent';
+  }
+  return 'upward-spike';
+}
+
+/**
+ * Merge consecutive binary-missing QC samples per station into removedSpans (rev4 sidecar).
+ */
+function buildRnDayRemovedSpans({
+  timestamps,
+  stationIds,
+  stations,
+  rawScaledGrid,
+  packGrid,
+  reasonGrid,
+  statusGrid,
+  signalsGrid,
+  frameCount,
+  stationCount
+}) {
+  const spans = [];
+  for (let si = 0; si < stationCount; si++) {
+    let span = null;
+    for (let fi = 0; fi < frameCount; fi++) {
+      const idx = fi * stationCount + si;
+      const rs = reasonGrid[idx];
+      const st = statusGrid[idx];
+      const packVal = packGrid[idx];
+      const raw = rawScaledGrid[idx];
+      const removed =
+        packVal == null &&
+        rs != null &&
+        rs !== 'source_missing' &&
+        st !== 'missing';
+      if (!removed) {
+        if (span) {
+          const { _lastFi, ...out } = span;
+          spans.push(out);
+          span = null;
+        }
+        continue;
+      }
+      const meta = stations && stations[si] ? stations[si] : null;
+      const signals = signalsGrid ? signalsGrid[idx] : [];
+      if (span && span.reason === rs && span._lastFi === fi - 1) {
+        span.to = timestamps[fi];
+        span._lastFi = fi;
+        span.sampleCount += 1;
+        if (raw != null) {
+          span.maxRawValue =
+            span.maxRawValue == null ? raw : Math.max(span.maxRawValue, raw);
+        }
+        span.maxValueMm = scaledToMm(span.maxRawValue);
+      } else {
+        if (span) {
+          const { _lastFi, ...out } = span;
+          spans.push(out);
+        }
+        span = {
+          STN_ID: stationIds[si],
+          stationName:
+            meta && (meta.STN_KO || meta.STN_NAME) ? meta.STN_KO || meta.STN_NAME : undefined,
+          from: timestamps[fi],
+          to: timestamps[fi],
+          reason: rs,
+          reasonCategory: rnDayReasonCategory(rs, signals),
+          maxRawValue: raw == null ? null : raw,
+          maxValueMm: scaledToMm(raw),
+          sampleCount: 1,
+          _lastFi: fi
+        };
+      }
+    }
+    if (span) {
+      const { _lastFi, ...out } = span;
+      spans.push(out);
+    }
+  }
+  return spans;
+}
+
+function excludeSuspectRetainedFromRnDayBinaryPack(pack, status, reason) {
+  const n = pack.length;
+  for (let i = 0; i < n; i++) {
+    if (status[i] === 'suspect-retained' || reason[i] === 'suspectRetained') {
+      pack[i] = null;
+    }
+  }
+}
+
 function isRnDaySpikeRejectReason(reason) {
   return (
     reason === 'upwardSpikeRejected' ||
@@ -1920,6 +2062,24 @@ function qcRnDayStationSeries(scaledSeries, crossSeries, hhmmSeries) {
         status[i] = 'rejected';
         continue;
       }
+      if (
+        !isRnDaySpikeRecoveryPublishable(
+          v,
+          accepted,
+          acceptedIdx,
+          i,
+          scaledSeries,
+          crossSeries,
+          hhmmSeries
+        )
+      ) {
+        pack[i] = null;
+        rolling[i] = accepted;
+        reason[i] = 'spikeRecoveryPending';
+        status[i] = 'rejected';
+        recoveryStreak = 0;
+        continue;
+      }
       afterReject = false;
       recoveryStreak = 0;
       accepted = v;
@@ -1989,6 +2149,8 @@ function qcRnDayStationSeries(scaledSeries, crossSeries, hhmmSeries) {
     reason[i] = 'staleSuspectPlateau';
     status[i] = 'rejected';
   }
+
+  excludeSuspectRetainedFromRnDayBinaryPack(pack, status, reason);
 
   return {
     pack,
@@ -2065,6 +2227,8 @@ function emptyRnDayRegressionStats() {
     extremeCandidateSampleCount: 0,
     suspectRetainedSampleCount: 0,
     spikeRecoverySampleCount: 0,
+    suspectExcludedFromBinarySampleCount: 0,
+    suspectExcludedFromBinaryStationCount: 0,
     byReason: {
       counterRegression: 0,
       sourceMissing: 0,
@@ -2092,6 +2256,7 @@ function applyRnDayCounterRegression(scaledGrid, frameCount, stationCount, optio
   const stats = emptyRnDayRegressionStats();
   const stationHadRegression = new Uint8Array(stationCount);
   const stationHadSpike = new Uint8Array(stationCount);
+  const stationHadSuspectExcluded = new Uint8Array(stationCount);
 
   for (let si = 0; si < stationCount; si++) {
     const scaledSeries = new Array(frameCount);
@@ -2142,6 +2307,10 @@ function applyRnDayCounterRegression(scaledGrid, frameCount, stationCount, optio
         stats.extremeCandidateSampleCount += 1;
         stats.upwardSpikeCandidateSampleCount += 1;
         stats.byReason.suspectRetained += 1;
+        if (qc.pack[fi] == null) {
+          stats.suspectExcludedFromBinarySampleCount += 1;
+          stationHadSuspectExcluded[si] = 1;
+        }
       } else if (rs === 'spikeRecoveryPending') {
         stats.byReason.spikeRecoveryPending += 1;
         stationHadSpike[si] = 1;
@@ -2154,6 +2323,7 @@ function applyRnDayCounterRegression(scaledGrid, frameCount, stationCount, optio
     }
     if (stationHadRegression[si]) stats.regressionStationCount += 1;
     if (stationHadSpike[si]) stats.upwardSpikeStationCount += 1;
+    if (stationHadSuspectExcluded[si]) stats.suspectExcludedFromBinaryStationCount += 1;
   }
 
   return { packGrid, rollingGrid, reasonGrid, statusGrid, signalsGrid, episodeMetaGrid, stats };
@@ -2226,6 +2396,7 @@ function buildSparseRnDayQcRecords({
         acceptedUpdated: false,
         substitutionUsed: Boolean(substitutionUsed),
         reason: rs || state,
+        binaryPublished: packValue != null,
         // Extra trace fields (optional for consumers)
         packRawValue: packValue,
         packValueMm: scaledToMm(packValue),
@@ -2331,6 +2502,19 @@ function buildQcRnDayScaledGrid(frames, timestamps, stationIds, options = {}) {
     stationCount
   });
 
+  const removedSpans = buildRnDayRemovedSpans({
+    timestamps,
+    stationIds,
+    stations: options.stations || null,
+    rawScaledGrid,
+    packGrid,
+    reasonGrid,
+    statusGrid,
+    signalsGrid,
+    frameCount,
+    stationCount
+  });
+
   return {
     packGrid,
     rollingGrid,
@@ -2340,6 +2524,7 @@ function buildQcRnDayScaledGrid(frames, timestamps, stationIds, options = {}) {
     episodeMetaGrid,
     rawScaledGrid,
     sparseQcRecords,
+    removedSpans,
     scaledGrid: packGrid,
     midnightNormalizedCount,
     jsonPresentCount,
@@ -2506,6 +2691,7 @@ async function buildAwsVariablePack(awsJsonDir, fromKor, toKor, variable, option
   let rnDayRegression = emptyRnDayRegressionStats();
   let prevDayRegression = emptyRnDayRegressionStats();
   let sparseQcRecords = [];
+  let rnDayRemovedSpans = [];
   let qcDetail = null;
 
   if (spec.derive === 'rolling24hFromDayCounters') {
@@ -2709,6 +2895,7 @@ async function buildAwsVariablePack(awsJsonDir, fromKor, toKor, variable, option
     jsonPresentCount = dayQc.jsonPresentCount;
     rnDayRegression = dayQc.regression;
     sparseQcRecords = dayQc.sparseQcRecords || [];
+    rnDayRemovedSpans = dayQc.removedSpans || [];
 
     for (let i = 0; i < dayQc.scaledGrid.length; i++) {
       const scaled = dayQc.scaledGrid[i];
@@ -2900,6 +3087,14 @@ async function buildAwsVariablePack(awsJsonDir, fromKor, toKor, variable, option
       `RN_DAY upward-spike → missing for ${rnDayRegression.upwardSpikeRejectedSampleCount} samples across ${rnDayRegression.upwardSpikeStationCount} stations`
     );
   }
+  if (
+    rnDayRegression.suspectExcludedFromBinarySampleCount > 0 &&
+    (spec.normalizeMidnightRnDay || name === 'RN_DAY')
+  ) {
+    warnings.push(
+      `RN_DAY suspect-retained excluded from binary for ${rnDayRegression.suspectExcludedFromBinarySampleCount} samples across ${rnDayRegression.suspectExcludedFromBinaryStationCount} stations (logicRevision ${RN_DAY_QC_LOGIC_REVISION})`
+    );
+  }
   if (coverage.status === 'empty') {
     warnings.push(`${name} has no valid samples (all missing)`);
   } else if (coverage.status === 'degraded') {
@@ -3006,6 +3201,8 @@ async function buildAwsVariablePack(awsJsonDir, fromKor, toKor, variable, option
       upwardSpikeRejectedSampleCount: rnDayRegression.upwardSpikeRejectedSampleCount,
       upwardSpikeStationCount: rnDayRegression.upwardSpikeStationCount,
       spikeRecoverySampleCount: rnDayRegression.spikeRecoverySampleCount,
+      suspectExcludedFromBinarySampleCount: rnDayRegression.suspectExcludedFromBinarySampleCount,
+      suspectExcludedFromBinaryStationCount: rnDayRegression.suspectExcludedFromBinaryStationCount,
       byReason: { ...rnDayRegression.byReason }
     };
     if (spec.derive === 'rolling24hFromDayCounters') {
@@ -3026,6 +3223,7 @@ async function buildAwsVariablePack(awsJsonDir, fromKor, toKor, variable, option
     }
     manifest.qc.rnDayRegression = qcBlock;
     manifest.qc.rnDayQc = {
+      logicRevision: RN_DAY_QC_LOGIC_REVISION,
       sourceMissingSampleCount: rnDayRegression.sourceMissingSampleCount,
       counterRegressionSampleCount: rnDayRegression.regressionSampleCount,
       counterRegressionFilledSampleCount:
@@ -3034,6 +3232,8 @@ async function buildAwsVariablePack(awsJsonDir, fromKor, toKor, variable, option
           : rnDayRegression.counterRegressionFilledSampleCount,
       extremeCandidateSampleCount: rnDayRegression.extremeCandidateSampleCount,
       suspectRetainedSampleCount: rnDayRegression.suspectRetainedSampleCount,
+      suspectExcludedFromBinarySampleCount: rnDayRegression.suspectExcludedFromBinarySampleCount,
+      suspectExcludedFromBinaryStationCount: rnDayRegression.suspectExcludedFromBinaryStationCount,
       upwardSpikeCandidateSampleCount: rnDayRegression.upwardSpikeCandidateSampleCount,
       upwardSpikeRejectedSampleCount: rnDayRegression.upwardSpikeRejectedSampleCount,
       upwardSpikeRejectedStationCount: rnDayRegression.upwardSpikeStationCount,
@@ -3050,7 +3250,9 @@ async function buildAwsVariablePack(awsJsonDir, fromKor, toKor, variable, option
       dayKey,
       name,
       from,
-      datasetId
+      datasetId,
+      removedSpans: name === 'RN_DAY' ? rnDayRemovedSpans : undefined,
+      rnDayQcLogicRevision: name === 'RN_DAY' ? RN_DAY_QC_LOGIC_REVISION : undefined
     });
     manifest.qcDetailUrl = rnQc.qcUrl;
     manifest.qcDetailSha256 = rnQc.qcSha256;
@@ -3663,6 +3865,7 @@ module.exports = {
   crossPeakScaled,
   debugRnDayQcTrace,
   RN_DAY_QC_LOGIC_REVISION,
+  RN_QC_DETAIL_SCHEMA_VERSION,
   TA_QC_LOGIC_REVISION,
   evaluateStepSpikeSignals,
   packBinaryUrl,

@@ -21,9 +21,11 @@
 
 ## qc.json top-level
 
+**schemaVersion 1** (rev3 이하) 또는 **schemaVersion 2** (RN_DAY `rnDayQcLogicRevision >= 4`).
+
 ```ts
 type AwsRnQcDetail = {
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;
   contractRevision: number; // 8+
   datasetId: string; // === pack manifest.datasetId
   date: string; // YYYYMMDD
@@ -32,6 +34,7 @@ type AwsRnQcDetail = {
   scale: 0.1;
   unit: 'mm';
   note?: string;
+  rnDayQcLogicRevision?: number; // schema v2 RN_DAY only, >= 4
   qcStates: {
     suspectRetainedSampleCount: number;
     rejectedSampleCount: number;
@@ -40,6 +43,19 @@ type AwsRnQcDetail = {
     recordCount: number;
   };
   records: AwsRnQcRecord[];
+  removedSpans?: AwsRnQcRemovedSpan[]; // schema v2 RN_DAY, required (may be [])
+};
+
+type AwsRnQcRemovedSpan = {
+  STN_ID: number;
+  stationName?: string;
+  from: string; // YYYYMMDDHHmm inclusive
+  to: string;
+  reason: string;
+  reasonCategory: string;
+  maxRawValue: number | null;
+  maxValueMm: number | null;
+  sampleCount: number;
 };
 ```
 
@@ -64,6 +80,7 @@ type AwsRnQcRecord = {
   acceptedUpdated: boolean;
   substitutionUsed: boolean;
   reason?: string;
+  binaryPublished?: boolean; // rev4+: false for suspect-retained excluded from pack
   // optional traces
   substitutionMinutes?: number;
   substitutionMaxMinutes?: number; // 30
@@ -90,7 +107,7 @@ function findQc(records: AwsRnQcRecord[], tm: string, stnId: number) {
 | state | RN_DAY pack | RN_24HR | UI 제안 |
 | --- | --- | --- | --- |
 | (없음) | 관측값 | 관측 파생 | 정상 |
-| `suspect-retained` | **원값 보존** | 원값으로 계산 가능 | 검토 필요 |
+| `suspect-retained` | **rev4+: missing** (rev3: 원값 보존) | 원값으로 계산 가능 | 검토 필요 (sidecar only) |
 | `rejected` | missing | last-confirmed ≤30분 또는 missing | 결측/보정 |
 | `substituted` | (RN_24HR only) | last-confirmed 보정값 | QC 보정 |
 | `substitution-expired` | (RN_24HR only) | missing (30분 초과) | 결측 |

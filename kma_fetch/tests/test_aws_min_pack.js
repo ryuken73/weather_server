@@ -174,14 +174,15 @@ async function main() {
   assert.strictEqual(TA_PACK_CONTRACT_REVISION, 9);
   assert.strictEqual(findExtremeThenLongMissingRejects([0, 210, ...Array(15).fill(null)]).size, 0);
 
-  // Fixture A: extreme then long missing → suspect-retained, not rejected
+  // Fixture A: extreme then long missing → suspect-retained, not rejected; rev4: binary missing
   const extremeThenMiss = qcRnDayStationSeries(
     [0, 210, ...Array(15).fill(null)],
     [{ rn15: 0 }, { rn15: 210, rn60: 210 }, ...Array(15).fill(null)],
     null
   );
   assert.strictEqual(extremeThenMiss.status[1], 'suspect-retained');
-  assert.strictEqual(extremeThenMiss.pack[1], 210);
+  assert.strictEqual(extremeThenMiss.pack[1], null);
+  assert.strictEqual(extremeThenMiss.rolling[1], 210);
 
   // STN 739 심원: suspect-retained plateau after low baseline → staleSuspectPlateau reject
   {
@@ -213,7 +214,7 @@ async function main() {
       return { rn15: v, rn60: v };
     });
     const qc = qcRnDayStationSeries(scaled, cross, hhmm);
-    assert.strictEqual(RN_DAY_QC_LOGIC_REVISION, 3);
+    assert.strictEqual(RN_DAY_QC_LOGIC_REVISION, 4);
     for (const h of ['0805', '0807', '0808', '0809', '0810', '0811', '0812']) {
       const idx = hhmm.indexOf(h);
       assert.strictEqual(qc.status[idx], 'rejected', h);
@@ -506,9 +507,15 @@ async function main() {
   const vDay = new Int16Array(rnDay.binary.buffer, rnDay.binary.byteOffset, rnDay.binary.length / 2);
   assert.strictEqual(v15[stationIndex.get(530)], 5);
   assert.strictEqual(v12[stationIndex.get(530)], 95);
-  assert.strictEqual(vDay[stationIndex.get(530)], 95);
+  assert.strictEqual(vDay[stationIndex.get(530)], MISSING_I16);
+  const rec530 = rnDay.qcDetail.records.find((r) => r.STN_ID === 530);
+  assert.ok(rec530 && rec530.state === 'suspect-retained');
+  assert.strictEqual(rec530.binaryPublished, false);
   assert.strictEqual(v12[stationIndex.get(679)], 245);
-  assert.strictEqual(vDay[stationIndex.get(679)], 245);
+  assert.strictEqual(vDay[stationIndex.get(679)], MISSING_I16);
+  const rec679 = rnDay.qcDetail.records.find((r) => r.STN_ID === 679);
+  assert.ok(rec679 && rec679.state === 'suspect-retained');
+  assert.strictEqual(rec679.binaryPublished, false);
   assert.strictEqual(rnDay.manifest.variable, 'RN_DAY');
   assert.strictEqual(rnDay.manifest.sourceField, 'RN-DAY');
   assert.strictEqual(rnDay.manifest.accumulation.type, 'day');
@@ -859,6 +866,8 @@ async function main() {
   assert.ok(cleanRnDay.manifest.qcDetailUrl);
   assert.ok(String(cleanRnDay.manifest.qcDetailUrl).includes('qc-v'));
   assert.ok(cleanRnDay.manifest.qcDetailSha256);
+  assert.strictEqual(cleanRnDay.qcDetail.schemaVersion, 2);
+  assert.ok(Array.isArray(cleanRnDay.qcDetail.removedSpans));
   assert.deepStrictEqual(cleanRnDay.manifest.qc.qcStates, {
     suspectRetainedSampleCount: 0,
     rejectedSampleCount: 0,
@@ -900,7 +909,10 @@ async function main() {
     const stn739Day = await buildAwsVariablePack(stn739Root, '202609010800', '202609010813', 'RN_DAY', {
       catalog: stn739Catalog
     });
-    assert.strictEqual(stn739Day.manifest.rnDayQcLogicRevision, 3);
+    assert.strictEqual(stn739Day.manifest.rnDayQcLogicRevision, 4);
+    assert.ok(stn739Day.qcDetail.schemaVersion >= 2);
+    assert.ok(Array.isArray(stn739Day.qcDetail.removedSpans));
+    assert.ok(stn739Day.qcDetail.removedSpans.length > 0);
     const stn739Idx = new Map(stn739Day.manifest.stations.map((s, i) => [s.STN_ID, i]));
     const si739 = stn739Idx.get(739);
     const dayArr = new Int16Array(
@@ -1386,9 +1398,10 @@ async function main() {
   const yIdx = new Map(yeong.manifest.stations.map((s, i) => [s.STN_ID, i]));
   const ysc = yeong.manifest.stationCount;
   assert.strictEqual(yd[0 * ysc + yIdx.get(277)], 4);
-  // 영덕: extreme+cross contradiction → suspect-retained (keep raw 648 = 64.8mm)
-  assert.strictEqual(yd[1 * ysc + yIdx.get(277)], 648);
+  // 영덕: extreme+cross contradiction → suspect-retained; rev4: binary missing, sidecar only
+  assert.strictEqual(yd[1 * ysc + yIdx.get(277)], MISSING_I16);
   assert.ok(yeong.manifest.qc.rnDayQc.suspectRetainedSampleCount >= 1);
+  assert.ok(yeong.manifest.qc.rnDayQc.suspectExcludedFromBinarySampleCount >= 1);
   assert.ok(yeong.manifest.qc.qcStates);
   assert.ok(yeong.manifest.qc.qcStates.suspectRetainedSampleCount >= 1);
   assert.ok(yeong.qcDetail);
@@ -1408,7 +1421,9 @@ async function main() {
   assert.strictEqual(yRec.scale, 0.1);
   assert.strictEqual(yRec.valueMm, 64.8);
   assert.strictEqual(yRec.state, 'suspect-retained');
+  assert.strictEqual(yRec.binaryPublished, false);
   assert.strictEqual(yRec.acceptedUpdated, false);
+  assert.ok(yeong.qcDetail.removedSpans.some((s) => s.STN_ID === 277 && s.reason === 'suspectRetained'));
   const yeongPub = await publishAwsVariablePack(path.join(tmp, 'pack-out'), yeong);
   assert.ok(yeongPub.qcDetailPath);
   const yeongQcBytes = await fsp.readFile(yeongPub.qcDetailPath);
@@ -1444,8 +1459,12 @@ async function main() {
     extremeDay.binary.byteOffset,
     extremeDay.binary.length / 2
   );
-  assert.notStrictEqual(ed[1], MISSING_I16);
-  assert.ok(ed[1] === 210);
+  assert.strictEqual(ed[1], MISSING_I16);
+  assert.ok(
+    extremeDay.qcDetail.records.some(
+      (r) => r.STN_ID === 1 && r.TM === '202608211001' && r.state === 'suspect-retained'
+    )
+  );
   assert.strictEqual(ed[4], 240);
 
   // Fixture B: normal multi-field equality after dry spell
@@ -1757,7 +1776,12 @@ async function main() {
   const incIdx = new Map(incDayFirst.manifest.stations.map((s, i) => [s.STN_ID, i]));
   const incSc = incDayFirst.manifest.stationCount;
   const fi1051a = frameIdxFromMidnight(incDayFirst.manifest, '1051');
-  assert.strictEqual(incFirstArr[fi1051a * incSc + incIdx.get(574)], 245);
+  assert.strictEqual(incFirstArr[fi1051a * incSc + incIdx.get(574)], MISSING_I16);
+  const incRec1051First = (incDayFirst.qcDetail.records || []).find(
+    (r) => r.STN_ID === 574 && r.TM === `${incDay}1051`
+  );
+  assert.ok(incRec1051First);
+  assert.ok(['suspect-retained', 'rejected'].includes(incRec1051First.state));
 
   await writeFrame(inc574Root, `${incDay}1052`, [
     { STN_ID: 574, RN_DAY: 0, RN_15M: 0, RN_60M: 0, RN_12HR: 0 }
