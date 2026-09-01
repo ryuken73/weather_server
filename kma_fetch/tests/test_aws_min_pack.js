@@ -183,6 +183,47 @@ async function main() {
   assert.strictEqual(extremeThenMiss.status[1], 'suspect-retained');
   assert.strictEqual(extremeThenMiss.pack[1], 210);
 
+  // STN 739 심원: suspect-retained plateau after low baseline → staleSuspectPlateau reject
+  {
+    const hhmm = [
+      '0441',
+      '0444',
+      '0800',
+      '0801',
+      '0802',
+      '0803',
+      '0804',
+      '0805',
+      '0806',
+      '0807',
+      '0808',
+      '0809',
+      '0810',
+      '0811',
+      '0812',
+      '0813',
+      '0814',
+      '0815'
+    ];
+    const scaled = [20, 45, 0, 0, 0, 930, 0, 935, 935, 935, 935, 940, 940, 940, 940, 0, 0, null];
+    const cross = scaled.map((v, i) => {
+      const h = hhmm[i];
+      if (h >= '0809' && h <= '0812') return { rn15: 940, rn60: 940, rn12: null };
+      if (h === '0803') return { rn15: 930, rn60: 930 };
+      return { rn15: v, rn60: v };
+    });
+    const qc = qcRnDayStationSeries(scaled, cross, hhmm);
+    assert.strictEqual(RN_DAY_QC_LOGIC_REVISION, 3);
+    for (const h of ['0805', '0807', '0808', '0809', '0810', '0811', '0812']) {
+      const idx = hhmm.indexOf(h);
+      assert.strictEqual(qc.status[idx], 'rejected', h);
+      assert.strictEqual(qc.reason[idx], 'staleSuspectPlateau', h);
+      assert.strictEqual(qc.pack[idx], null, h);
+    }
+    assert.ok(qc.rolling[hhmm.indexOf('0812')] <= 45);
+    assert.ok(qc.signals[hhmm.indexOf('0805')].includes('stale_suspect_plateau'));
+  }
+
   assert.strictEqual(encodeRainToI16(0), 0);
   assert.strictEqual(encodeRainToI16(15), 15);
   assert.strictEqual(encodeRainToI16(null), MISSING_I16);
@@ -830,6 +871,78 @@ async function main() {
   assert.ok(await fsp.stat(cleanPub.qcDetailPath));
   const cleanQcBytes = await fsp.readFile(cleanPub.qcDetailPath, 'utf8');
   assert.strictEqual(crypto.createHash('sha256').update(cleanQcBytes, 'utf8').digest('hex'), cleanRnDay.manifest.qcDetailSha256);
+
+  // STN 739 rolling mask: RN_15M spikes at 08:09~08:12 removed when RN_DAY staleSuspectPlateau rejects island
+  {
+    const stn739Root = path.join(tmp, 'aws-stn739');
+    const stn739Catalog = { byId: new Map(), stations: [{ STN_ID: 739, STN_KO: '심원' }] };
+    const rows739 = [
+      ['202609010441', { RN_DAY: 20, RN_15M: 20, RN_60M: 20 }],
+      ['202609010444', { RN_DAY: 45, RN_15M: 45, RN_60M: 45 }],
+      ['202609010800', { RN_DAY: 0, RN_15M: 0, RN_60M: 0 }],
+      ['202609010801', { RN_DAY: 0, RN_15M: 0, RN_60M: 0 }],
+      ['202609010802', { RN_DAY: 0, RN_15M: 0, RN_60M: 0 }],
+      ['202609010803', { RN_DAY: 930, RN_15M: 930, RN_60M: 930 }],
+      ['202609010804', { RN_DAY: 0, RN_15M: 0, RN_60M: 0 }],
+      ['202609010805', { RN_DAY: 935, RN_15M: 0, RN_60M: 0 }],
+      ['202609010806', { RN_DAY: 935, RN_15M: 0, RN_60M: 0 }],
+      ['202609010807', { RN_DAY: 935, RN_15M: 0, RN_60M: 0 }],
+      ['202609010808', { RN_DAY: 935, RN_15M: 0, RN_60M: 0 }],
+      ['202609010809', { RN_DAY: 940, RN_15M: 940, RN_60M: 940 }],
+      ['202609010810', { RN_DAY: 940, RN_15M: 940, RN_60M: 940 }],
+      ['202609010811', { RN_DAY: 940, RN_15M: 940, RN_60M: 940 }],
+      ['202609010812', { RN_DAY: 940, RN_15M: 940, RN_60M: 940 }],
+      ['202609010813', { RN_DAY: 0, RN_15M: 0, RN_60M: 0 }]
+    ];
+    for (const [tm, fields] of rows739) {
+      await writeFrame(stn739Root, tm, [{ STN_ID: 739, ...fields }]);
+    }
+    const stn739Day = await buildAwsVariablePack(stn739Root, '202609010800', '202609010813', 'RN_DAY', {
+      catalog: stn739Catalog
+    });
+    assert.strictEqual(stn739Day.manifest.rnDayQcLogicRevision, 3);
+    const stn739Idx = new Map(stn739Day.manifest.stations.map((s, i) => [s.STN_ID, i]));
+    const si739 = stn739Idx.get(739);
+    const dayArr = new Int16Array(
+      stn739Day.binary.buffer,
+      stn739Day.binary.byteOffset,
+      stn739Day.binary.length / 2
+    );
+    const sc = stn739Day.manifest.stations.length;
+    const fi739 = (tm) => {
+      const from = stn739Day.manifest.from;
+      const fromMin = Number(from.slice(8, 10)) * 60 + Number(from.slice(10, 12));
+      const tmMin = Number(tm.slice(8, 10)) * 60 + Number(tm.slice(10, 12));
+      return tmMin - fromMin;
+    };
+    for (const tm of ['202609010805', '202609010809', '202609010812']) {
+      const fi = fi739(tm);
+      assert.ok(fi >= 0, tm);
+      assert.strictEqual(dayArr[fi * sc + si739], MISSING_I16, `RN_DAY ${tm}`);
+    }
+    const stn739Rn15 = await buildAwsVariablePack(stn739Root, '202609010800', '202609010813', 'RN_15M', {
+      catalog: stn739Catalog
+    });
+    const rn15Arr = new Int16Array(
+      stn739Rn15.binary.buffer,
+      stn739Rn15.binary.byteOffset,
+      stn739Rn15.binary.length / 2
+    );
+    const si15 = new Map(stn739Rn15.manifest.stations.map((s, i) => [s.STN_ID, i])).get(739);
+    const sc15 = stn739Rn15.manifest.stations.length;
+    const fi15 = (tm) => {
+      const from = stn739Rn15.manifest.from;
+      const fromMin = Number(from.slice(8, 10)) * 60 + Number(from.slice(10, 12));
+      const tmMin = Number(tm.slice(8, 10)) * 60 + Number(tm.slice(10, 12));
+      return tmMin - fromMin;
+    };
+    for (const tm of ['202609010809', '202609010810', '202609010811', '202609010812']) {
+      const fi = fi15(tm);
+      assert.ok(fi >= 0, tm);
+      assert.notStrictEqual(rn15Arr[fi * sc15 + si15], 940, `RN_15M spike removed ${tm}`);
+      assert.notStrictEqual(rn15Arr[fi * sc15 + si15], MISSING_I16, `RN_15M substituted ${tm}`);
+    }
+  }
 
   const warmRoot = path.join(tmp, 'pack-all');
   const warmJson = path.join(tmp, 'aws-warm');

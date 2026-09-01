@@ -33,7 +33,7 @@ const PACK_CONTRACT_REVISION = 8;
 /** TA-only contract bump (sparse high QC + sidecar). RN_* remain on PACK_CONTRACT_REVISION. */
 const TA_PACK_CONTRACT_REVISION = 9;
 /** Bump when RN_DAY spike QC rules change (invalidates today warm skip). */
-const RN_DAY_QC_LOGIC_REVISION = 2;
+const RN_DAY_QC_LOGIC_REVISION = 3;
 /** Bump when TA temporal/sparse QC rules change (invalidates today warm skip). */
 const TA_QC_LOGIC_REVISION = 2;
 
@@ -60,6 +60,13 @@ const RN_DAY_EPISODE_PEAK_TOL = 1; // 0.1 mm — repeated peak must be nearly id
 const RN_DAY_EPISODE_LOW_MAX = 20; // 2.0 mm separator (0 / near-dry)
 const RN_DAY_EPISODE_MAX_SPAN_MINUTES = 120;
 const RN_DAY_LARGE_STEP_SUSPECT_MIN = 500; // 50.0 mm single-step → suspect-retained
+/** Stale suspect-retained plateau: low baseline → ≥90mm island → reset/missing aftermath. */
+const RN_DAY_STALE_PLATEAU_MIN_SCALED = 900; // 90.0 mm
+const RN_DAY_STALE_BASELINE_MAX_SCALED = 45; // 4.5 mm
+const RN_DAY_STALE_PLATEAU_MAX_SPAN_MINUTES = 20;
+const RN_DAY_STALE_AFTER_MISSING_MINUTES = 3;
+const RN_DAY_STALE_PLATEAU_TOLERANCE_SCALED = 50; // 5.0 mm within plateau
+const RN_DAY_STALE_GAP_MINUTES = 3; // rejected/missing gaps inside short plateau
 /** RN_24HR may use last-confirmed RN_DAY for rejected frames only up to this many consecutive minutes. */
 const RN_24HR_SUBSTITUTION_MAX_MINUTES = 30;
 /** Rolling rain packs reuse RN_DAY spike reject mask from this set. */
@@ -1488,12 +1495,172 @@ function findRepeatedIsolatedSpikeRejects(scaledSeries, crossSeries) {
   return rejects;
 }
 
+function isHighRnDayStaleSample(packVal, scaledVal, minScaled) {
+  const floor = minScaled - RN_DAY_STALE_PLATEAU_TOLERANCE_SCALED;
+  return (
+    (packVal != null && packVal >= floor) ||
+    (scaledVal != null && scaledVal >= floor)
+  );
+}
+
+function baselineBeforeStalePlateau(scaledSeries, pack, rolling, status, idx) {
+  for (let j = idx - 1; j >= 0; j--) {
+    if (status[j] === 'missing') continue;
+    if (pack[j] != null && status[j] !== 'rejected') return pack[j];
+    if (status[j] === 'counterRegression' && rolling[j] != null) return rolling[j];
+    if (status[j] === 'rejected') continue;
+    if (scaledSeries[j] != null) return scaledSeries[j];
+  }
+  return 0;
+}
+
+function crossSharesHighPlateau(crossSeries, start, end, minScaled) {
+  if (!crossSeries) return false;
+  const floor = minScaled - RN_DAY_STALE_PLATEAU_TOLERANCE_SCALED;
+  for (let j = start; j <= end; j++) {
+    const cp = crossPeakScaled(crossSeries[j]);
+    if (cp != null && cp >= floor) return true;
+  }
+  return false;
+}
+
+function hasStalePlateauAftermath(scaledSeries, pack, status, reason, end, n) {
+  let missingStreak = 0;
+  for (let j = end + 1; j < n; j++) {
+    if (reason[j] === 'counterRegression') return true;
+    const v = scaledSeries[j];
+    const pv = pack[j];
+    if (status[j] === 'missing' || (v == null && pv == null)) {
+      missingStreak += 1;
+      if (missingStreak >= RN_DAY_STALE_AFTER_MISSING_MINUTES) return true;
+      continue;
+    }
+    const low = pv != null ? pv : v;
+    if (low != null && low <= RN_DAY_STALE_BASELINE_MAX_SCALED) return true;
+    missingStreak = 0;
+    if (isHighRnDayStaleSample(pv, v, RN_DAY_STALE_PLATEAU_MIN_SCALED)) break;
+  }
+  return false;
+}
+
+/**
+ * 2nd pass: retroactively reject suspect-retained / valid high plateaus after
+ * low baseline when reset/missing follows (STN 739 심원 class).
+ */
+function findStaleSuspectPlateauRejects(
+  scaledSeries,
+  crossSeries,
+  hhmmSeries,
+  pack,
+  rolling,
+  status,
+  reason
+) {
+  const n = scaledSeries.length;
+  const rejects = new Set();
+  let start = 0;
+  while (start < n) {
+    if (!isHighRnDayStaleSample(pack[start], scaledSeries[start], RN_DAY_STALE_PLATEAU_MIN_SCALED)) {
+      start += 1;
+      continue;
+    }
+
+    const baseline = baselineBeforeStalePlateau(scaledSeries, pack, rolling, status, start);
+    if (baseline > RN_DAY_STALE_BASELINE_MAX_SCALED) {
+      start += 1;
+      continue;
+    }
+
+    let end = start;
+    let lastHigh = start;
+    let hadSuspect = status[start] === 'suspect-retained' || reason[start] === 'suspectRetained';
+
+    for (let j = start; j < n; j++) {
+      const elapsed = hhmmSeries ? elapsedMinutesBetween(hhmmSeries, start, j) : j - start;
+      if (elapsed > RN_DAY_STALE_PLATEAU_MAX_SPAN_MINUTES) break;
+
+      const high = isHighRnDayStaleSample(pack[j], scaledSeries[j], RN_DAY_STALE_PLATEAU_MIN_SCALED);
+      if (high) {
+        lastHigh = j;
+        end = j;
+        if (status[j] === 'suspect-retained' || reason[j] === 'suspectRetained') hadSuspect = true;
+        continue;
+      }
+
+      const withinGap = j <= lastHigh + RN_DAY_STALE_GAP_MINUTES;
+      const gapAllowed =
+        withinGap &&
+        (status[j] === 'missing' ||
+          status[j] === 'rejected' ||
+          reason[j] === 'counterRegression' ||
+          reason[j] === 'spikeRecoveryPending' ||
+          reason[j] === 'isolatedPeakReset');
+      if (gapAllowed) continue;
+      if (j > lastHigh) break;
+    }
+    end = lastHigh;
+
+    let peakScaled = baseline;
+    for (let j = start; j <= end; j++) {
+      const pv = pack[j];
+      const sv = scaledSeries[j];
+      if (pv != null) peakScaled = Math.max(peakScaled, pv);
+      else if (sv != null) peakScaled = Math.max(peakScaled, sv);
+    }
+    const hugeJump =
+      peakScaled - baseline >= RN_DAY_STALE_PLATEAU_MIN_SCALED - RN_DAY_STALE_BASELINE_MAX_SCALED;
+    if (!hadSuspect && !hugeJump) {
+      start += 1;
+      continue;
+    }
+
+    if (!hasStalePlateauAftermath(scaledSeries, pack, status, reason, end, n)) {
+      start = end + 1;
+      continue;
+    }
+
+    const crossOk =
+      !crossSeries ||
+      crossSharesHighPlateau(crossSeries, start, end, RN_DAY_STALE_PLATEAU_MIN_SCALED) ||
+      hadSuspect;
+    if (!crossOk) {
+      start = end + 1;
+      continue;
+    }
+
+    for (let j = start; j <= end; j++) {
+      if (isHighRnDayStaleSample(pack[j], scaledSeries[j], RN_DAY_STALE_PLATEAU_MIN_SCALED)) {
+        rejects.add(j);
+      }
+    }
+    start = end + 1;
+  }
+  return rejects;
+}
+
+function rollingBeforeStaleReject(pack, rolling, status, rejectSet, i) {
+  let roll = 0;
+  for (let j = i - 1; j >= 0; j--) {
+    if (rejectSet.has(j)) continue;
+    if (pack[j] != null) {
+      roll = pack[j];
+      break;
+    }
+    if (rolling[j] != null && status[j] !== 'missing') {
+      roll = rolling[j];
+      break;
+    }
+  }
+  return roll;
+}
+
 function isRnDaySpikeRejectReason(reason) {
   return (
     reason === 'upwardSpikeRejected' ||
     reason === 'isolatedPeakReset' ||
     reason === 'mechanicalRepeat' ||
-    reason === 'spikeRecoveryPending'
+    reason === 'spikeRecoveryPending' ||
+    reason === 'staleSuspectPlateau'
   );
 }
 
@@ -1803,7 +1970,35 @@ function qcRnDayStationSeries(scaledSeries, crossSeries, hhmmSeries) {
     status[i] = 'rejected';
   }
 
-  return { pack, rolling, reason, status, signals, rejectMask, episodeMeta };
+  const staleRejects = findStaleSuspectPlateauRejects(
+    scaledSeries,
+    crossSeries,
+    hhmmSeries,
+    pack,
+    rolling,
+    status,
+    reason
+  );
+  for (const i of staleRejects) {
+    const roll = rollingBeforeStaleReject(pack, rolling, status, staleRejects, i);
+    const sig = signals[i] && signals[i].length > 0 ? [...signals[i]] : [];
+    if (!sig.includes('stale_suspect_plateau')) sig.push('stale_suspect_plateau');
+    signals[i] = sig;
+    pack[i] = null;
+    rolling[i] = roll;
+    reason[i] = 'staleSuspectPlateau';
+    status[i] = 'rejected';
+  }
+
+  return {
+    pack,
+    rolling,
+    reason,
+    status,
+    signals,
+    rejectMask: new Set([...rejectMask, ...staleRejects]),
+    episodeMeta
+  };
 }
 
 /**
@@ -1876,7 +2071,8 @@ function emptyRnDayRegressionStats() {
       upwardSpikeRejected: 0,
       suspectRetained: 0,
       spikeRecoveryPending: 0,
-      spikeRecovery: 0
+      spikeRecovery: 0,
+      staleSuspectPlateau: 0
     }
   };
 }
@@ -1928,6 +2124,10 @@ function applyRnDayCounterRegression(scaledGrid, frameCount, stationCount, optio
         stats.counterRegressionFilledSampleCount += 1;
         stats.byReason.counterRegression += 1;
         stationHadRegression[si] = 1;
+      } else if (rs === 'staleSuspectPlateau') {
+        stats.upwardSpikeRejectedSampleCount += 1;
+        stats.byReason.staleSuspectPlateau += 1;
+        stationHadSpike[si] = 1;
       } else if (
         st === 'rejected' ||
         rs === 'upwardSpikeRejected' ||
@@ -1997,7 +2197,8 @@ function buildSparseRnDayQcRecords({
         rs === 'upwardSpikeRejected' ||
         rs === 'isolatedPeakReset' ||
         rs === 'mechanicalRepeat' ||
-        rs === 'spikeRecoveryPending'
+        rs === 'spikeRecoveryPending' ||
+        rs === 'staleSuspectPlateau'
       ) {
         state = 'rejected';
       } else if (rs === 'counterRegression') {
@@ -2056,6 +2257,7 @@ function consecutiveSpikeRejectMinutes(reasonGrid, statusGrid, fi, si, stationCo
     if (
       rs === 'upwardSpikeRejected' ||
       rs === 'spikeRecoveryPending' ||
+      rs === 'staleSuspectPlateau' ||
       st === 'rejected'
     ) {
       mins += 1;
