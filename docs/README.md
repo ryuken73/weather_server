@@ -11,7 +11,7 @@ HTTP 스키마의 권위는 [`openapi.yaml`](openapi.yaml) (`GET /docs`)입니�
 
 | 문서 | 용도 |
 | --- | --- |
-| [`pipeline-image-flow-draft.md`](pipeline-image-flow-draft.md) | 구름/RDR/GFS 등 **이미지 파이프라인 미확정** 항목 (parse_netcdf 편입 전) |
+| [`pipeline-image-flow-draft.md`](pipeline-image-flow-draft.md) | 구름/RDR/GFS/AWS PNG — parse_netcdf 경계·PM2·**§9 정리 필요** · skill [`weather-image-pipeline`](../skills/weather-image-pipeline/SKILL.md) |
 | [`openapi.yaml`](openapi.yaml) | 전체 HTTP OpenAPI |
 | [`aws-producer-1min-pack-requirements.md`](aws-producer-1min-pack-requirements.md) | 1분 pack 요구사항·binary 계약 |
 | [`aws-rn-qc-consumer-schema.md`](aws-rn-qc-consumer-schema.md) | RN sparse QC sidecar (schema v2 / `removedSpans`) |

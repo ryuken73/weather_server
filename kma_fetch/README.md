@@ -13,6 +13,8 @@
 
 온보딩·운영 상세: [`../skills/aws-min-json-pipeline`](../skills/aws-min-json-pipeline/SKILL.md)
 
+GK2A/RDR/AWS JSON이 `in_data`에 떨어진 뒤 **시각화 PNG**는 별도 repo [parse_netcdf](https://gitlabsvr.sbs.co.kr/weather_system/parse_netcdf) watcher가 만든다. 경계 요약: [`../docs/pipeline-image-flow-draft.md`](../docs/pipeline-image-flow-draft.md)
+
 ---
 
 ## 디렉터리

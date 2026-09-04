@@ -99,6 +99,9 @@ Pack binary: `out_data/aws/pack/` → `/datasets/aws/...` (env `AWS_PACK_DIR`).
 
 ## IR105 JSON
 
+초기 설계(JSON → client 이미지화) 잔재. **시각화 주력은** `/ir105-mono|ir105-color/.../image`.  
+정리 목록: `docs/pipeline-image-flow-draft.md` §9, `skills/weather-image-pipeline`.
+
 ### `GET /ir105/{area}/{step}?timestamp_kor=`
 
 - PostgreSQL `ir105_json` 단건
@@ -114,6 +117,7 @@ Pack binary: `out_data/aws/pack/` → `/datasets/aws/...` (env `AWS_PACK_DIR`).
 
 - filesystem gzip JSON (`Content-Encoding: gzip`)
 - `timestamp_utc` = `YYYYMMDDHHMM` UTC
+- **사실상 미사용.** `server.js`에 개발용 경로 하드코드 (`d:/002.Code/001.python/netcdf/jsonfiles`) — prod에서 신뢰하지 말 것
 - `400` / `404`
 
 ## Legacy image / wind
@@ -126,13 +130,15 @@ Pack binary: `out_data/aws/pack/` → `/datasets/aws/...` (env `AWS_PACK_DIR`).
 
 | type | 응답 |
 | --- | --- |
-| `ir105-mono`, `ir105-color` | PNG |
+| `ir105-mono`, `ir105-color` | PNG (**IR105 시각화 권장**) |
 | `rdr-hsp`, `rdr-hsp-equi` | PNG |
-| `aws-RN_15M`, `aws-RN_60M` | PNG |
+| `aws-RN_15M`, `aws-RN_60M` | PNG (레거시; 수치는 `/api/aws/min/pack`) |
 | `gfs-wind_10m`, `gfs-wind_850mb`, `gfs-wind_500mb` | JSON |
-| `gfs-0p25_tmp_*`, `gfs-0p25_rh_*` | PNG |
-| `gfs_equ-0p25_tmp_*` | PNG |
-| `kim-psl`, `kim-hgt500` | PNG (레거시) |
+| `gfs-0p25_tmp_*`, `gfs-0p25_rh_*` | PNG (`*_merc.png`) |
+| `gfs_equ-0p25_tmp_*` | PNG (equi, `.png`) |
+| `kim-psl`, `kim-hgt500` | PNG (레거시 EAsia; 신규 HGT는 `/api/hgt500`) |
+
+PNG/GFS 생성기는 parse_netcdf — `skills/weather-image-pipeline`.
 
 Nearest snap:
 

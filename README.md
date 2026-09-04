@@ -25,22 +25,24 @@ SBS 기상 시각화용 **Producer**입니다.
 ## 1. 이 repo가 하는 일
 
 ```text
-  원천 (KMA Hub / MSSQL / FTP·API / GFS …)
+  원천 (KMA Hub / MSSQL / FTP·API / NOAA GFS …)
            │
            ▼
-  ┌────────────────────────────────────────┐
-  │  weather_api                           │
-  │  · kma_fetch : 수집 watcher            │
-  │  · (일부) python : KIM packed PNG      │
-  │  · parse_netcdf 등 외부 : 이미지화 *   │
-  │  · server.js : HTTP / static           │
-  └────────────────────────────────────────┘
+  ┌─────────────────────────────────────────────────┐
+  │  weather_api                                    │
+  │  · kma_fetch : 수집 watcher                     │
+  │  · (일부) python : KIM packed / EAsia PNG       │
+  │  · server.js : HTTP / static                    │
+  └─────────────────────────────────────────────────┘
+           │ in_data 공유
+           ▼
+  parse_netcdf (별도 repo) — 구름/RDR/AWS PNG · GFS fetch+PNG
            │
            ▼
   Consumer (기상 지도·재생 — 별도 repo)
 ```
 
-\* 구름(IR105)·레이더(RDR)·일부 GFS/AWS PNG는 **원천 수집은 `kma_fetch`**, **이미지 생성은 별도 `parse_netcdf` 계열**인 경우가 많습니다. 아래 §4는 현재 파악 가능한 수준으로만 적었고, 빈칸·확인 항목은 [`docs/pipeline-image-flow-draft.md`](docs/pipeline-image-flow-draft.md)에 모아 두었습니다. `parse_netcdf`가 `weather_system`으로 합쳐지면 그 문서로 확정합니다.
+\* 구름(IR105)·레이더(RDR)·AWS 레거시 강수 PNG·GFS는 **이미지 생성(및 GFS fetch)이 [`parse_netcdf`](https://gitlabsvr.sbs.co.kr/weather_system/parse_netcdf)** 입니다. GK2A/RDR/AWS **원천 수신만** `kma_fetch`. 상세·PM2·경로는 [`docs/pipeline-image-flow-draft.md`](docs/pipeline-image-flow-draft.md).
 
 | 프로세스 | 역할 |
 | --- | --- |
@@ -101,12 +103,12 @@ Client 복호화: [`docs/kim_hgt500_frontend_api_spec.md`](docs/kim_hgt500_front
 
 | API | 용도 |
 | --- | --- |
-| `GET /ir105/{area}/{step}?timestamp_kor=` | PostgreSQL `ir105_json` 단건 |
-| `GET /ir105/{area}/{step}/batch?timestamps=` | 배치 |
-| `GET /ir105/{area}/{step}/fs?timestamp_utc=` | 파일시스템 gzip JSON |
-| `GET /ir105-mono|ir105-color/{area}/{step}/image` | PNG (디스크 트리) |
+| `GET /ir105/{area}/{step}?timestamp_kor=` | PostgreSQL `ir105_json` 단건 (**정리 필요** — 레거시 JSON 계열) |
+| `GET /ir105/{area}/{step}/batch?timestamps=` | 배치 (동일, 정리 필요) |
+| `GET /ir105/{area}/{step}/fs?timestamp_utc=` | 파일 gzip JSON — **사실상 미사용**, 경로 하드코드 (**정리 필요**) |
+| `GET /ir105-mono|ir105-color/{area}/{step}/image` | PNG (디스크 트리) — **현재 주력** |
 
-수집은 `main.js`(GK2A NetCDF). JSON/PNG 파생은 DB·`parse_netcdf` 계열과 연동 (§4.2).
+수집은 `main.js`(GK2A NetCDF). **PNG는 parse_netcdf `watcher_image`**, DB/gzip JSON은 구형 `watcher`/`DB_insert` 계열 (§4.2).
 
 ### 2.4 레이더 (RDR HSP) — PNG
 
@@ -115,7 +117,7 @@ Client 복호화: [`docs/kim_hgt500_frontend_api_spec.md`](docs/kim_hgt500_front
 | `GET /rdr-hsp/{area}/{step}/image` | HSP PNG |
 | `GET /rdr-hsp-equi/.../image` | equirectangular 등 |
 
-수집: `main_RDR.js` → `in_data/rdr/` binary(gz). 이미지화는 외부 파이프라인 (§4.3). Snap: **5분** nearest.
+수집: `main_RDR.js` → `in_data/rdr/` binary(gz). PNG: parse_netcdf `watcher_image_rdr` (§4.3). Snap: **5분** nearest.
 
 ### 2.5 GFS (바람·온도·습도) — JSON / PNG
 
@@ -126,7 +128,7 @@ Client 복호화: [`docs/kim_hgt500_frontend_api_spec.md`](docs/kim_hgt500_front
 | `gfs_equ-0p25_tmp_*` | PNG |
 
 공통: `GET /{type}/{area}/{step}/image?timestamp_kor=`  
-Snap: **시(hour) floor**. 원천/렌더는 이 repo 밖 파이프라인과 공유하는 경우가 많음 (§4.5).
+Snap: **시(hour) floor**. fetch·PNG/JSON 생성은 **parse_netcdf** (`gfs_fetch_save` / `gfs_wind`). 이 repo는 `out_data/gfs` 서빙만 (§4.5).
 
 ### 2.6 정적 트리
 
@@ -156,9 +158,12 @@ Snap: **시(hour) floor**. 원천/렌더는 이 repo 밖 파이프라인과 공�
 
 ## 4. 데이터 수집·가공 흐름
 
-아래는 **현재 repo + 운영 관행 기준의 스케치**입니다. 구름/RDR/GFS 이미지 단계는 `parse_netcdf` 등 외부 repo에 의존하므로 불완전할 수 있습니다.
+권위 상세: [`docs/pipeline-image-flow-draft.md`](docs/pipeline-image-flow-draft.md) · [parse_netcdf README](https://gitlabsvr.sbs.co.kr/weather_system/parse_netcdf)
 
-### 4.1 AWS (이 repo에서 end-to-end에 가깝게 완결)
+운영: 동일 호스트(`10.10.16.168`)에서 PM2로 `kma_fetch*` + parse_netcdf image watchers + `weather_api`가 함께 돈다.  
+데이터 루트: `/data/node_project/weather_data/` (`in_data` / `out_data`). `ROOT_DIR_PROD` = `.../out_data`.
+
+### 4.1 AWS (이 repo에서 pack까지 end-to-end)
 
 ```text
 MSSQL wx_AWS_MIN  ──┐
@@ -177,30 +182,35 @@ API Hub nph-aws2_min┘         │
 
 - Lookback·today 5분 refresh·QC: `skills/aws-min-json-pipeline`, [`kma_fetch/README.md`](kma_fetch/README.md)
 - 과거 gap: `backfill_aws_min.js` / `run_backfill.sh` / [`work/`](work/README.md) Hub fetch
-- 레거시 강수 PNG (`/aws-RN_15M/.../image`)는 pack과 **별 경로**(디스크 PNG)
+- 레거시 강수 PNG (`/aws-RN_15M|60M/.../image`): 같은 JSON을 parse_netcdf `watcher_image_aws`가 contour PNG로 → `out_data/aws/` (**pack과 병행**)
 
-### 4.2 IR105 / 구름 (수집 = 이 repo, 이미지·JSON 파생 = 혼합)
+### 4.2 IR105 / 구름 (수집 = 이 repo, PNG = parse_netcdf)
 
 ```text
 KMA GK2A API
       │
       ▼
-main.js  →  in_data/gk2a/*.nc   (LE1B IR105, EA/FD/KO)
+main.js  →  in_data/gk2a/{date}/*.nc   (LE1B IR105, EA/FD/KO)
       │
-      ├──────────────────────────────┐
-      ▼                              ▼
-(불완전) parse_netcdf 등          PostgreSQL ir105_json
-  mono/color PNG 생성               / 파일 gzip JSON
-      │                              │
-      ▼                              ▼
-ROOT_DIR .../ir105.../image     /ir105/...  JSON API
+      ├──────────────────────────────────┐
+      ▼                                  ▼
+parse_netcdf watcher_image            (구) watcher = main_with_watcher.py
+  gk2a_image_worker.py                  → gzip JSON (+ DB_insert → ir105_json)
+  mono/color + equi PNG
+      │                                  │
+      ▼                                  ▼
+out_data/gk2a/{date}/             /ir105/... DB·/fs JSON
+  *_step{n}_{mono|color}[_equi].png
+      │
+      ▼
+GET /ir105-mono|ir105-color/.../image
 ```
 
-- Watcher: `run_kmaWatcher_*` + `main.js`
-- 이 repo의 `server.js`는 **완성된 PNG/JSON을 읽어 서빙**하는 쪽에 가깝습니다.
-- NetCDF→이미지 함수의 정확한 목록은 `parse_netcdf` repo 편입 후 보강 예정.
+- PM2: `watcher_image` (`GK2A_MONO_ALPHA_MODE=C`). Consumer 주력은 **PNG**.
+- JSON/`/fs`/`ir105_json`은 초기 “client 이미지화” 구상 잔재 → **정리 필요** ([§9](docs/pipeline-image-flow-draft.md#9-정리-필요-legacy--debt)).
+- 개발용 과거 이미지 pull: 루트 [`sync_image.sh`](sync_image.sh) (168 `out_data` → 로컬 `data/weather`, 운영 필수 아님).
 
-### 4.3 레이더 RDR (수집 = 이 repo, PNG = 외부)
+### 4.3 레이더 RDR (수집 = 이 repo, PNG = parse_netcdf)
 
 ```text
 KMA RDR API (HSP)
@@ -209,16 +219,17 @@ KMA RDR API (HSP)
 main_RDR.js  →  in_data/rdr/RDR_CMP_HSP_PUB_{tm}.bin(.gz)
       │
       ▼
-(불완전) parse_netcdf / 이미지화
+parse_netcdf watcher_image_rdr
+  (read_RDR_bin → reproject → equi + normal → resize)
       │
       ▼
-ROOT_DIR .../rdr.../RDR_CMP_HSP_PUB_{tm}_step{n}.png
+out_data/rdr/{date}/RDR_CMP_HSP_PUB_{tm}_step{n}[_equi].png
       │
       ▼
 GET /rdr-hsp/.../image , /rdr-hsp-equi/.../image
 ```
 
-- 수집 간격 후보: **5분** (`candidateMinute: 5`)
+- Snap: **5분**. step1 = 원본 해상도, step5/10 = 축소본. 상세: parse_netcdf `skills/weather-rdr-bin-png/`
 
 ### 4.4 KIM
 
@@ -238,7 +249,7 @@ out_data/.../datasets/kim-glob-hgt500-{tmfc}/
 /api/hgt500/*  +  /datasets/{datasetId}/**
 ```
 
-**B. EAsia NC + 레거시 PNG**
+**B. EAsia NC + 레거시 PNG (이 repo `kma_fetch/python`)**
 
 ```text
 KIM NC API
@@ -247,36 +258,49 @@ KIM NC API
 main_KIM.js  →  in_data/.../easia NC
       │
       ▼
-python kim_hgt_png_generator / PSL PNG (env 경로)
+KIM_PSL_PNG_GENERATOR / KIM_HGH_PNG_GENERATOR
+  (기본: python/kim_png_generator.py, kim_hgt_png_generator.py)
       │
       ▼
 GET /kim-hgt500/.../image , /kim-psl/.../image
 ```
 
-### 4.5 GFS (서빙만 이 repo에 가깝게 존재)
+신규 consumer는 **A** (`/api/hgt500/*`) 권장. B는 레거시 이미지 유지.
+
+### 4.5 GFS (fetch·렌더 = parse_netcdf, 서빙 = 이 repo)
 
 ```text
-(외부 수집·렌더 — 상세 TBD / parse_netcdf·별도 job)
+NOAA NOMADS GFS 0.25°
       │
       ▼
-ROOT_DIR 아래 gfs_*.json / gfs_*.png
+parse_netcdf
+  gfs_fetch_N_save.py  (+ gfs_gen_image.py)  → TMP/RH/WIND PNG
+  get_wind.py                                 → wind JSON (입자/레거시)
+      │
+      ├─ in_data/gfs/combined_raw/  (GRIB)
+      └─ out_data/gfs/{date}/
+           gfs_*_{utc}_{kst}_merc.png   → /gfs-0p25_*/.../image
+           gfs_*_{utc}_{kst}.png        → /gfs_equ-*/.../image
+           gfs_wind_*.json              → /gfs-wind_*/.../image
       │
       ▼
-GET /gfs-wind_*|gfs-0p25_*|gfs_equ-*/.../image
+server.js (ROOT_DIR = out_data)
 ```
 
-원천 fetch 스크립트는 이 README 작성 시점 기준 **weather_api에 완전히 정리되어 있지 않습니다.** Consumer가 쓰는 URL만 catalog에 고정되어 있습니다.
+weather_api에는 GFS fetch가 없다. PM2: `gfs_fetch_save`, `gfs_wind`.
 
-### 4.6 전체 조감 (불완전)
+### 4.6 전체 조감
 
 ```text
                     ┌─ main_AWS ──────────────► AWS JSON + pack ──► /api/aws/*
 kma_fetch watchers ─┼─ main.js (GK2A) ──┐
                     ├─ main_RDR ────────┤
-                    ├─ main_KIM / TXT ──┼─► (TXT HGT: 이 repo python)
+                    ├─ main_KIM / TXT ──┼─► TXT HGT + EAsia 레거시 PNG (이 repo python)
                     └───────────────────┘
-                                        │
-                    parse_netcdf 등 ─────┼─► PNG / 일부 JSON  (구름·RDR·GFS·레거시 AWS 이미지)
+                                        │ in_data/{gk2a,rdr,aws}
+                                        ▼
+parse_netcdf (PM2) ─ watcher_image* ───► out_data PNG (구름·RDR·AWS 강수)
+                 └─ gfs_fetch_save / gfs_wind ─► out_data/gfs (NOAA 직접)
                                         │
                     server.js ◄─────────┴─► HTTP + /weather + /datasets
 ```
@@ -338,7 +362,9 @@ NODE_ENV=production USE_API=false node kma_fetch/warm_aws_min_packs.js \
 | RN/TA QC·consumer 합의 | `docs/README.md` 인덱스 |
 | HGT500 PNG·복호화 | `skills/kim-hgt500-png-pipeline`, `docs/kim_hgt500_frontend_api_spec.md` |
 | 일회성 Hub/`#` | `work/README.md` |
-| 이미지화(parse_netcdf) | **TBD** — weather_system 편입 후 §4 보강 |
+| 이미지화(parse_netcdf) | [`skills/weather-image-pipeline`](skills/weather-image-pipeline/SKILL.md) · [GitLab](https://gitlabsvr.sbs.co.kr/weather_system/parse_netcdf) · [`docs/pipeline-image-flow-draft.md`](docs/pipeline-image-flow-draft.md) |
+| 개발용 이미지 sync | [`sync_image.sh`](sync_image.sh) (168 → 로컬, 수동) |
+| IR105 JSON/`/fs` | **정리 필요** — 동 문서 §9 |
 
 README는 **입구**입니다. 세부 진실 원천은 OpenAPI · skill · `docs/` 합의 md입니다.
 
@@ -360,5 +386,5 @@ README는 **입구**입니다. 세부 진실 원천은 OpenAPI · skill · `docs
 | --- | --- |
 | [kma_fetch/README.md](kma_fetch/README.md) | watcher, env, warm, backfill |
 | [docs/README.md](docs/README.md) | 계약·QC 문서 인덱스 |
-| [skills/README.md](skills/README.md) | skill 목록 |
+| [skills/README.md](skills/README.md) | skill 목록 (`weather-image-pipeline` 포함) |
 | [work/README.md](work/README.md) | 일회성 Hub / 원본 변환 |

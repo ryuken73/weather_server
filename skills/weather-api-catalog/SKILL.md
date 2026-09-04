@@ -12,6 +12,7 @@ description: weather_api 서버가 노출하는 HTTP API 카탈로그(producer).
 | Skill | 역할 |
 | --- | --- |
 | **weather-api-catalog** (이 skill) | Producer: 이 서버 endpoint·timestamp·응답·샘플 URL |
+| **weather-image-pipeline** | 구름/RDR/GFS/AWS PNG 생성 경계(parse_netcdf), IR105 JSON 정리 debt |
 | **weather-external-resource-apis** (시스템) | Consumer: 시각화 프로젝트가 태풍+바람+구름 등 여러 외부를 어떻게 쓰는지 |
 | **aws-min-json-pipeline** | AWS_MIN 수집·파일 포맷·누락 복구·API 허브 과거 backfill |
 | **kim-hgt500-png-pipeline** | HGT500 변환/보간/packed PNG 복호화 (HTTP 외) |
@@ -34,8 +35,8 @@ description: weather_api 서버가 노출하는 HTTP API 카탈로그(producer).
 
 - **HGT500**: `GET /api/hgt500/latest`, `GET /api/hgt500/datasets`, `GET /api/hgt500/datasets/{id}/manifest` (302), static `/datasets/{id}/**`
 - **AWS**: `GET /api/aws/stations`, `/api/aws/min`, `/api/aws/min/range` (2분·임의 구간 JSON), `/api/aws/min/pack` (1분 변수별 binary, 기본 TA), `/api/aws/min/exact`
-- **IR105 JSON**: `GET /ir105/{area}/{step}`, `/batch`, `/fs`
-- **레거시 image/wind**: `GET /{type}/{area}/{step}/image?timestamp_kor=`
+- **IR105 JSON** (레거시·정리 필요): `GET /ir105/{area}/{step}`, `/batch`, `/fs` — 시각화 주력은 아래 PNG
+- **레거시 image/wind**: `GET /{type}/{area}/{step}/image?timestamp_kor=` (`ir105-mono|color` 등)
 - **Static**: `/weather/**`
 
 미구현(호출 금지): `POST /api/hgt500/datasets`, `GET /api/hgt500/jobs/{jobId}`.
@@ -48,6 +49,7 @@ description: weather_api 서버가 노출하는 HTTP API 카탈로그(producer).
 4. HGT500 클라이언트 플로우·manifest frame schema → `docs/kim_hgt500_frontend_api_spec.md`
 5. packed PNG 복호화·렌더링 → `skills/kim-hgt500-png-pipeline`
 6. AWS_MIN 파일 채우기·과거 분 확보 → `skills/aws-min-json-pipeline`
+7. 구름/RDR/GFS PNG 생성·parse_netcdf·IR105 JSON debt → `skills/weather-image-pipeline`
 
 ## AWS API 선택 (consumer)
 
@@ -87,5 +89,6 @@ Pack binary 계약 (consumer):
 - `/api/hgt500/latest`는 mutable pointer다. animation은 `manifestUrl`의 `frames`를 쓴다.
 - 새 KIM global TXT HGT500은 `/api/hgt500/*` + `/datasets/*`만 사용한다. `/kim-hgt500/.../image`는 레거시 NC 이미지다.
 - `GET /api/hgt500/datasets`는 `Cache-Control: no-store`.
-- GFS wind (`gfs-wind_*`)는 JSON, 대부분 다른 image type은 PNG.
+- GFS wind (`gfs-wind_*`)는 JSON, 대부분 다른 image type은 PNG. 생성 경계·PM2·정리 debt → `skills/weather-image-pipeline` ([parse_netcdf](https://gitlabsvr.sbs.co.kr/weather_system/parse_netcdf)).
+- IR105 **시각화는 PNG** (`/ir105-mono|color/.../image`). `/ir105`·`/batch`·`/fs` JSON은 초기 client-렌더 구상 잔재(**정리 필요**, `/fs`는 로컬 경로 하드코드). 새 연동에 쓰지 말 것.
 - API를 추가·변경하면 **같은 작업에서** `docs/openapi.yaml`과 이 skill을 갱신한다 (`.cursor/rules/api-docs-sync.mdc`).
