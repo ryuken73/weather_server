@@ -15,11 +15,11 @@ const {
   isProductionNodeEnv,
   resolveEnvPath
 } = require('./aws_paths');
-const { RN_FIELDS } = require('../services/aws_apihub_hourly');
+const { RN_FIELDS, assertRnAmountNonNegative } = require('../services/aws_apihub_hourly');
 
 const ZONE = 'Asia/Seoul';
 const HOURLY_STAT_SCHEMA_VERSION = 1;
-const HOURLY_STAT_CONTRACT_REVISION = 1;
+const HOURLY_STAT_CONTRACT_REVISION = 2;
 const HOURLY_STAT_KIND = 'aws-hourly-stat';
 const SUPPORTED_HOURLY_STAT_VARIABLES = Object.freeze(['RN']);
 
@@ -158,6 +158,7 @@ async function buildAwsHourlyRnPack(statJsonRoot, dayYmd, options = {}) {
       stationCount: stations.length,
       stations
     });
+    assertRnAmountNonNegative(stations, `buildAwsHourlyRnPack ${tm}`);
   }
 
   if (presentHours === 0) {

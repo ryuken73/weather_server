@@ -40,13 +40,18 @@ Producer day pack(`date=YYYYMMDD`)은 해당 달력일의 정시 `HH00` 원천(�
 | 필드 | 용도 |
 | --- | --- |
 | `TM`, `STN` | 정시·지점 |
+| `RE_SUM`, `RE_QCM` | 강수유무 합·자료수 (Hub 컬럼; STN 직후) |
 | `RN_DAY` | 해당 시각까지 일강수 |
 | `RN_HR1`, `RN_HR1_MI` | 1시간 강수 · 시차(분) |
 | `RN_60M_MAX`, `RN_60M_MAX_MI`, `RN_60M_QCM` | 최대 60분 이동합 · 시차 · 자료수 |
 | `RN_15M_MAX`, `RN_15M_MAX_MI`, `RN_15M_QCM` | 최대 15분 이동합 · 시차 · 자료수 |
-| `RN_DAY_MI` | (Hub 제공 시) 일강수 시차 |
+| `RN_DAY_MI` | 일강수 시차 |
 
-결측: Hub 물리결측(≤ -50 등) → JSON `null`. **0.0 mm는 0**.
+**컬럼 순서 (contractRevision ≥ 2):** `STN` 뒤 `RE_SUM`, `RE_QCM` 다음이 `RN_*`.  
+rev1은 `RE_*`를 건너뛰지 않아 RN 필드가 두 칸 밀렸음 → **rev2에서 수정. 기존 pack은 `--force` 재 fetch/warm 필요.**
+
+결측: Hub 물리결측(≤ -50 등) → JSON `null`. **0.0 mm는 0**.  
+Smoke: `RN_DAY` / `RN_HR1` / `RN_60M_MAX` / `RN_15M_MAX` 음수 금지 (매핑 오류 감지).
 
 ---
 
@@ -55,3 +60,4 @@ Producer day pack(`date=YYYYMMDD`)은 해당 달력일의 정시 `HH00` 원천(�
 | 날짜 | 내용 |
 | --- | --- |
 | 2026-09-10 | Consumer 확정안 반영 |
+| 2026-09-10 | **contractRevision 2**: `RE_SUM`/`RE_QCM` 컬럼 정렬 수정 (rev1 두 칸 밀림) |

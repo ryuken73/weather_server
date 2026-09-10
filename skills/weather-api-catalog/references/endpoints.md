@@ -101,10 +101,12 @@ Pack binary: `out_data/aws/pack/` → `/datasets/aws/...` (env `AWS_PACK_DIR`).
 
 - Hub `awsh.php?var=RN` 정시 통계 **day pack** (실험·방재 parity)
 - 1분 pack과 **별개**. 매핑: `docs/aws-hourly-stat-rn-consumer-mapping.md`
+- `contractRevision` **2+**: STN 뒤 `RE_SUM`,`RE_QCM` 다음 `RN_*` (rev1은 두 칸 밀림 → force 재생성)
 - `variable` 현재 `RN`만. miss → `404 PACK_NOT_WARMED`
 - data: `/datasets/aws/stat/hourly/rn/{date}/data-v{sha8}.json`
 - 수집: `kma_fetch/fetch_aws_hourly_stat.js` → warm: `kma_fetch/warm_aws_hourly_stat.js`
 - Consumer: 구간 `(start,end]` 에서 max(`RN_HR1`) / max(`RN_60M_MAX`); 발생시각은 `TM` / `TM+RN_60M_MAX_MI`
+- Smoke: `RN_DAY`/`RN_HR1`/`RN_60M_MAX`/`RN_15M_MAX` 음수 금지
 
 ## IR105 JSON
 

@@ -1,14 +1,20 @@
 /**
  * KMA API Hub AWS 시간통계 (awsh.php) — RN
  * https://apihub-pub.kma.go.kr/api/typ01/url/awsh.php?var=RN&tm=YYYYMMDDHHMI
+ *
+ * var=RN 응답 컬럼 (TM STN 이후, 명세):
+ *   RE_SUM, RE_QCM, RN_DAY, RN_DAY_MI, RN_HR1, RN_HR1_MI,
+ *   RN_60M_MAX, RN_60M_MAX_MI, RN_60M_QCM, RN_15M_MAX, RN_15M_MAX_MI, RN_15M_QCM
  */
 const axios = require('axios');
 
 const API_BASE = 'https://apihub-pub.kma.go.kr/api/typ01/url/awsh.php';
 const MISSING_LT = -50;
 
-/** var=RN, help=0 일 때 기대 컬럼 (TM STN 이후) */
-const RN_FIELDS = [
+/** TM STN 이후 고정 컬럼 순서 (help=0) — contractRevision 2+ */
+const RN_SOURCE_FIELDS = Object.freeze([
+  'RE_SUM',
+  'RE_QCM',
   'RN_DAY',
   'RN_DAY_MI',
   'RN_HR1',
@@ -19,7 +25,13 @@ const RN_FIELDS = [
   'RN_15M_MAX',
   'RN_15M_MAX_MI',
   'RN_15M_QCM'
-];
+]);
+
+/** pack/API에 노출하는 필드 (source와 동일; RE_* 포함) */
+const RN_FIELDS = RN_SOURCE_FIELDS;
+
+/** 음수가 나오면 안 되는 강수량(mm) 필드 — 매핑 밀림 smoke invariant */
+const RN_AMOUNT_FIELDS = Object.freeze(['RN_DAY', 'RN_HR1', 'RN_60M_MAX', 'RN_15M_MAX']);
 
 function isMissingPhysical(v) {
   return v == null || Number.isNaN(v) || v <= MISSING_LT;
@@ -31,6 +43,30 @@ function toNumberOrNull(raw, { integer = false, allowNegativeSentinel = false } 
   if (!Number.isFinite(n)) return null;
   if (!allowNegativeSentinel && isMissingPhysical(n)) return null;
   return integer ? Math.round(n) : n;
+}
+
+/**
+ * RN_* 강수량(mm)이 음수면 매핑 오류 가능성 → throw
+ * @param {object[]} rows
+ * @param {string} [context]
+ */
+function assertRnAmountNonNegative(rows, context = 'awsh RN') {
+  for (const row of rows) {
+    for (const name of RN_AMOUNT_FIELDS) {
+      const v = row[name];
+      if (v == null) continue;
+      if (typeof v === 'number' && v < 0) {
+        const err = new Error(
+          `${context}: negative ${name}=${v} at STN_ID=${row.STN_ID} TM=${row.TM} (column mapping?)`
+        );
+        err.code = 'RN_AMOUNT_NEGATIVE';
+        err.stnId = row.STN_ID;
+        err.field = name;
+        err.value = v;
+        throw err;
+      }
+    }
+  }
 }
 
 /**
@@ -46,8 +82,8 @@ function parseAwshRnText(text) {
     if (!line || line.startsWith('#')) continue;
     if (/^YYMMDDHHMI/i.test(line) || /^KST\b/i.test(line)) {
       const parts = line.split(/[,\s]+/).filter(Boolean);
-      // e.g. YYMMDDHHMI STN RN_DAY ...
-      if (parts.length >= 3 && /RN_/i.test(line)) {
+      // e.g. YYMMDDHHMI STN RE_SUM RE_QCM RN_DAY ...
+      if (parts.length >= 3 && (/RN_/i.test(line) || /RE_SUM/i.test(line))) {
         headerFields = parts.slice(2).map((p) => p.replace(/[^A-Za-z0-9_]/g, '').toUpperCase());
       }
       continue;
@@ -64,7 +100,8 @@ function parseAwshRnText(text) {
     if (/^YYMMDDHHMI/i.test(line) || /^KST\b/i.test(line)) continue;
 
     const parts = line.split(/[,\s]+/).filter(Boolean);
-    if (parts.length < 4) continue;
+    // TM STN + at least RE_SUM RE_QCM RN_DAY ...
+    if (parts.length < 5) continue;
     if (!/^\d{12}$/.test(parts[0])) continue;
     if (!/^\d+$/.test(parts[1])) continue;
 
@@ -74,7 +111,7 @@ function parseAwshRnText(text) {
 
     const fieldNames = headerFields && headerFields.length
       ? headerFields
-      : RN_FIELDS;
+      : RN_SOURCE_FIELDS;
 
     const row = { TM: tm, STN_ID: stn };
     for (let i = 0; i < fieldNames.length; i++) {
@@ -85,20 +122,22 @@ function parseAwshRnText(text) {
         continue;
       }
       const isMiOrQcm = /(_MI|_QCM)$/i.test(name);
+      // RE_SUM은 분수(카운트) — 음수 sentinel만 결측, 그 외 정수 허용
+      const isReSum = name === 'RE_SUM';
       row[name] = toNumberOrNull(raw, {
-        integer: isMiOrQcm,
+        integer: isMiOrQcm || isReSum,
         allowNegativeSentinel: isMiOrQcm
       });
     }
 
-    // 필수 키가 헤더에 없으면 고정 순서로 보강
-    for (const name of RN_FIELDS) {
+    for (const name of RN_SOURCE_FIELDS) {
       if (!(name in row)) row[name] = null;
     }
 
     rows.push(row);
   }
 
+  assertRnAmountNonNegative(rows, 'parseAwshRnText');
   return { tm: tmFromRows, rows };
 }
 
@@ -151,7 +190,10 @@ async function fetchAwsHourlyRnRows(tm, options = {}) {
 
 module.exports = {
   API_BASE,
+  RN_SOURCE_FIELDS,
   RN_FIELDS,
+  RN_AMOUNT_FIELDS,
+  assertRnAmountNonNegative,
   parseAwshRnText,
   fetchAwshRnWindow,
   fetchAwsHourlyRnRows
