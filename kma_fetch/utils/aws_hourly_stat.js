@@ -15,11 +15,11 @@ const {
   isProductionNodeEnv,
   resolveEnvPath
 } = require('./aws_paths');
-const { RN_FIELDS, assertRnAmountNonNegative } = require('../services/aws_apihub_hourly');
+const { RN_FIELDS, sanitizeRnAmountNegatives } = require('../services/aws_apihub_hourly');
 
 const ZONE = 'Asia/Seoul';
 const HOURLY_STAT_SCHEMA_VERSION = 1;
-const HOURLY_STAT_CONTRACT_REVISION = 2;
+const HOURLY_STAT_CONTRACT_REVISION = 3;
 const HOURLY_STAT_KIND = 'aws-hourly-stat';
 const SUPPORTED_HOURLY_STAT_VARIABLES = Object.freeze(['RN']);
 
@@ -95,6 +95,7 @@ async function writeHourlyRnJson(statJsonRoot, tm, rows, options = {}) {
   await fsp.mkdir(path.dirname(outPath), { recursive: true });
   const payload = {
     schemaVersion: HOURLY_STAT_SCHEMA_VERSION,
+    contractRevision: HOURLY_STAT_CONTRACT_REVISION,
     kind: HOURLY_STAT_KIND,
     variable: 'RN',
     tm,
@@ -104,6 +105,9 @@ async function writeHourlyRnJson(statJsonRoot, tm, rows, options = {}) {
     fields: ['TM', 'STN_ID', ...RN_FIELDS],
     data: rows
   };
+  if (options.qc) {
+    payload.qc = options.qc;
+  }
   const tmp = `${outPath}.${process.pid}.tmp`;
   await fsp.writeFile(tmp, JSON.stringify(payload), 'utf8');
   await fsp.rename(tmp, outPath);
@@ -138,6 +142,15 @@ async function buildAwsHourlyRnPack(statJsonRoot, dayYmd, options = {}) {
   const hours = [];
   let presentHours = 0;
   let stationUnion = new Set();
+  const dayNeg = {
+    nullCount: 0,
+    stationIds: new Set(),
+    byField: Object.fromEntries(
+      ['RN_DAY', 'RN_HR1', 'RN_60M_MAX', 'RN_15M_MAX'].map((f) => [f, 0])
+    ),
+    samples: [],
+    hoursWithNulls: 0
+  };
 
   for (const tm of tms) {
     const { missing, doc } = await readHourlyRnJson(statJsonRoot, tm);
@@ -152,13 +165,68 @@ async function buildAwsHourlyRnPack(statJsonRoot, dayYmd, options = {}) {
       for (const f of RN_FIELDS) out[f] = r[f] == null ? null : r[f];
       return out;
     });
+
+    // disk에 남은 음수(구 fetch)도 pack 직전에 STN/field만 null
+    const sanitized = sanitizeRnAmountNegatives(stations, {
+      context: `buildAwsHourlyRnPack ${tm}`
+    });
+    const diskQc =
+      doc.qc && doc.qc.negativeAmountNulls ? doc.qc.negativeAmountNulls : null;
+    const hourNullCount = Math.max(
+      sanitized.nullCount,
+      diskQc && diskQc.nullCount ? diskQc.nullCount : 0
+    );
+    const hourByField = { ...sanitized.byField };
+    if (diskQc && diskQc.byField && sanitized.nullCount === 0) {
+      for (const [f, n] of Object.entries(diskQc.byField)) {
+        if (hourByField[f] != null) hourByField[f] = n;
+      }
+    }
+    const hourSamples =
+      sanitized.nullCount > 0
+        ? sanitized.samples
+        : diskQc && diskQc.samples
+          ? diskQc.samples
+          : [];
+    const hourStationCount =
+      sanitized.nullCount > 0
+        ? sanitized.stationCount
+        : diskQc && diskQc.stationCount
+          ? diskQc.stationCount
+          : 0;
+
+    if (hourNullCount > 0) {
+      dayNeg.hoursWithNulls += 1;
+      dayNeg.nullCount += hourNullCount;
+      for (const s of hourSamples) {
+        dayNeg.stationIds.add(String(s.STN_ID));
+        if (dayNeg.samples.length < 20) {
+          dayNeg.samples.push({ ...s, TM: s.TM || tm });
+        }
+      }
+      for (const [f, n] of Object.entries(hourByField)) {
+        if (dayNeg.byField[f] != null) dayNeg.byField[f] += n;
+      }
+    }
+
     hours.push({
       tm,
       present: true,
       stationCount: stations.length,
-      stations
+      stations,
+      ...(hourNullCount > 0
+        ? {
+            qc: {
+              negativeAmountNulls: {
+                nullCount: hourNullCount,
+                stationCount: hourStationCount,
+                byField: hourByField,
+                samples: hourSamples
+              }
+            }
+          }
+        : {})
     });
-    assertRnAmountNonNegative(stations, `buildAwsHourlyRnPack ${tm}`);
   }
 
   if (presentHours === 0) {
@@ -169,6 +237,7 @@ async function buildAwsHourlyRnPack(statJsonRoot, dayYmd, options = {}) {
 
   const dataBody = {
     schemaVersion: HOURLY_STAT_SCHEMA_VERSION,
+    contractRevision: HOURLY_STAT_CONTRACT_REVISION,
     kind: HOURLY_STAT_KIND,
     variable: 'RN',
     date: dayKey,
@@ -216,6 +285,15 @@ async function buildAwsHourlyRnPack(statJsonRoot, dayYmd, options = {}) {
     fields: ['STN_ID', ...RN_FIELDS],
     cache: {
       immutable: complete && dayKey !== today
+    },
+    qc: {
+      negativeAmountNulls: {
+        nullCount: dayNeg.nullCount,
+        stationCount: dayNeg.stationIds.size,
+        hoursWithNulls: dayNeg.hoursWithNulls,
+        byField: dayNeg.byField,
+        samples: dayNeg.samples
+      }
     }
   };
 

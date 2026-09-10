@@ -1074,8 +1074,10 @@ components:
           example: 1
         contractRevision:
           type: integer
-          example: 2
-          description: 2+ 는 STN 뒤 RE_SUM/RE_QCM 포함 컬럼 정렬. rev1 pack은 force 재생성 필요.
+          example: 3
+          description: |
+            3+ 음수 RN amount는 STN/field null + qc.negativeAmountNulls (다량만 fatal).
+            2+ 는 STN 뒤 RE_SUM/RE_QCM 포함 컬럼 정렬. 구 pack은 force 재생성.
         kind:
           type: string
           example: aws-hourly-stat

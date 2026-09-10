@@ -48,10 +48,14 @@ Producer day pack(`date=YYYYMMDD`)은 해당 달력일의 정시 `HH00` 원천(�
 | `RN_DAY_MI` | 일강수 시차 |
 
 **컬럼 순서 (contractRevision ≥ 2):** `STN` 뒤 `RE_SUM`, `RE_QCM` 다음이 `RN_*`.  
-rev1은 `RE_*`를 건너뛰지 않아 RN 필드가 두 칸 밀렸음 → **rev2에서 수정. 기존 pack은 `--force` 재 fetch/warm 필요.**
+rev1은 `RE_*`를 건너뛰지 않아 RN 필드가 두 칸 밀렸음 → **rev2에서 수정.**
 
-결측: Hub 물리결측(≤ -50 등) → JSON `null`. **0.0 mm는 0**.  
-Smoke: `RN_DAY` / `RN_HR1` / `RN_60M_MAX` / `RN_15M_MAX` 음수 금지 (매핑 오류 감지).
+**음수 강수량 (contractRevision ≥ 3):** `RN_DAY`/`RN_HR1`/`RN_60M_MAX`/`RN_15M_MAX`가 음수면 **해당 STN·field만 `null`**.  
+같은 row의 다른 필드·다른 지점은 유지. manifest `qc.negativeAmountNulls`에 건수·샘플 기록.  
+음수 cell ≥5% **그리고** null≥100, 또는 음수 보유 지점 ≥10% **그리고** 지점≥50일 때만 컬럼 밀림 의심으로 fetch FAIL (`RN_AMOUNT_NEGATIVE_FLOOD`).  
+소수 지점 `-0.5` 등은 TM 전체를 버리지 않는다.
+
+결측: Hub 물리결측(≤ -50 등) → JSON `null`. **0.0 mm는 0**.
 
 ---
 
@@ -61,3 +65,4 @@ Smoke: `RN_DAY` / `RN_HR1` / `RN_60M_MAX` / `RN_15M_MAX` 음수 금지 (매핑 �
 | --- | --- |
 | 2026-09-10 | Consumer 확정안 반영 |
 | 2026-09-10 | **contractRevision 2**: `RE_SUM`/`RE_QCM` 컬럼 정렬 수정 (rev1 두 칸 밀림) |
+| 2026-09-10 | **contractRevision 3**: 음수 강수 STN/field null + qc 집계; 다량만 fatal |

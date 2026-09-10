@@ -101,12 +101,12 @@ Pack binary: `out_data/aws/pack/` → `/datasets/aws/...` (env `AWS_PACK_DIR`).
 
 - Hub `awsh.php?var=RN` 정시 통계 **day pack** (실험·방재 parity)
 - 1분 pack과 **별개**. 매핑: `docs/aws-hourly-stat-rn-consumer-mapping.md`
-- `contractRevision` **2+**: STN 뒤 `RE_SUM`,`RE_QCM` 다음 `RN_*` (rev1은 두 칸 밀림 → force 재생성)
+- `contractRevision` **3+**: 음수 `RN_*` amount는 STN/field만 null + `qc.negativeAmountNulls` (다량만 FATAL). **2+**: STN 뒤 `RE_SUM`,`RE_QCM` 다음 `RN_*`
 - `variable` 현재 `RN`만. miss → `404 PACK_NOT_WARMED`
 - data: `/datasets/aws/stat/hourly/rn/{date}/data-v{sha8}.json`
 - 수집: `kma_fetch/fetch_aws_hourly_stat.js` → warm: `kma_fetch/warm_aws_hourly_stat.js`
 - Consumer: 구간 `(start,end]` 에서 max(`RN_HR1`) / max(`RN_60M_MAX`); 발생시각은 `TM` / `TM+RN_60M_MAX_MI`
-- Smoke: `RN_DAY`/`RN_HR1`/`RN_60M_MAX`/`RN_15M_MAX` 음수 금지
+- 소수 지점 음수 강수 → 해당 field null (TM 전체 drop 안 함). 다량만 컬럼 밀림 FATAL
 
 ## IR105 JSON
 

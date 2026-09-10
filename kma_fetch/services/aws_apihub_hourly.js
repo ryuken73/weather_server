@@ -30,8 +30,26 @@ const RN_SOURCE_FIELDS = Object.freeze([
 /** pack/API에 노출하는 필드 (source와 동일; RE_* 포함) */
 const RN_FIELDS = RN_SOURCE_FIELDS;
 
-/** 음수가 나오면 안 되는 강수량(mm) 필드 — 매핑 밀림 smoke invariant */
+/** 강수량(mm) 필드 — 음수는 STN/field만 null (contractRevision 3+) */
 const RN_AMOUNT_FIELDS = Object.freeze(['RN_DAY', 'RN_HR1', 'RN_60M_MAX', 'RN_15M_MAX']);
+
+/** 음수 cell 비율 ≥ 이 값이고 절대 건수 하한 이상이면 fatal */
+const NEGATIVE_AMOUNT_FATAL_CELL_RATIO = Number(
+  process.env.AWS_HOURLY_RN_NEG_FATAL_CELL_RATIO || 0.05
+);
+/** 음수 보유 지점 비율 ≥ 이 값이고 절대 건수 하한 이상이면 fatal */
+const NEGATIVE_AMOUNT_FATAL_STATION_RATIO = Number(
+  process.env.AWS_HOURLY_RN_NEG_FATAL_STATION_RATIO || 0.1
+);
+/** 비율 fatal 적용 전 최소 음수 cell 수 (소수 지점 -0.5 때문에 TM 전체 FAIL 방지) */
+const NEGATIVE_AMOUNT_FATAL_MIN_NULLS = Number(
+  process.env.AWS_HOURLY_RN_NEG_FATAL_MIN_NULLS || 100
+);
+/** 비율 fatal 적용 전 최소 음수 보유 지점 수 */
+const NEGATIVE_AMOUNT_FATAL_MIN_STATIONS = Number(
+  process.env.AWS_HOURLY_RN_NEG_FATAL_MIN_STATIONS || 50
+);
+const NEGATIVE_AMOUNT_SAMPLE_LIMIT = 20;
 
 function isMissingPhysical(v) {
   return v == null || Number.isNaN(v) || v <= MISSING_LT;
@@ -46,32 +64,105 @@ function toNumberOrNull(raw, { integer = false, allowNegativeSentinel = false } 
 }
 
 /**
- * RN_* 강수량(mm)이 음수면 매핑 오류 가능성 → throw
- * @param {object[]} rows
- * @param {string} [context]
+ * 음수 강수량 필드를 해당 STN/field만 null로 바꿈.
+ * 다량(비율 임계)이면 컬럼 밀림 의심으로 throw.
+ *
+ * @param {object[]} rows  in-place mutate
+ * @param {object} [options]
+ * @returns {{ nullCount: number, stationCount: number, samples: object[], byField: object }}
  */
-function assertRnAmountNonNegative(rows, context = 'awsh RN') {
+function sanitizeRnAmountNegatives(rows, options = {}) {
+  const context = options.context || 'awsh RN';
+  const sampleLimit = options.sampleLimit == null ? NEGATIVE_AMOUNT_SAMPLE_LIMIT : options.sampleLimit;
+  const fatalCellRatio =
+    options.fatalCellRatio == null ? NEGATIVE_AMOUNT_FATAL_CELL_RATIO : options.fatalCellRatio;
+  const fatalStationRatio =
+    options.fatalStationRatio == null
+      ? NEGATIVE_AMOUNT_FATAL_STATION_RATIO
+      : options.fatalStationRatio;
+  const fatalMinNulls =
+    options.fatalMinNulls == null ? NEGATIVE_AMOUNT_FATAL_MIN_NULLS : options.fatalMinNulls;
+  const fatalMinStations =
+    options.fatalMinStations == null
+      ? NEGATIVE_AMOUNT_FATAL_MIN_STATIONS
+      : options.fatalMinStations;
+
+  const samples = [];
+  const byField = Object.fromEntries(RN_AMOUNT_FIELDS.map((f) => [f, 0]));
+  const stationsHit = new Set();
+  let nullCount = 0;
+
   for (const row of rows) {
     for (const name of RN_AMOUNT_FIELDS) {
       const v = row[name];
-      if (v == null) continue;
-      if (typeof v === 'number' && v < 0) {
-        const err = new Error(
-          `${context}: negative ${name}=${v} at STN_ID=${row.STN_ID} TM=${row.TM} (column mapping?)`
-        );
-        err.code = 'RN_AMOUNT_NEGATIVE';
-        err.stnId = row.STN_ID;
-        err.field = name;
-        err.value = v;
-        throw err;
+      if (v == null || typeof v !== 'number') continue;
+      if (v >= 0) continue;
+      if (samples.length < sampleLimit) {
+        samples.push({
+          TM: row.TM || null,
+          STN_ID: row.STN_ID,
+          field: name,
+          value: v
+        });
       }
+      row[name] = null;
+      nullCount += 1;
+      byField[name] += 1;
+      stationsHit.add(String(row.STN_ID));
     }
   }
+
+  const stationCount = rows.length;
+  const amountCellCount = Math.max(1, stationCount * RN_AMOUNT_FIELDS.length);
+  const cellRatio = nullCount / amountCellCount;
+  const stationRatio = stationCount > 0 ? stationsHit.size / stationCount : 0;
+
+  const report = {
+    nullCount,
+    stationCount: stationsHit.size,
+    rowCount: stationCount,
+    cellRatio,
+    stationRatio,
+    byField,
+    samples,
+    fatalCellRatio,
+    fatalStationRatio,
+    fatalMinNulls,
+    fatalMinStations
+  };
+
+  const cellFlood = nullCount >= fatalMinNulls && cellRatio >= fatalCellRatio;
+  const stationFlood =
+    stationsHit.size >= fatalMinStations && stationRatio >= fatalStationRatio;
+
+  if (nullCount > 0 && (cellFlood || stationFlood)) {
+    const err = new Error(
+      `${context}: too many negative rain amounts (nulls=${nullCount}, ` +
+        `stations=${stationsHit.size}/${stationCount}, cellRatio=${cellRatio.toFixed(3)}, ` +
+        `stationRatio=${stationRatio.toFixed(3)}) — possible column shift`
+    );
+    err.code = 'RN_AMOUNT_NEGATIVE_FLOOD';
+    err.report = report;
+    throw err;
+  }
+
+  return report;
+}
+
+/** @deprecated */
+function assertRnAmountNonNegative(rows, context = 'awsh RN') {
+  return sanitizeRnAmountNegatives(rows, {
+    context,
+    fatalMinNulls: 1,
+    fatalMinStations: 1,
+    fatalCellRatio: 0,
+    fatalStationRatio: 0
+  });
 }
 
 /**
  * @param {string} text
- * @returns {{ tm: string, rows: object[] }}
+ * @returns {{ tm: string, rows: object[], qc: object }}
  */
 function parseAwshRnText(text) {
   const lines = String(text || '').split(/\r?\n/);
@@ -137,8 +228,15 @@ function parseAwshRnText(text) {
     rows.push(row);
   }
 
-  assertRnAmountNonNegative(rows, 'parseAwshRnText');
-  return { tm: tmFromRows, rows };
+  const negativeAmountNulls = sanitizeRnAmountNegatives(rows, {
+    context: `parseAwshRnText tm=${tmFromRows || '?'}`
+  });
+
+  return {
+    tm: tmFromRows,
+    rows,
+    qc: { negativeAmountNulls }
+  };
 }
 
 async function fetchAwshRnWindow(authKey, tm, options = {}) {
@@ -170,7 +268,7 @@ async function fetchAwshRnWindow(authKey, tm, options = {}) {
 }
 
 /**
- * @returns {Promise<{ tm: string, rows: object[], rawText: string }>}
+ * @returns {Promise<{ tm: string, rows: object[], rawText: string, qc: object }>}
  */
 async function fetchAwsHourlyRnRows(tm, options = {}) {
   const authKey = options.authKey || process.env.API_KEY || process.env.KMA_API_KEY;
@@ -184,7 +282,8 @@ async function fetchAwsHourlyRnRows(tm, options = {}) {
   return {
     tm: parsed.tm || String(tm),
     rows: parsed.rows,
-    rawText
+    rawText,
+    qc: parsed.qc
   };
 }
 
@@ -193,6 +292,11 @@ module.exports = {
   RN_SOURCE_FIELDS,
   RN_FIELDS,
   RN_AMOUNT_FIELDS,
+  NEGATIVE_AMOUNT_FATAL_CELL_RATIO,
+  NEGATIVE_AMOUNT_FATAL_STATION_RATIO,
+  NEGATIVE_AMOUNT_FATAL_MIN_NULLS,
+  NEGATIVE_AMOUNT_FATAL_MIN_STATIONS,
+  sanitizeRnAmountNegatives,
   assertRnAmountNonNegative,
   parseAwshRnText,
   fetchAwshRnWindow,

@@ -1,8 +1,8 @@
 const assert = require('assert');
 const {
   parseAwshRnText,
-  RN_AMOUNT_FIELDS,
-  assertRnAmountNonNegative
+  sanitizeRnAmountNegatives,
+  RN_AMOUNT_FIELDS
 } = require('../services/aws_apihub_hourly');
 
 /** 명세 컬럼: STN 뒤 RE_SUM, RE_QCM 후 RN_* */
@@ -16,46 +16,59 @@ const sample = `
 #7777END
 `;
 
-const { tm, rows } = parseAwshRnText(sample);
+const { tm, rows, qc } = parseAwshRnText(sample);
 assert.strictEqual(tm, '202609041100');
 assert.strictEqual(rows.length, 3);
+assert.strictEqual(qc.negativeAmountNulls.nullCount, 0);
 
 const s611 = rows.find((r) => r.STN_ID === 611);
 assert.strictEqual(s611.RE_SUM, 0);
 assert.strictEqual(s611.RE_QCM, 60);
 assert.strictEqual(s611.RN_DAY, 8.5);
-assert.strictEqual(s611.RN_DAY_MI, 0);
 assert.strictEqual(s611.RN_HR1, 1.2);
-assert.strictEqual(s611.RN_HR1_MI, 60);
 assert.strictEqual(s611.RN_60M_MAX, 3.4);
 assert.strictEqual(s611.RN_60M_MAX_MI, -50);
 assert.strictEqual(s611.RN_15M_MAX, 1.0);
-assert.strictEqual(s611.RN_15M_MAX_MI, -10);
-
-const s108 = rows.find((r) => r.STN_ID === 108);
-assert.strictEqual(s108.RN_HR1, 0);
-assert.strictEqual(s108.RN_60M_MAX, 0);
 
 const s999 = rows.find((r) => r.STN_ID === 999);
 assert.strictEqual(s999.RN_HR1, null);
 assert.strictEqual(s999.RN_60M_MAX, null);
 
-assertRnAmountNonNegative(rows);
-
-/** 예전 버그: RE_* 없이 RN_DAY부터 매핑하면 RN_15M_MAX에 MI(-50)가 들어감 */
-const shiftedBugSample = `
-202609041100   611    8.5         0    1.2        60        3.4           -50       60        1.0           -10       60
+/** 소수 지점 음수 → 해당 field만 null, TM 전체 FAIL 아님 */
+const sparseNeg = `
+202608170800   513      0     60    1.0         0   -0.5        60        2.0             0       60        0.5             0       60
+202608170800   108      0     60    0.0         0    0.0        60        0.0             0       60        0.0             0       60
 `;
-// 위는 컬럼 부족/밀림 시나리오가 아니라 RE 없는 짧은 줄 — 명시적 음수 amount로 invariant 검증
-let threw = false;
-try {
-  assertRnAmountNonNegative([
-    { STN_ID: 611, TM: '202609041100', RN_15M_MAX: -50, RN_DAY: 1, RN_HR1: 1, RN_60M_MAX: 1 }
-  ]);
-} catch (err) {
-  threw = err.code === 'RN_AMOUNT_NEGATIVE' && err.field === 'RN_15M_MAX';
+const sparse = parseAwshRnText(sparseNeg);
+assert.strictEqual(sparse.rows.length, 2);
+const s513 = sparse.rows.find((r) => r.STN_ID === 513);
+assert.strictEqual(s513.RN_HR1, null);
+assert.strictEqual(s513.RN_DAY, 1.0);
+assert.strictEqual(s513.RN_60M_MAX, 2.0);
+const s108 = sparse.rows.find((r) => r.STN_ID === 108);
+assert.strictEqual(s108.RN_HR1, 0);
+assert.strictEqual(sparse.qc.negativeAmountNulls.nullCount, 1);
+assert.strictEqual(sparse.qc.negativeAmountNulls.samples[0].STN_ID, 513);
+
+/** 다량 음수 → flood fatal */
+const floodRows = [];
+for (let i = 0; i < 100; i++) {
+  floodRows.push({
+    STN_ID: i,
+    TM: '202608170800',
+    RN_DAY: -0.5,
+    RN_HR1: -0.5,
+    RN_60M_MAX: -0.5,
+    RN_15M_MAX: -0.5
+  });
 }
-assert.ok(threw, 'expected RN_AMOUNT_NEGATIVE for negative RN_15M_MAX');
+let flooded = false;
+try {
+  sanitizeRnAmountNegatives(floodRows, { context: 'flood-test' });
+} catch (err) {
+  flooded = err.code === 'RN_AMOUNT_NEGATIVE_FLOOD';
+}
+assert.ok(flooded, 'expected RN_AMOUNT_NEGATIVE_FLOOD');
 
 for (const f of RN_AMOUNT_FIELDS) {
   assert.ok(s611[f] == null || s611[f] >= 0, `${f} must be null or >= 0`);

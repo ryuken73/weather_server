@@ -152,14 +152,17 @@ async function main() {
       continue;
     }
     try {
-      const { rows, rawText } = await fetchAwsHourlyRnRows(tm, { authKey });
+      const { rows, rawText, qc } = await fetchAwsHourlyRnRows(tm, { authKey });
       if (!rows.length) {
         summary.empty += 1;
         console.log('EMPTY');
       } else {
-        await writeHourlyRnJson(outRoot, tm, rows);
+        await writeHourlyRnJson(outRoot, tm, rows, { qc });
         summary.ok += 1;
-        console.log(`ok stations=${rows.length}`);
+        const neg = qc && qc.negativeAmountNulls ? qc.negativeAmountNulls.nullCount : 0;
+        console.log(
+          `ok stations=${rows.length}` + (neg ? ` negNulls=${neg}` : '')
+        );
       }
       if (args.saveRaw) {
         const rawDir = path.join(PROJECT_ROOT, 'work', 'in', 'awsh', folderDay(tm));

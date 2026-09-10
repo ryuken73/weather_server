@@ -92,5 +92,5 @@ Pack binary 계약 (consumer):
 - GFS wind (`gfs-wind_*`)는 JSON, 대부분 다른 image type은 PNG. 생성 경계·PM2·정리 debt → `skills/weather-image-pipeline` ([parse_netcdf](https://gitlabsvr.sbs.co.kr/weather_system/parse_netcdf)).
 - IR105 **시각화는 PNG** (`/ir105-mono|color/.../image`). `/ir105`·`/batch`·`/fs` JSON은 초기 client-렌더 구상 잔재(**정리 필요**, `/fs`는 로컬 경로 하드코드). 새 연동에 쓰지 말 것.
 - 방재 정렬2 공식 수치(1시간최대강수/최대60분강수)는 `/api/aws/stat/hourly/pack` + `docs/aws-hourly-stat-rn-consumer-mapping.md`. 1분 `RN_60M`/`RN_DAY` pack 계약은 변경하지 않는다.
-- Hourly RN pack **`contractRevision: 2+`**: Hub 컬럼이 `STN` 뒤 `RE_SUM`,`RE_QCM` 다음 `RN_*`. rev1(두 칸 밀림) pack은 `--force` 재 fetch/warm. `RN_DAY`/`RN_HR1`/`RN_60M_MAX`/`RN_15M_MAX` 음수 금지.
+- Hourly RN pack **`contractRevision: 3+`**: 음수 강수는 STN/field null + `qc.negativeAmountNulls`; 다량(≥5% cell / ≥10% stn)만 FATAL. **2+** 컬럼: `STN`→`RE_SUM`,`RE_QCM`→`RN_*`. rev1 pack은 `--force` 재 fetch/warm.
 - API를 추가·변경하면 **같은 작업에서** `docs/openapi.yaml`과 이 skill을 갱신한다 (`.cursor/rules/api-docs-sync.mdc`).
