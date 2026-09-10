@@ -40,6 +40,13 @@ const {
   isPackImmutableCacheable,
   packManifestCacheHeaders
 } = require('./kma_fetch/utils/aws_min_pack');
+const {
+  deriveAwsHourlyStatJsonDir,
+  deriveAwsHourlyStatPackDir,
+  getOrBuildAwsHourlyRnPack,
+  parseHourlyStatVariable,
+  parseDayYmd: parseHourlyStatDayYmd
+} = require('./kma_fetch/utils/aws_hourly_stat');
 
 require('dotenv').config(); // .env 파일 로드
 
@@ -69,6 +76,8 @@ const kimTextDatasetDir = path.join(kimTextOutDir, 'datasets');
 const kimTextLatestPath = path.join(kimTextOutDir, 'latest', 'hgt500.json');
 const awsJsonDir = deriveAwsJsonDir(__dirname);
 const awsPackDir = deriveAwsPackDir(__dirname);
+const awsHourlyStatJsonDir = deriveAwsHourlyStatJsonDir(__dirname);
+const awsHourlyStatPackDir = deriveAwsHourlyStatPackDir(__dirname);
 const snapAwsTimestamp = findNearestTimestamp(AWS_INTERVAL_MINUTES);
 const awsStnCatalog = loadStationCatalog();
 console.log(`MODE: ${mode}`);
@@ -76,6 +85,8 @@ console.log(`DATA DIR: ${rootDir}`);
 console.log(`KIM TEXT DATASET DIR: ${kimTextDatasetDir}`);
 console.log(`AWS JSON DIR: ${awsJsonDir}`);
 console.log(`AWS PACK DIR: ${awsPackDir}`);
+console.log(`AWS HOURLY STAT JSON DIR: ${awsHourlyStatJsonDir}`);
+console.log(`AWS HOURLY STAT PACK DIR: ${awsHourlyStatPackDir}`);
 console.log(`AWS STN CODE: ${awsStnCatalog.codeFile} (${awsStnCatalog.stationCount} stations)`);
 
 // 데이터베이스 연결 설정
@@ -149,6 +160,50 @@ const convertKSTToGMTString = (dateString) => {
   })
   await fs.mkdir(kimTextDatasetDir, { recursive: true });
   await fs.mkdir(awsPackDir, { recursive: true });
+  await fs.mkdir(awsHourlyStatPackDir, { recursive: true });
+
+  /**
+   * Hourly RN stat pack assets (JSON). Separate from 1-min Int16 packs.
+   */
+  fastify.get('/datasets/aws/stat/hourly/:variable/:day/:file', async (request, reply) => {
+    const variable = String(request.params.variable || '').toLowerCase();
+    const day = String(request.params.day || '');
+    const file = String(request.params.file || '');
+    if (variable !== 'rn') {
+      return reply.code(400).send({ error: 'Unsupported hourly stat variable. Supported: rn (RN)' });
+    }
+    if (!/^\d{8}$/.test(day)) {
+      return reply.code(400).send({ error: 'Invalid day. Expected YYYYMMDD' });
+    }
+    if (!/^(manifest\.json|data\.json|data-v[a-f0-9]{8}\.json)$/i.test(file)) {
+      return reply.code(404).send({ error: 'Hourly stat asset not found', variable, day, file });
+    }
+    const assetPath = path.join(awsHourlyStatPackDir, variable, day, file);
+    try {
+      const body = await fs.readFile(assetPath);
+      const cached = file === 'manifest.json'
+        ? JSON.parse(body.toString('utf8'))
+        : null;
+      const immutable = cached && cached.cache && cached.cache.immutable;
+      const etagSource = cached && cached.data && cached.data.sha256
+        ? cached.data.sha256
+        : crypto.createHash('sha256').update(body).digest('hex');
+      const etag = `"${etagSource}"`;
+      reply.header('Cache-Control', immutable ? 'public, max-age=31536000, immutable' : 'no-store');
+      reply.header('ETag', etag);
+      if (immutable && request.headers['if-none-match'] === etag) {
+        return reply.code(304).send();
+      }
+      reply.type('application/json');
+      return reply.send(body);
+    } catch (err) {
+      if (err.code === 'ENOENT') {
+        return reply.code(404).send({ error: 'Hourly stat asset not found', variable, day, file });
+      }
+      fastify.log.error(err);
+      return reply.code(500).send({ error: 'Internal server error', details: err.message });
+    }
+  });
 
   /**
    * Pack assets: content-addressed binary + QC JSON (past complete → immutable + ETag).
@@ -235,11 +290,15 @@ const convertKSTToGMTString = (dateString) => {
   });
 
   // manifest.json 등만 static. binary(.i16le) / qc-v*.json 은 위 전용 route만 사용
+  // hourly stat 은 /datasets/aws/stat/hourly/... 전용 route
   fastify.register(require('@fastify/static'), {
     root: awsPackDir,
     prefix: '/datasets/aws/',
     decorateReply: false,
-    allowedPath: (pathName) => !/\.i16le$/i.test(pathName) && !/^\/[^/]+\/1m\/\d{8}\/qc-v[a-f0-9]+\.json$/i.test(pathName)
+    allowedPath: (pathName) =>
+      !/^\/stat\//i.test(pathName) &&
+      !/\.i16le$/i.test(pathName) &&
+      !/^\/[^/]+\/1m\/\d{8}\/qc-v[a-f0-9]+\.json$/i.test(pathName)
   });
   fastify.register(require('@fastify/static'), {
     root: kimTextDatasetDir,
@@ -409,6 +468,52 @@ const convertKSTToGMTString = (dateString) => {
         return reply.code(404).send({ error: err.message });
       }
       if (err.code === 'PACK_NOT_WARMED' || err.code === 'PACK_STALE') {
+        return reply.code(404).send({
+          error: err.message,
+          code: err.code,
+          dayKey: err.dayKey,
+          variable: err.variable
+        });
+      }
+      fastify.log.error(err);
+      return reply.code(500).send({ error: 'Internal server error', details: err.message });
+    }
+  });
+
+  /**
+   * AWS Hub 시간통계(awsh.php) day pack — 실험/방재 parity.
+   * 1분 RN_60M/RN_DAY pack 과 별개. 매핑: docs/aws-hourly-stat-rn-consumer-mapping.md
+   */
+  fastify.get('/api/aws/stat/hourly/pack', async (request, reply) => {
+    const { date, variable } = request.query;
+    if (!date) {
+      return reply.code(400).send({ error: 'date query parameter is required (YYYYMMDD)' });
+    }
+    try {
+      const dayKey = parseHourlyStatDayYmd(date);
+      parseHourlyStatVariable(variable);
+      const force = request.query.force === '1' || request.query.force === 'true';
+      const { manifest } = await getOrBuildAwsHourlyRnPack(
+        awsHourlyStatJsonDir,
+        awsHourlyStatPackDir,
+        dayKey,
+        { force, manifestOnly: !force }
+      );
+      const immutable = manifest.cache && manifest.cache.immutable;
+      reply.header('Cache-Control', immutable ? 'public, max-age=31536000, immutable' : 'no-store');
+      if (manifest.data && manifest.data.sha256) {
+        reply.header('ETag', `"${manifest.data.sha256}"`);
+      }
+      reply.header('X-AWS-Hourly-Stat-Schema-Version', String(manifest.schemaVersion || 1));
+      return manifest;
+    } catch (err) {
+      if (err.code === 'BAD_QUERY') {
+        return reply.code(400).send({ error: err.message });
+      }
+      if (err.code === 'NOT_FOUND') {
+        return reply.code(404).send({ error: err.message, code: err.code });
+      }
+      if (err.code === 'PACK_NOT_WARMED') {
         return reply.code(404).send({
           error: err.message,
           code: err.code,

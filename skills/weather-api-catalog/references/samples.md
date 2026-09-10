@@ -38,6 +38,11 @@ GET {base}/api/aws/min/pack?date=20260817&variable=RN_DAY
 GET {base}/datasets/aws/ta/1m/20260812/ta.i16le
 GET {base}/datasets/aws/rn_60m/1m/20260812/rn_60m.i16le
 GET {base}/datasets/aws/rn_24hr_rolling/1m/20260817/rn_24hr_rolling.i16le
+
+# Hub 시간통계 RN (방재 정렬2 parity · 실험)
+GET {base}/api/aws/stat/hourly/pack?date=20260904&variable=RN
+GET {base}/datasets/aws/stat/hourly/rn/20260904/manifest.json
+GET {base}/datasets/aws/stat/hourly/rn/20260904/data.json
 GET {base}/datasets/aws/rn_day/1m/20260817/rn_day.i16le
 GET {base}/datasets/aws/ws_ins/1m/20260812/ws_ins.i16le
 # RN_24HR은 rn_24hr_rolling 만. legacy /datasets/aws/rn_24hr/ 는 구 day-total → 사용 금지

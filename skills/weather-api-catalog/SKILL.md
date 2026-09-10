@@ -34,7 +34,7 @@ description: weather_api 서버가 노출하는 HTTP API 카탈로그(producer).
 상세는 `references/endpoints.md`.
 
 - **HGT500**: `GET /api/hgt500/latest`, `GET /api/hgt500/datasets`, `GET /api/hgt500/datasets/{id}/manifest` (302), static `/datasets/{id}/**`
-- **AWS**: `GET /api/aws/stations`, `/api/aws/min`, `/api/aws/min/range` (2분·임의 구간 JSON), `/api/aws/min/pack` (1분 변수별 binary, 기본 TA), `/api/aws/min/exact`
+- **AWS**: `GET /api/aws/stations`, `/api/aws/min`, `/api/aws/min/range` (2분·임의 구간 JSON), `/api/aws/min/pack` (1분 변수별 binary, 기본 TA), `/api/aws/min/exact`, `/api/aws/stat/hourly/pack` (Hub 시간통계 RN, 실험)
 - **IR105 JSON** (레거시·정리 필요): `GET /ir105/{area}/{step}`, `/batch`, `/fs` — 시각화 주력은 아래 PNG
 - **레거시 image/wind**: `GET /{type}/{area}/{step}/image?timestamp_kor=` (`ir105-mono|color` 등)
 - **Static**: `/weather/**`
@@ -91,4 +91,5 @@ Pack binary 계약 (consumer):
 - `GET /api/hgt500/datasets`는 `Cache-Control: no-store`.
 - GFS wind (`gfs-wind_*`)는 JSON, 대부분 다른 image type은 PNG. 생성 경계·PM2·정리 debt → `skills/weather-image-pipeline` ([parse_netcdf](https://gitlabsvr.sbs.co.kr/weather_system/parse_netcdf)).
 - IR105 **시각화는 PNG** (`/ir105-mono|color/.../image`). `/ir105`·`/batch`·`/fs` JSON은 초기 client-렌더 구상 잔재(**정리 필요**, `/fs`는 로컬 경로 하드코드). 새 연동에 쓰지 말 것.
+- 방재 정렬2 공식 수치(1시간최대강수/최대60분강수)는 `/api/aws/stat/hourly/pack` + `docs/aws-hourly-stat-rn-consumer-mapping.md`. 1분 `RN_60M`/`RN_DAY` pack 계약은 변경하지 않는다.
 - API를 추가·변경하면 **같은 작업에서** `docs/openapi.yaml`과 이 skill을 갱신한다 (`.cursor/rules/api-docs-sync.mdc`).

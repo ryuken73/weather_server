@@ -286,6 +286,7 @@ paths:
         `AWS_FETCH_SOURCE=auto`는 DB row가 있어도 RN_12HR/TD가 전부 없으면 같은 TM Hub를 1회 merge한다.
         일 pack은 backfill 종료 후·어제 워밍으로 미리 생성한다.
         임의 구간·전 변수 JSON은 `/api/aws/min/range` (2분).
+        방재 정렬2 공식 수치(1시간최대강수/최대60분강수)는 `/api/aws/stat/hourly/pack` 을 사용한다 (1분 pack 계약 변경 없음).
       operationId: getAwsMinPack
       parameters:
         - name: date
@@ -344,6 +345,66 @@ paths:
                 $ref: '#/components/schemas/Error'
         '404':
           description: 요청 범위에 원자료 없음 또는 pack 미워밍/갱신 지연 (`PACK_NOT_WARMED`, `PACK_STALE`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: 서버 내부 오류
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorWithDetails'
+
+  /api/aws/stat/hourly/pack:
+    get:
+      tags: [aws]
+      summary: AWS 시간통계(RN) day pack (실험·방재 parity)
+      description: |
+        Hub `awsh.php?var=RN` 정시 통계 day pack.
+        **1분 pack(`RN_60M`/`RN_DAY`)과 별개**. 매핑: `docs/aws-hourly-stat-rn-consumer-mapping.md`
+        - 1시간최대강수 = 선택 구간 max(`RN_HR1`), 발생시각=`TM`
+        - 최대60분강수 = 선택 구간 max(`RN_60M_MAX`), 발생시각=`TM + RN_60M_MAX_MI`
+        - 방재 구간 `(start,end]` (start 제외, end 포함)
+        `variable` 현재 `RN`만. 기본 manifest-only. miss → 404 `PACK_NOT_WARMED`.
+        data URL: `/datasets/aws/stat/hourly/rn/{date}/data-v{sha8}.json`
+      operationId: getAwsHourlyStatPack
+      parameters:
+        - name: date
+          in: query
+          required: true
+          schema:
+            type: string
+            pattern: '^(\d{8}|\d{4}-\d{2}-\d{2})$'
+          example: '20260904'
+        - name: variable
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [RN, rn]
+          description: 기본 RN
+        - name: force
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: ['0', '1', 'true', 'false']
+      responses:
+        '200':
+          description: hourly stat manifest
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AwsHourlyStatPackManifest'
+        '400':
+          description: date 누락·미지원 변수
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: PACK_NOT_WARMED 또는 원천 없음
           content:
             application/json:
               schema:
@@ -1001,6 +1062,54 @@ components:
                 type: string
                 nullable: true
       required: [stationCount, stations, codeFile]
+
+    AwsHourlyStatPackManifest:
+      type: object
+      description: |
+        Hub awsh.php RN 시간통계 day pack manifest.
+        data.url → JSON (정시별 stations[]). 1분 Int16 pack과 별개.
+      properties:
+        schemaVersion:
+          type: integer
+          example: 1
+        contractRevision:
+          type: integer
+          example: 1
+        kind:
+          type: string
+          example: aws-hourly-stat
+        variable:
+          type: string
+          enum: [RN]
+        date:
+          type: string
+          example: '20260904'
+        complete:
+          type: boolean
+        presentHourCount:
+          type: integer
+          example: 24
+        hourCount:
+          type: integer
+          example: 24
+        mappingDoc:
+          type: string
+          example: docs/aws-hourly-stat-rn-consumer-mapping.md
+        data:
+          type: object
+          properties:
+            encoding:
+              type: string
+              example: json
+            url:
+              type: string
+              example: /datasets/aws/stat/hourly/rn/20260904/data-v61979be9.json
+            sha256:
+              type: string
+            file:
+              type: string
+          additionalProperties: true
+      additionalProperties: true
 
     AwsMinPackManifest:
       type: object

@@ -15,6 +15,16 @@
 
 GK2A/RDR/AWS JSON이 `in_data`에 떨어진 뒤 **시각화 PNG**는 별도 repo [parse_netcdf](https://gitlabsvr.sbs.co.kr/weather_system/parse_netcdf) watcher가 만든다. 경계 요약: [`../docs/pipeline-image-flow-draft.md`](../docs/pipeline-image-flow-draft.md)
 
+**AWS 시간통계(RN, Hub `awsh.php`)** — 1분 pack과 별개:
+
+```bash
+NODE_ENV=production node kma_fetch/fetch_aws_hourly_stat.js --date 20260904 --force
+NODE_ENV=production USE_API=false node kma_fetch/warm_aws_hourly_stat.js 20260904 --force
+# GET /api/aws/stat/hourly/pack?date=20260904&variable=RN
+```
+
+매핑: [`../docs/aws-hourly-stat-rn-consumer-mapping.md`](../docs/aws-hourly-stat-rn-consumer-mapping.md)
+
 ---
 
 ## 디렉터리

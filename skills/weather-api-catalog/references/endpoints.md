@@ -97,6 +97,15 @@ Pack binary: `out_data/aws/pack/` → `/datasets/aws/...` (env `AWS_PACK_DIR`).
 
 레거시 PNG (`/aws-RN_15M/.../image`)와 별개다.
 
+### `GET /api/aws/stat/hourly/pack?date=&variable=RN`
+
+- Hub `awsh.php?var=RN` 정시 통계 **day pack** (실험·방재 parity)
+- 1분 pack과 **별개**. 매핑: `docs/aws-hourly-stat-rn-consumer-mapping.md`
+- `variable` 현재 `RN`만. miss → `404 PACK_NOT_WARMED`
+- data: `/datasets/aws/stat/hourly/rn/{date}/data-v{sha8}.json`
+- 수집: `kma_fetch/fetch_aws_hourly_stat.js` → warm: `kma_fetch/warm_aws_hourly_stat.js`
+- Consumer: 구간 `(start,end]` 에서 max(`RN_HR1`) / max(`RN_60M_MAX`); 발생시각은 `TM` / `TM+RN_60M_MAX_MI`
+
 ## IR105 JSON
 
 초기 설계(JSON → client 이미지화) 잔재. **시각화 주력은** `/ir105-mono|ir105-color/.../image`.  

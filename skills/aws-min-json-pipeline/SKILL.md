@@ -23,7 +23,8 @@ description: AWS_MIN station JSON 수집·누락 복구·과거 backfill·1분 �
 3. `#` 원본 / API 허브 응답 포맷·변환 → `references/formats.md` (Hub 원문 샘플: `assets/nph-aws2_min_202608131200.txt`)
 4. **RN_24HR rolling / RN_DAY 분리** → 아래 **RN_24HR / RN_DAY** 절 + `docs/rainfall-producer-rn24-rnday-change-request.md`
 5. **과거(1달+ / DB 없음) Hub fetch + pack** → `references/historical-hub-fetch-pack.md` 또는 **`kma_fetch/run_backfill.sh`**
-6. HTTP로 읽기만 → `skills/weather-api-catalog`
+6. **방재 정렬2 시간통계(RN)** → Hub `awsh.php` · `fetch_aws_hourly_stat.js` / `warm_aws_hourly_stat.js` · `/api/aws/stat/hourly/pack` · `docs/aws-hourly-stat-rn-consumer-mapping.md`
+7. HTTP로 읽기만 → `skills/weather-api-catalog`
 
 ## 핵심 규칙
 
