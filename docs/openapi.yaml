@@ -1254,6 +1254,41 @@ components:
           type: array
           items:
             type: string
+        qc:
+          type: object
+          description: Variable-specific QC / diagnostics (TA temporal, RN_DAY, wind pair, …)
+          additionalProperties: true
+          properties:
+            windPairCoverage:
+              type: object
+              description: >
+                Optional joint coverage for wind speed+direction pairs (independent encode).
+                Present on WS/WS_INS/WD/WD_INS packs. bothValid is the vector-drawable count.
+              properties:
+                pairGroupId:
+                  type: string
+                  example: wind_ins
+                pairMissingPolicy:
+                  type: string
+                  example: independent
+                speedVariable:
+                  type: string
+                  example: WS_INS
+                directionVariable:
+                  type: string
+                  example: WD_INS
+                bothValid:
+                  type: integer
+                bothMissing:
+                  type: integer
+                wsValidWdMissing:
+                  type: integer
+                wsMissingWdValid:
+                  type: integer
+                sampleCount:
+                  type: integer
+                bothValidRatio:
+                  type: number
         warnings:
           type: array
           items:

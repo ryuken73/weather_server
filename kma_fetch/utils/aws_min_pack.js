@@ -978,6 +978,67 @@ function jsonFieldLabel(jsonField) {
   return String(jsonField);
 }
 
+function findPackVariableByPairRole(pairGroupId, pairRole) {
+  for (const [name, spec] of Object.entries(PACK_VARIABLES)) {
+    if (spec.pairGroupId === pairGroupId && spec.pairRole === pairRole) {
+      return { name, spec };
+    }
+  }
+  return null;
+}
+
+function emptyWindPairCoverage() {
+  return {
+    bothValid: 0,
+    bothMissing: 0,
+    wsValidWdMissing: 0,
+    wsMissingWdValid: 0,
+    sampleCount: 0
+  };
+}
+
+/**
+ * Frame×station joint coverage for a wind speed+direction pair (independent encode).
+ * Counts use the same encode() as pack binary; absent rows count as missing on both.
+ */
+function countWindPairCoverage(frames, stationIds, speedSpec, dirSpec) {
+  const cov = emptyWindPairCoverage();
+  const frameCount = frames.length;
+  const stationCount = stationIds.length;
+  for (let fi = 0; fi < frameCount; fi++) {
+    const byId = frames[fi];
+    for (let si = 0; si < stationCount; si++) {
+      cov.sampleCount += 1;
+      const row = byId ? byId.get(stationIds[si]) : null;
+      const wsRaw = row ? readJsonFieldRaw(row, speedSpec.jsonField) : null;
+      const wdRaw = row ? readJsonFieldRaw(row, dirSpec.jsonField) : null;
+      const wsOk = speedSpec.encode(wsRaw) !== MISSING_I16;
+      const wdOk = dirSpec.encode(wdRaw) !== MISSING_I16;
+      if (wsOk && wdOk) cov.bothValid += 1;
+      else if (!wsOk && !wdOk) cov.bothMissing += 1;
+      else if (wsOk) cov.wsValidWdMissing += 1;
+      else cov.wsMissingWdValid += 1;
+    }
+  }
+  return cov;
+}
+
+function buildWindPairCoverageBlock(pairGroupId, frames, stationIds) {
+  if (!pairGroupId) return null;
+  const speed = findPackVariableByPairRole(pairGroupId, 'speed');
+  const direction = findPackVariableByPairRole(pairGroupId, 'direction');
+  if (!speed || !direction) return null;
+  const counts = countWindPairCoverage(frames, stationIds, speed.spec, direction.spec);
+  return {
+    pairGroupId,
+    pairMissingPolicy: 'independent',
+    speedVariable: speed.name,
+    directionVariable: direction.name,
+    ...counts,
+    bothValidRatio: counts.sampleCount === 0 ? 0 : counts.bothValid / counts.sampleCount
+  };
+}
+
 function prevYmd(yyyymmdd) {
   const y = Number(yyyymmdd.slice(0, 4));
   const m = Number(yyyymmdd.slice(4, 6));
@@ -3195,6 +3256,12 @@ async function buildAwsVariablePack(awsJsonDir, fromKor, toKor, variable, option
   }
   if (spec.pairMissingPolicy) {
     manifest.pairMissingPolicy = spec.pairMissingPolicy;
+  }
+  if (spec.pairGroupId) {
+    const windPairCoverage = buildWindPairCoverageBlock(spec.pairGroupId, frames, stationIds);
+    if (windPairCoverage) {
+      manifest.qc.windPairCoverage = windPairCoverage;
+    }
   }
 
   if (spec.accumulation) {

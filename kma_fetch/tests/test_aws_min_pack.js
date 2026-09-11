@@ -583,6 +583,16 @@ async function main() {
   assert.strictEqual(wdIns.manifest.calmValue, 360);
   assert.strictEqual(wdIns.manifest.pairMissingPolicy, 'independent');
   assert.strictEqual(wdIns.manifest.sourceField, 'WDS');
+  const wpc = wsIns.manifest.qc && wsIns.manifest.qc.windPairCoverage;
+  assert.ok(wpc, 'WS_INS should expose qc.windPairCoverage');
+  assert.strictEqual(wpc.pairGroupId, 'wind_ins');
+  assert.strictEqual(wpc.speedVariable, 'WS_INS');
+  assert.strictEqual(wpc.directionVariable, 'WD_INS');
+  assert.strictEqual(
+    wpc.bothValid + wpc.bothMissing + wpc.wsValidWdMissing + wpc.wsMissingWdValid,
+    wpc.sampleCount
+  );
+  assert.deepStrictEqual(wpc, wdIns.manifest.qc.windPairCoverage);
 
   assert.strictEqual(rn60.manifest.validSampleCount, 712);
   assert.ok(rn60.manifest.coverage.status === 'ok');
