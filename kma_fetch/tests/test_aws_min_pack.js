@@ -558,10 +558,29 @@ async function main() {
   const vTd = new Int16Array(td.binary.buffer, td.binary.byteOffset, td.binary.length / 2);
   assert.strictEqual(wsIns.manifest.sourceField, 'WSS');
   assert.ok(!wsIns.manifest.qc || !wsIns.manifest.qc.taTemporal);
+  assert.strictEqual(wsIns.manifest.pairGroupId, 'wind_ins');
+  assert.strictEqual(wsIns.manifest.pairRole, 'speed');
+  assert.deepStrictEqual(wsIns.manifest.validRange, { min: 0, max: 3276.7, inclusive: true });
+  assert.strictEqual(wd.manifest.pairGroupId, 'wind_avg');
+  assert.strictEqual(wd.manifest.pairRole, 'direction');
+  assert.strictEqual(wd.manifest.calmValue, 360);
+  assert.deepStrictEqual(wd.manifest.validRange, { min: 0, max: 360, inclusive: true });
+  assert.deepStrictEqual(hm.manifest.validRange, { min: 0, max: 100, inclusive: true });
+  assert.ok(!hm.manifest.pairGroupId);
+  assert.ok(td.manifest.validRange && td.manifest.validRange.min === -49.9);
   assert.strictEqual(vWsIns[stationIndex.get(42)], 40);
   assert.strictEqual(vWd[stationIndex.get(42)], 410);
   assert.strictEqual(vHm[stationIndex.get(42)], 588);
   assert.strictEqual(vTd[stationIndex.get(42)], 208);
+
+  const wdIns = await buildAwsVariablePack(rainRoot, '202608131200', '202608131200', 'WD_INS', {
+    catalog: rainCatalog
+  });
+  assert.strictEqual(wdIns.manifest.pairGroupId, 'wind_ins');
+  assert.strictEqual(wdIns.manifest.pairRole, 'direction');
+  assert.strictEqual(wdIns.manifest.calmValue, 360);
+  assert.strictEqual(wdIns.manifest.sourceField, 'WDS');
+
   assert.strictEqual(rn60.manifest.validSampleCount, 712);
   assert.ok(rn60.manifest.coverage.status === 'ok');
   assert.ok(rn12.manifest.validSampleCount > 0);

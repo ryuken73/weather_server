@@ -231,6 +231,10 @@ const PACK_VARIABLES = Object.freeze({
     source: 'KMA_APIHUB_nph-aws2_min',
     sourceField: 'WSS',
     family: 'wind_speed',
+    /** physical after scale; missing ≤ -50 Hub / negatives excluded */
+    validRange: { min: 0, max: 3276.7, inclusive: true },
+    pairGroupId: 'wind_ins',
+    pairRole: 'speed',
     encode: encodeWindSpeedToI16
   },
   WS: {
@@ -241,6 +245,9 @@ const PACK_VARIABLES = Object.freeze({
     source: 'KMA_APIHUB_nph-aws2_min',
     sourceField: 'WS1',
     family: 'wind_speed',
+    validRange: { min: 0, max: 3276.7, inclusive: true },
+    pairGroupId: 'wind_avg',
+    pairRole: 'speed',
     encode: encodeWindSpeedToI16
   },
   WD_INS: {
@@ -251,6 +258,11 @@ const PACK_VARIABLES = Object.freeze({
     source: 'KMA_APIHUB_nph-aws2_min',
     sourceField: 'WDS',
     family: 'wind_dir',
+    /** 0=N … 270=W; 360=calm (not north). Pair with WS_INS at max-gust time. */
+    validRange: { min: 0, max: 360, inclusive: true },
+    calmValue: 360,
+    pairGroupId: 'wind_ins',
+    pairRole: 'direction',
     encode: encodeWindDirToI16
   },
   WD: {
@@ -261,6 +273,10 @@ const PACK_VARIABLES = Object.freeze({
     source: 'KMA_APIHUB_nph-aws2_min',
     sourceField: 'WD1',
     family: 'wind_dir',
+    validRange: { min: 0, max: 360, inclusive: true },
+    calmValue: 360,
+    pairGroupId: 'wind_avg',
+    pairRole: 'direction',
     encode: encodeWindDirToI16
   },
   HM: {
@@ -271,6 +287,7 @@ const PACK_VARIABLES = Object.freeze({
     source: 'KMA_APIHUB_nph-aws2_min',
     sourceField: 'HM',
     family: 'humidity',
+    validRange: { min: 0, max: 100, inclusive: true },
     encode: encodeHumidityToI16
   },
   TD: {
@@ -281,6 +298,8 @@ const PACK_VARIABLES = Object.freeze({
     source: 'KMA_APIHUB_nph-aws2_min',
     sourceField: 'TD',
     family: 'dewpoint',
+    /** Hub ≤ -50 → missing; no TA temporal QC / no +60 clip */
+    validRange: { min: -49.9, max: 3276.7, inclusive: true },
     encode: encodeDewpointToI16
   }
 });
@@ -3150,6 +3169,19 @@ async function buildAwsVariablePack(awsJsonDir, fromKor, toKor, variable, option
     qc: {},
     warnings
   };
+
+  if (spec.validRange) {
+    manifest.validRange = { ...spec.validRange };
+  }
+  if (spec.calmValue != null) {
+    manifest.calmValue = spec.calmValue;
+  }
+  if (spec.pairGroupId) {
+    manifest.pairGroupId = spec.pairGroupId;
+  }
+  if (spec.pairRole) {
+    manifest.pairRole = spec.pairRole;
+  }
 
   if (spec.accumulation) {
     manifest.accumulation = { ...spec.accumulation };

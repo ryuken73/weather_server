@@ -1137,6 +1137,31 @@ components:
         unit:
           type: string
           example: degC
+        validRange:
+          type: object
+          description: >
+            Physical range after applying data.scale (missingValue excluded).
+            Present for HM/TD/wind packs.
+          properties:
+            min:
+              type: number
+            max:
+              type: number
+            inclusive:
+              type: boolean
+          additionalProperties: true
+        calmValue:
+          type: number
+          description: Wind direction calm sentinel in physical deg (360). WD/WD_INS only.
+          example: 360
+        pairGroupId:
+          type: string
+          description: >
+            Shared id for wind speed+direction pairs (wind_ins=WS_INS+WD_INS, wind_avg=WS+WD).
+          example: wind_ins
+        pairRole:
+          type: string
+          enum: [speed, direction]
         accumulation:
           type: object
           additionalProperties: true
