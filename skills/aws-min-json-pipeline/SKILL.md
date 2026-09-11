@@ -23,7 +23,7 @@ description: AWS_MIN station JSON 수집·누락 복구·과거 backfill·1분 �
 3. `#` 원본 / API 허브 응답 포맷·변환 → `references/formats.md` (Hub 원문 샘플: `assets/nph-aws2_min_202608131200.txt`)
 4. **RN_24HR rolling / RN_DAY 분리** → 아래 **RN_24HR / RN_DAY** 절 + `docs/rainfall-producer-rn24-rnday-change-request.md`
 5. **과거(1달+ / DB 없음) Hub fetch + pack** → `references/historical-hub-fetch-pack.md` 또는 **`kma_fetch/run_backfill.sh`**
-6. **방재 정렬2 시간통계(RN)** → Hub `awsh.php` · `fetch_aws_hourly_stat.js` / `warm_aws_hourly_stat.js` · `/api/aws/stat/hourly/pack` · `docs/aws-hourly-stat-rn-consumer-mapping.md`
+6. **방재 정렬2 시간통계(RN)** → Hub `awsh.php` · **`main_AWS` 매시 :12 lookback fetch + today force warm** · CLI `fetch_aws_hourly_stat.js` / `warm_aws_hourly_stat.js` · `/api/aws/stat/hourly/pack` · `docs/aws-hourly-stat-rn-consumer-mapping.md` · kill switch `AWS_HOURLY_STAT_REFRESH=0`
 7. HTTP로 읽기만 → `skills/weather-api-catalog`
 
 ## 핵심 규칙
@@ -101,7 +101,7 @@ node kma_fetch/warm_aws_min_packs.js \
 
 ## 관련 원천
 
-- 실시간: `kma_fetch/main_AWS.js` (어제 전변수 warm + **오늘 전 변수 5분 scheduler + 수집 debounce warm**)
+- 실시간: `kma_fetch/main_AWS.js` (어제 전변수 warm + **오늘 전 변수 5분 scheduler + 수집 debounce warm** + **hourly RN awsh 매시 :12**)
 - Backfill: `kma_fetch/backfill_aws_min.js` (1440 slots/day, `--refresh-fields RN_12HR,TD` 는 Hub merge, 빈/부분 Hub로 덮어쓰지 않음)
 - Hub client: `kma_fetch/services/aws_apihub_min.js`
 - Pack: `kma_fetch/utils/aws_min_pack.js` (`warmTodayPacks`, `warmTodayRainPacks`, `warmAwsDayPack`), `kma_fetch/warm_aws_min_packs.js`

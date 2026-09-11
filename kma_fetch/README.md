@@ -4,7 +4,7 @@
 
 | 프로세스 | 역할 |
 | --- | --- |
-| `main_AWS.js` | AWS 1분 JSON 수집 + today/어제 pack warm |
+| `main_AWS.js` | AWS 1분 JSON 수집 + today/어제 pack warm + **hourly RN(`awsh`) 주기 fetch/warm** |
 | `main_KIM.js` / `main_KIM_TXT.js` | KIM HGT500 관련 수집·변환 트리거 |
 | `main_RDR.js` | 레이더 등 |
 | `warm_aws_min_packs.js` | 일/구간 pack 사전 생성 |
@@ -15,7 +15,10 @@
 
 GK2A/RDR/AWS JSON이 `in_data`에 떨어진 뒤 **시각화 PNG**는 별도 repo [parse_netcdf](https://gitlabsvr.sbs.co.kr/weather_system/parse_netcdf) watcher가 만든다. 경계 요약: [`../docs/pipeline-image-flow-draft.md`](../docs/pipeline-image-flow-draft.md)
 
-**AWS 시간통계(RN, Hub `awsh.php`)** — 1분 pack과 별개:
+**AWS 시간통계(RN, Hub `awsh.php`)** — 1분 pack과 별개.
+
+- **실시간:** `main_AWS`가 매시 **:12**(KST, `AWS_HOURLY_STAT_MINUTE`) lookback 기본 6시간 missing-only fetch 후 **오늘 pack force warm**. `AWS_HOURLY_STAT_REFRESH=0`으로 비활성.
+- **수동 backfill:**
 
 ```bash
 NODE_ENV=production node kma_fetch/fetch_aws_hourly_stat.js --date 20260904 --force

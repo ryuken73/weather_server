@@ -66,3 +66,4 @@ rev1은 `RE_*`를 건너뛰지 않아 RN 필드가 두 칸 밀렸음 → **rev2�
 | 2026-09-10 | Consumer 확정안 반영 |
 | 2026-09-10 | **contractRevision 2**: `RE_SUM`/`RE_QCM` 컬럼 정렬 수정 (rev1 두 칸 밀림) |
 | 2026-09-10 | **contractRevision 3**: 음수 강수 STN/field null + qc 집계; 다량만 fatal |
+| 2026-09-11 | `main_AWS` 매시 :12 lookback fetch + today force warm (`AWS_HOURLY_STAT_REFRESH`) |

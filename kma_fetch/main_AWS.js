@@ -22,10 +22,20 @@ const {
   kstYmdDaysAgo,
   SUPPORTED_PACK_VARIABLES
 } = require('./utils/aws_min_pack');
+const {
+  deriveAwsHourlyStatJsonDir,
+  deriveAwsHourlyStatPackDir,
+  DEFAULT_HOURLY_LOOKBACK_HOURS,
+  enumerateClosedHourlyTmsLookback,
+  ensureHourlyRnHours,
+  getOrBuildAwsHourlyRnPack
+} = require('./utils/aws_hourly_stat');
 
 const PROJECT_ROOT = path.join(__dirname, '..');
 const awsJsonDir = deriveAwsJsonDir(PROJECT_ROOT);
 const awsPackDir = deriveAwsPackDir(PROJECT_ROOT);
+const awsHourlyJsonDir = deriveAwsHourlyStatJsonDir(PROJECT_ROOT);
+const awsHourlyPackDir = deriveAwsHourlyStatPackDir(PROJECT_ROOT);
 
 let yesterdayPackWarmed = null;
 let yesterdayPackWarmInFlight = null;
@@ -51,7 +61,24 @@ const TODAY_PACK_SCHEDULER_INTERVAL = (() => {
   return raw;
 })();
 
+/** AWS_HOURLY_STAT_REFRESH=0 이면 awsh 시간통계 주기 fetch/warm 비활성 */
+const HOURLY_STAT_REFRESH_ENABLED =
+  String(process.env.AWS_HOURLY_STAT_REFRESH ?? '1').trim() !== '0';
+
+const HOURLY_STAT_LOOKBACK_HOURS = (() => {
+  const raw = Number(process.env.AWS_HOURLY_STAT_LOOKBACK_HOURS || DEFAULT_HOURLY_LOOKBACK_HOURS);
+  if (!Number.isFinite(raw) || raw < 1) return DEFAULT_HOURLY_LOOKBACK_HOURS;
+  return Math.min(48, Math.floor(raw));
+})();
+
+const HOURLY_STAT_SLEEP_MS = (() => {
+  const raw = Number(process.env.AWS_HOURLY_STAT_SLEEP_MS || 300);
+  if (!Number.isFinite(raw) || raw < 0) return 300;
+  return Math.min(5000, raw);
+})();
+
 let todayPackDebounceTimer = null;
+let hourlyStatInFlight = null;
 
 function kstHourMinute() {
   const fmt = new Intl.DateTimeFormat('en-GB', {
@@ -155,6 +182,92 @@ function scheduleTodayPackWarm(immediate = false) {
     todayPackDebounceTimer = null;
     runTodayPackWarm();
   }, TODAY_PACK_DEBOUNCE_MS);
+}
+
+function kstTodayYmd() {
+  return kstYmdDaysAgo(0);
+}
+
+/**
+ * Hub awsh RN lookback fetch + force warm (today always + newly written days).
+ * 1분 download 틱과 분리. incomplete pack 고착 방지용 force.
+ */
+async function runHourlyStatTick() {
+  if (!HOURLY_STAT_REFRESH_ENABLED) return;
+  if (hourlyStatInFlight) {
+    console.log('hourly stat: skip (still running)');
+    return;
+  }
+
+  hourlyStatInFlight = (async () => {
+    const authKey = process.env.API_KEY || process.env.KMA_API_KEY;
+    if (!authKey) {
+      console.warn('hourly stat: skip (no API_KEY / KMA_API_KEY)');
+      return;
+    }
+
+    const tms = enumerateClosedHourlyTmsLookback(undefined, HOURLY_STAT_LOOKBACK_HOURS);
+    console.log(
+      'hourly stat fetch',
+      tms[0],
+      '->',
+      tms[tms.length - 1],
+      `(lookback=${HOURLY_STAT_LOOKBACK_HOURS})`
+    );
+
+    const summary = await ensureHourlyRnHours(awsHourlyJsonDir, tms, {
+      force: false,
+      sleepMs: HOURLY_STAT_SLEEP_MS,
+      authKey,
+      onHour: ({ tm, status, stationCount, negNulls, message }) => {
+        if (status === 'skip') return;
+        if (status === 'ok') {
+          console.log(
+            'hourly fetch',
+            tm,
+            'ok',
+            `stations=${stationCount}` + (negNulls ? ` negNulls=${negNulls}` : '')
+          );
+        } else if (status === 'empty') console.log('hourly fetch', tm, 'EMPTY');
+        else if (status === 'fail') console.error('hourly fetch', tm, 'FAIL', message);
+      }
+    });
+    console.log(
+      'hourly fetch summary',
+      `ok=${summary.ok}`,
+      `skip=${summary.skipped}`,
+      `empty=${summary.empty}`,
+      `fail=${summary.fail}`
+    );
+
+    const days = new Set([kstTodayYmd(), ...summary.writtenDays]);
+    for (const day of days) {
+      try {
+        const { manifest, built } = await getOrBuildAwsHourlyRnPack(
+          awsHourlyJsonDir,
+          awsHourlyPackDir,
+          day,
+          { force: true, manifestOnly: false }
+        );
+        console.log(
+          'hourly pack',
+          day,
+          built ? 'built' : 'cached',
+          `present=${manifest.presentHourCount}/24`,
+          `complete=${manifest.complete}`,
+          `rev=${manifest.contractRevision}`
+        );
+      } catch (err) {
+        console.error('hourly pack FAILED', day, err.code || '', err.message || err);
+      }
+    }
+  })();
+
+  try {
+    await hourlyStatInFlight;
+  } finally {
+    hourlyStatInFlight = null;
+  }
 }
 
 const AWS_DATA_ROOT = 'in_data';
@@ -340,6 +453,20 @@ if (TODAY_PACK_REFRESH_ENABLED) {
   );
 } else {
   console.log('Today pack refresh: disabled (AWS_TODAY_PACK_REFRESH=0)');
+}
+
+if (HOURLY_STAT_REFRESH_ENABLED) {
+  schedule.scheduleTask('AWS-HOURLY-STAT', 'hourly_stat', () => runHourlyStatTick());
+  // 기동 직후 1회 (누락 lookback + today pack)
+  runHourlyStatTick().catch((err) => {
+    console.error('hourly stat startup tick failed', err && err.message ? err.message : err);
+  });
+  const minute = Number(process.env.AWS_HOURLY_STAT_MINUTE ?? 12);
+  console.log(
+    `Hourly RN stat: enabled (cron minute=${Number.isFinite(minute) ? minute : 12}, lookback=${HOURLY_STAT_LOOKBACK_HOURS}h)`
+  );
+} else {
+  console.log('Hourly RN stat: disabled (AWS_HOURLY_STAT_REFRESH=0)');
 }
 
 console.log('Watcher started. Waiting for scheduled tasks...');

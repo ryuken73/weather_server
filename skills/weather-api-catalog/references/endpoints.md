@@ -104,7 +104,7 @@ Pack binary: `out_data/aws/pack/` → `/datasets/aws/...` (env `AWS_PACK_DIR`).
 - `contractRevision` **3+**: 음수 `RN_*` amount는 STN/field만 null + `qc.negativeAmountNulls` (다량만 FATAL). **2+**: STN 뒤 `RE_SUM`,`RE_QCM` 다음 `RN_*`
 - `variable` 현재 `RN`만. miss → `404 PACK_NOT_WARMED`
 - data: `/datasets/aws/stat/hourly/rn/{date}/data-v{sha8}.json`
-- 수집: `kma_fetch/fetch_aws_hourly_stat.js` → warm: `kma_fetch/warm_aws_hourly_stat.js`
+- 수집: `main_AWS` 주기(매시 :12 lookback) + CLI `kma_fetch/fetch_aws_hourly_stat.js` → warm: 주기 force / CLI `warm_aws_hourly_stat.js`
 - Consumer: 구간 `(start,end]` 에서 max(`RN_HR1`) / max(`RN_60M_MAX`); 발생시각은 `TM` / `TM+RN_60M_MAX_MI`
 - 소수 지점 음수 강수 → 해당 field null (TM 전체 drop 안 함). 다량만 컬럼 밀림 FATAL
 

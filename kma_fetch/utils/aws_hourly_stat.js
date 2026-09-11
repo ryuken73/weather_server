@@ -15,13 +15,119 @@ const {
   isProductionNodeEnv,
   resolveEnvPath
 } = require('./aws_paths');
-const { RN_FIELDS, sanitizeRnAmountNegatives } = require('../services/aws_apihub_hourly');
+const {
+  RN_FIELDS,
+  sanitizeRnAmountNegatives,
+  fetchAwsHourlyRnRows
+} = require('../services/aws_apihub_hourly');
 
 const ZONE = 'Asia/Seoul';
 const HOURLY_STAT_SCHEMA_VERSION = 1;
 const HOURLY_STAT_CONTRACT_REVISION = 3;
 const HOURLY_STAT_KIND = 'aws-hourly-stat';
 const SUPPORTED_HOURLY_STAT_VARIABLES = Object.freeze(['RN']);
+const DEFAULT_HOURLY_LOOKBACK_HOURS = 6;
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * 닫힌 정시 lookback (최신 = 현재 시각의 시 정각 포함).
+ * 예: 10:12 → …, 0500, …, 1000 (lookbackHours개). 진행 중 다음 시(1100)는 제외.
+ *
+ * @param {import('luxon').DateTime|Date|string|number} [now]
+ * @param {number} [lookbackHours]
+ * @returns {string[]} YYYYMMDDHHMM chronological
+ */
+function enumerateClosedHourlyTmsLookback(now, lookbackHours = DEFAULT_HOURLY_LOOKBACK_HOURS) {
+  const n = Math.max(1, Math.floor(Number(lookbackHours) || DEFAULT_HOURLY_LOOKBACK_HOURS));
+  let dt;
+  if (now == null) {
+    dt = DateTime.now().setZone(ZONE);
+  } else if (DateTime.isDateTime(now)) {
+    dt = now.setZone(ZONE);
+  } else if (now instanceof Date) {
+    dt = DateTime.fromJSDate(now, { zone: ZONE });
+  } else {
+    dt = DateTime.fromJSDate(new Date(now), { zone: ZONE });
+  }
+  if (!dt.isValid) {
+    dt = DateTime.now().setZone(ZONE);
+  }
+  const end = dt.set({ minute: 0, second: 0, millisecond: 0 });
+  const tms = [];
+  for (let i = n - 1; i >= 0; i--) {
+    tms.push(end.minus({ hours: i }).toFormat('yyyyMMddHHmm'));
+  }
+  return tms;
+}
+
+/**
+ * Hub awsh RN → 디스크 JSON. 파일 있으면 skip (force 아니면).
+ * CLI / main_AWS 공용.
+ *
+ * @returns {Promise<{ ok:number, fail:number, skipped:number, empty:number, writtenTms:string[], writtenDays:string[] }>}
+ */
+async function ensureHourlyRnHours(statJsonRoot, tms, options = {}) {
+  const force = Boolean(options.force);
+  const sleepMs = options.sleepMs != null ? Number(options.sleepMs) : 300;
+  const authKey = options.authKey || process.env.API_KEY || process.env.KMA_API_KEY;
+  const fetchFn = options.fetchFn || fetchAwsHourlyRnRows;
+  const onHour = typeof options.onHour === 'function' ? options.onHour : null;
+  const list = Array.isArray(tms) ? tms : [];
+
+  if (!authKey && !options.fetchFn) {
+    const err = new Error('API_KEY (or KMA_API_KEY) required for awsh.php');
+    err.code = 'NO_API_KEY';
+    throw err;
+  }
+
+  const summary = {
+    ok: 0,
+    fail: 0,
+    skipped: 0,
+    empty: 0,
+    writtenTms: [],
+    writtenDays: []
+  };
+  const daySet = new Set();
+
+  for (let i = 0; i < list.length; i++) {
+    const tm = String(list[i]);
+    const outPath = hourlyRnJsonPath(statJsonRoot, tm);
+    if (!force && fs.existsSync(outPath)) {
+      summary.skipped += 1;
+      if (onHour) onHour({ tm, status: 'skip' });
+      continue;
+    }
+    try {
+      const { rows, qc } = await fetchFn(tm, { authKey });
+      if (!rows || !rows.length) {
+        summary.empty += 1;
+        if (onHour) onHour({ tm, status: 'empty' });
+      } else {
+        await writeHourlyRnJson(statJsonRoot, tm, rows, { qc });
+        summary.ok += 1;
+        summary.writtenTms.push(tm);
+        const day = tm.slice(0, 8);
+        daySet.add(day);
+        if (onHour) {
+          const neg =
+            qc && qc.negativeAmountNulls ? qc.negativeAmountNulls.nullCount : 0;
+          onHour({ tm, status: 'ok', stationCount: rows.length, negNulls: neg });
+        }
+      }
+    } catch (err) {
+      summary.fail += 1;
+      if (onHour) onHour({ tm, status: 'fail', message: err.message || String(err) });
+    }
+    if (sleepMs > 0 && i < list.length - 1) await sleep(sleepMs);
+  }
+
+  summary.writtenDays = [...daySet];
+  return summary;
+}
 
 function deriveAwsHourlyStatJsonDir(projectRoot, env = process.env) {
   const override = resolveEnvPath(projectRoot, env.AWS_HOURLY_STAT_JSON_DIR);
@@ -389,6 +495,7 @@ module.exports = {
   HOURLY_STAT_CONTRACT_REVISION,
   HOURLY_STAT_KIND,
   SUPPORTED_HOURLY_STAT_VARIABLES,
+  DEFAULT_HOURLY_LOOKBACK_HOURS,
   RN_FIELDS,
   deriveAwsHourlyStatJsonDir,
   deriveAwsHourlyStatPackDir,
@@ -396,6 +503,8 @@ module.exports = {
   folderDateFromTm,
   parseDayYmd,
   enumerateHourlyTmsForDay,
+  enumerateClosedHourlyTmsLookback,
+  ensureHourlyRnHours,
   writeHourlyRnJson,
   readHourlyRnJson,
   buildAwsHourlyRnPack,

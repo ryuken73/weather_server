@@ -27,12 +27,10 @@ function loadDotenv() {
 
 loadDotenv();
 
-const { fetchAwsHourlyRnRows } = require('./services/aws_apihub_hourly');
 const {
   deriveAwsHourlyStatJsonDir,
   enumerateHourlyTmsForDay,
-  writeHourlyRnJson,
-  hourlyRnJsonPath
+  ensureHourlyRnHours
 } = require('./utils/aws_hourly_stat');
 
 const PROJECT_ROOT = path.join(__dirname, '..');
@@ -58,7 +56,6 @@ function parseArgs(argv) {
     to: null,
     force: false,
     sleepMs: 300,
-    saveRaw: false,
     dryRun: false,
     help: false
   };
@@ -74,15 +71,12 @@ function parseArgs(argv) {
     else if (a === '--sleep') args.sleepMs = Number(takeValue(argv, i++, '--sleep'));
     else if (a.startsWith('--sleep=')) args.sleepMs = Number(a.slice('--sleep='.length));
     else if (a === '--force') args.force = true;
-    else if (a === '--save-raw') args.saveRaw = true;
-    else if (a === '--dry-run') args.dryRun = true;
+    else if (a === '--save-raw') {
+      /* ignored: use ensureHourlyRnHours + custom fetch if needed */
+    } else if (a === '--dry-run') args.dryRun = true;
     else throw new Error(`Unknown argument: ${a}`);
   }
   return args;
-}
-
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
 }
 
 function enumerateTms(args) {
@@ -141,48 +135,32 @@ async function main() {
     process.exit(1);
   }
 
-  const summary = { ok: 0, fail: 0, skipped: 0, empty: 0 };
-  for (let i = 0; i < tms.length; i++) {
-    const tm = tms[i];
-    const outPath = hourlyRnJsonPath(outRoot, tm);
-    process.stdout.write(`[${i + 1}/${tms.length}] ${tm} `);
-    if (!args.force && fs.existsSync(outPath)) {
-      summary.skipped += 1;
-      console.log('skip exists');
-      continue;
-    }
-    try {
-      const { rows, rawText, qc } = await fetchAwsHourlyRnRows(tm, { authKey });
-      if (!rows.length) {
-        summary.empty += 1;
-        console.log('EMPTY');
-      } else {
-        await writeHourlyRnJson(outRoot, tm, rows, { qc });
-        summary.ok += 1;
-        const neg = qc && qc.negativeAmountNulls ? qc.negativeAmountNulls.nullCount : 0;
+  let i = 0;
+  const summary = await ensureHourlyRnHours(outRoot, tms, {
+    force: args.force,
+    sleepMs: args.sleepMs,
+    authKey,
+    onHour: ({ tm, status, stationCount, negNulls, message }) => {
+      i += 1;
+      process.stdout.write(`[${i}/${tms.length}] ${tm} `);
+      if (status === 'skip') console.log('skip exists');
+      else if (status === 'empty') console.log('EMPTY');
+      else if (status === 'ok') {
         console.log(
-          `ok stations=${rows.length}` + (neg ? ` negNulls=${neg}` : '')
+          `ok stations=${stationCount}` + (negNulls ? ` negNulls=${negNulls}` : '')
         );
-      }
-      if (args.saveRaw) {
-        const rawDir = path.join(PROJECT_ROOT, 'work', 'in', 'awsh', folderDay(tm));
-        await fs.promises.mkdir(rawDir, { recursive: true });
-        await fs.promises.writeFile(path.join(rawDir, `${tm}.txt`), rawText, 'utf8');
-      }
-    } catch (err) {
-      summary.fail += 1;
-      console.log('FAIL', err.message);
+      } else if (status === 'fail') console.log('FAIL', message);
     }
-    if (args.sleepMs > 0 && i < tms.length - 1) await sleep(args.sleepMs);
-  }
+  });
 
   console.log('=== summary ===');
-  console.log(summary);
+  console.log({
+    ok: summary.ok,
+    fail: summary.fail,
+    skipped: summary.skipped,
+    empty: summary.empty
+  });
   if (summary.fail > 0) process.exitCode = 2;
-}
-
-function folderDay(tm) {
-  return `${tm.slice(0, 4)}-${tm.slice(4, 6)}-${tm.slice(6, 8)}`;
 }
 
 main().catch((err) => {

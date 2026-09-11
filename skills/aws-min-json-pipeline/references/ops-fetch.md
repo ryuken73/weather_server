@@ -236,6 +236,7 @@ USE_API=false NODE_ENV=production node kma_fetch/probe_aws_min_cadence.js --day 
 - 저장: `in_data/aws/{yyyy-MM-dd}/AWS_MIN_{tm}.json`
 - 저장 전 `patchAwsRowsForSave` (STN_NAME). `LAW_ADDR_*`는 디스크에 안 넣음
 - 매분 pack을 만들지 않음. 틱마다 **어제** 전 변수 pack 워밍 + **오늘** partial pack (수집 debounce) + **5분** scheduler(백업) + 기동 1회 warm
+- **Hourly RN (`awsh`)**: 별도 cron 매시 `:12`(KST, `AWS_HOURLY_STAT_MINUTE`). lookback 기본 6h missing-only fetch → **오늘(+신규일) pack force warm**. `AWS_HOURLY_STAT_REFRESH=0`으로 끔. 1분 `downloadLatestData`와 분리.
 
 ## 일단위 backfill: `backfill_aws_min.js`
 
