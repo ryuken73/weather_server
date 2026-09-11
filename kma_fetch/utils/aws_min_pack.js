@@ -88,6 +88,10 @@ const TA_SCALED_SENTINELS = Object.freeze(new Set([-999]));
 const HUB_PHYSICAL_MISSING_MAX = -50;
 const WD_MAX_DEG = 360;
 const HM_MAX_PCT = 100;
+/** UI/domain metadata — not an encode hard clip (encode still accepts higher until Int16). */
+const TD_VALID_RANGE_MAX_C = TA_PHYSICAL_VALID_MAX_C;
+/** UI/domain metadata for wind speed (m/s). Extreme typhoon headroom; not Int16 max. */
+const WS_VALID_RANGE_MAX_MS = 100;
 
 function toScaledOrNull(raw) {
   if (raw == null || raw === '') return null;
@@ -231,10 +235,11 @@ const PACK_VARIABLES = Object.freeze({
     source: 'KMA_APIHUB_nph-aws2_min',
     sourceField: 'WSS',
     family: 'wind_speed',
-    /** physical after scale; missing ≤ -50 Hub / negatives excluded */
-    validRange: { min: 0, max: 3276.7, inclusive: true },
+    /** physical after scale; UI domain (encode allows up to Int16 until missing) */
+    validRange: { min: 0, max: WS_VALID_RANGE_MAX_MS, inclusive: true },
     pairGroupId: 'wind_ins',
     pairRole: 'speed',
+    pairMissingPolicy: 'independent',
     encode: encodeWindSpeedToI16
   },
   WS: {
@@ -245,9 +250,10 @@ const PACK_VARIABLES = Object.freeze({
     source: 'KMA_APIHUB_nph-aws2_min',
     sourceField: 'WS1',
     family: 'wind_speed',
-    validRange: { min: 0, max: 3276.7, inclusive: true },
+    validRange: { min: 0, max: WS_VALID_RANGE_MAX_MS, inclusive: true },
     pairGroupId: 'wind_avg',
     pairRole: 'speed',
+    pairMissingPolicy: 'independent',
     encode: encodeWindSpeedToI16
   },
   WD_INS: {
@@ -263,6 +269,7 @@ const PACK_VARIABLES = Object.freeze({
     calmValue: 360,
     pairGroupId: 'wind_ins',
     pairRole: 'direction',
+    pairMissingPolicy: 'independent',
     encode: encodeWindDirToI16
   },
   WD: {
@@ -277,6 +284,7 @@ const PACK_VARIABLES = Object.freeze({
     calmValue: 360,
     pairGroupId: 'wind_avg',
     pairRole: 'direction',
+    pairMissingPolicy: 'independent',
     encode: encodeWindDirToI16
   },
   HM: {
@@ -298,8 +306,11 @@ const PACK_VARIABLES = Object.freeze({
     source: 'KMA_APIHUB_nph-aws2_min',
     sourceField: 'TD',
     family: 'dewpoint',
-    /** Hub ≤ -50 → missing; no TA temporal QC / no +60 clip */
-    validRange: { min: -49.9, max: 3276.7, inclusive: true },
+    /**
+     * Hub ≤ -50 → missing. UI domain aligned with TA max (60℃).
+     * Encode does not hard-clip at 60 (unlike TA).
+     */
+    validRange: { min: -49.9, max: TD_VALID_RANGE_MAX_C, inclusive: true },
     encode: encodeDewpointToI16
   }
 });
@@ -3181,6 +3192,9 @@ async function buildAwsVariablePack(awsJsonDir, fromKor, toKor, variable, option
   }
   if (spec.pairRole) {
     manifest.pairRole = spec.pairRole;
+  }
+  if (spec.pairMissingPolicy) {
+    manifest.pairMissingPolicy = spec.pairMissingPolicy;
   }
 
   if (spec.accumulation) {

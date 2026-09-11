@@ -560,14 +560,16 @@ async function main() {
   assert.ok(!wsIns.manifest.qc || !wsIns.manifest.qc.taTemporal);
   assert.strictEqual(wsIns.manifest.pairGroupId, 'wind_ins');
   assert.strictEqual(wsIns.manifest.pairRole, 'speed');
-  assert.deepStrictEqual(wsIns.manifest.validRange, { min: 0, max: 3276.7, inclusive: true });
+  assert.strictEqual(wsIns.manifest.pairMissingPolicy, 'independent');
+  assert.deepStrictEqual(wsIns.manifest.validRange, { min: 0, max: 100, inclusive: true });
   assert.strictEqual(wd.manifest.pairGroupId, 'wind_avg');
   assert.strictEqual(wd.manifest.pairRole, 'direction');
   assert.strictEqual(wd.manifest.calmValue, 360);
+  assert.strictEqual(wd.manifest.pairMissingPolicy, 'independent');
   assert.deepStrictEqual(wd.manifest.validRange, { min: 0, max: 360, inclusive: true });
   assert.deepStrictEqual(hm.manifest.validRange, { min: 0, max: 100, inclusive: true });
   assert.ok(!hm.manifest.pairGroupId);
-  assert.ok(td.manifest.validRange && td.manifest.validRange.min === -49.9);
+  assert.deepStrictEqual(td.manifest.validRange, { min: -49.9, max: 60, inclusive: true });
   assert.strictEqual(vWsIns[stationIndex.get(42)], 40);
   assert.strictEqual(vWd[stationIndex.get(42)], 410);
   assert.strictEqual(vHm[stationIndex.get(42)], 588);
@@ -579,6 +581,7 @@ async function main() {
   assert.strictEqual(wdIns.manifest.pairGroupId, 'wind_ins');
   assert.strictEqual(wdIns.manifest.pairRole, 'direction');
   assert.strictEqual(wdIns.manifest.calmValue, 360);
+  assert.strictEqual(wdIns.manifest.pairMissingPolicy, 'independent');
   assert.strictEqual(wdIns.manifest.sourceField, 'WDS');
 
   assert.strictEqual(rn60.manifest.validSampleCount, 712);

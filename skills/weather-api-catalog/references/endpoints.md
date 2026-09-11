@@ -59,7 +59,7 @@ Pack binary: `out_data/aws/pack/` → `/datasets/aws/...` (env `AWS_PACK_DIR`).
 - TA 결측: `null`/비유한, sentinel `-999`, Hub ≤ -50℃, > 60℃ → `-32768`. 정상 음수 유지
 - 강수 결측: `null`/비유한, Hub ≤ -50mm, 음수, Int16 overflow → `-32768`. **0.0 mm = 0**
 - 풍속 0 유효. 풍향 0–360(무풍 360). 습도 0–100%. 이슬점 TA QC 없음
-- HM/TD/바람 manifest: `validRange`(물리 단위). 바람은 `pairGroupId`(`wind_ins`|`wind_avg`) + `pairRole` + WD `calmValue:360`
+- HM/TD/바람 manifest: `validRange`(물리·UI domain). TD max **60℃**, WS/WS_INS max **100 m/s** (Int16 max 아님). 바람은 `pairGroupId`(`wind_ins`|`wind_avg`) + `pairRole` + `pairMissingPolicy:independent` + WD `calmValue:360`
 - `complete`: 과거 하루 **1,440개 timestamp 파일** 존재. 값 coverage와 별개
 - `dataComplete` / `coverage.status`: `ok` (≥80% 유효) | `degraded` | `empty` (validSampleCount=0). 전부 결측이면 warnings
 - 항상 `sourceField`, `validSampleCount`, `missingSampleCount`, `validRatio`, `warnings`

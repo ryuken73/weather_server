@@ -1162,6 +1162,12 @@ components:
         pairRole:
           type: string
           enum: [speed, direction]
+        pairMissingPolicy:
+          type: string
+          enum: [independent]
+          description: >
+            Wind speed/direction missing masks are independent (field-wise encode).
+            Consumer may omit direction marker when WD is missing while keeping WS.
         accumulation:
           type: object
           additionalProperties: true
