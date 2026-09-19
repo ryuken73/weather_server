@@ -48,6 +48,7 @@ SBS 기상 시각화용 **Producer**입니다.
 | --- | --- |
 | `server.js` | Fastify API · `/datasets` · `/weather` · legacy image |
 | `kma_fetch/main_AWS.js` | AWS 1분 JSON + today/어제 pack warm |
+| `kma_fetch/main_SD.js` | 적설(SD_TOT/SD_24H) 60분 관측 수집 + today pack warm |
 | `kma_fetch/main.js` | GK2A IR105 NetCDF 수집 |
 | `kma_fetch/main_RDR.js` | 레이더 HSP binary 수집 |
 | `kma_fetch/main_KIM.js` | KIM EAsia NC 수집 + (레거시) PNG 생성 호출 |
@@ -96,6 +97,22 @@ Skill: [`aws-min-json-pipeline`](skills/aws-min-json-pipeline/SKILL.md)
 
 Animation은 `latest`만으로 만들지 말고 **manifest `frames`**를 사용합니다.  
 Client 복호화: [`docs/kim_hgt500_frontend_api_spec.md`](docs/kim_hgt500_frontend_api_spec.md) · skill [`kim-hgt500-png-pipeline`](skills/kim-hgt500-png-pipeline/SKILL.md)
+
+### 2.3 적설 (SD_TOT / SD_24H) — 60분 station pack
+
+| API | 용도 |
+| --- | --- |
+| `GET /api/sd/stations` | 적설 지점 마스터 (674지점, 이름·위경도·시도/구군) |
+| `GET /api/sd/pack?date=&variable=` | 하루 60분 Int16 binary pack (`SD_TOT`, `SD_24H`) |
+| Static `/datasets/sd/...` | pack binary (`.i16le`) 및 `manifest.json` |
+
+- `SD_TOT`: instantaneous (현재 적설 cm)
+- `SD_24H`: rolling 1440m (24시간 신적설 cm)
+- Binary: Int16 LE, scale `0.1` cm, 결측 `-32768`, **0.0cm = 0**
+- 기본 간격: `60m` (하루 24프레임)
+- 운영 배포: [`docs/deployment-snow.md`](docs/deployment-snow.md)
+- 상세 스펙: [`docs/snow-producer-pack-requirements.md`](docs/snow-producer-pack-requirements.md)
+- 원천 파일: `in_data/sd/{yyyy-MM-dd}/SD_{yyyyMMddHHmm}.json` (`main_SD.js` 수집)
 
 레거시 PNG: `GET /kim-hgt500/.../image`, `/kim-psl/.../image` (EAsia NC 경로 — 신규 global TXT는 `/api/hgt500/*` 권장)
 

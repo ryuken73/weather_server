@@ -1,6 +1,6 @@
 ---
 name: weather-api-catalog
-description: weather_api 서버가 노출하는 HTTP API 카탈로그(producer). Use when calling or documenting /api/hgt500, /api/aws/min, /api/aws/min/pack, /api/aws/stations, /datasets, /ir105, /{type}/{area}/{step}/image, GFS wind, AWS_MIN JSON, IR105 image, OpenAPI, Swagger /docs, Postman/Apidog import, or weather_api base URL contracts.
+description: weather_api 서버가 노출하는 HTTP API 카탈로그(producer). Use when calling or documenting /api/hgt500, /api/aws/min, /api/aws/min/pack, /api/aws/stations, /api/sd/stations, /api/sd/pack, /datasets, /ir105, /{type}/{area}/{step}/image, GFS wind, AWS_MIN JSON, IR105 image, OpenAPI, Swagger /docs, Postman/Apidog import, or weather_api base URL contracts.
 ---
 
 # weather_api Catalog (Producer)
@@ -35,6 +35,7 @@ description: weather_api 서버가 노출하는 HTTP API 카탈로그(producer).
 
 - **HGT500**: `GET /api/hgt500/latest`, `GET /api/hgt500/datasets`, `GET /api/hgt500/datasets/{id}/manifest` (302), static `/datasets/{id}/**`
 - **AWS**: `GET /api/aws/stations`, `/api/aws/min`, `/api/aws/min/range` (2분·임의 구간 JSON), `/api/aws/min/pack` (1분 변수별 binary, 기본 TA), `/api/aws/min/exact`, `/api/aws/stat/hourly/pack` (Hub 시간통계 RN, 실험)
+- **적설(SD)**: `GET /api/sd/stations`, `GET /api/sd/pack` (30분 기본, `SD_TOT`/`SD_24H` Int16). AWS 1분 pack과 **별축**. Producer: `docs/snow-producer-pack-requirements.md`
 - **IR105 JSON** (레거시·정리 필요): `GET /ir105/{area}/{step}`, `/batch`, `/fs` — 시각화 주력은 아래 PNG
 - **레거시 image/wind**: `GET /{type}/{area}/{step}/image?timestamp_kor=` (`ir105-mono|color` 등)
 - **Static**: `/weather/**`
@@ -65,6 +66,17 @@ description: weather_api 서버가 노출하는 HTTP API 카탈로그(producer).
 | pack 값 vs 원본 1분 대조 | `GET /api/aws/min/exact` 또는 `intervalMinutes=1` |
 
 일 pack은 서버가 어제/backfill 후 디스크에 만든다. 첫 요청 전에 워밍되면 바로 binary만 받는다.
+
+## 적설(SD) API 선택
+
+| 하고 싶은 일 | 쓸 API |
+| --- | --- |
+| 적설 지점명·시도/구군 | `GET /api/sd/stations` |
+| 하루 적설(상태) timeline | `GET /api/sd/pack?date={YYYYMMDD}&variable=SD_TOT` |
+| 하루 24시간 신적설 | `variable=SD_24H` (`accumulation.type=rolling`) |
+| 두 변수 | `variable=SD_TOT,SD_24H` → `{variables, items[]}` |
+
+기본 `intervalMinutes=60` (Probe 실측 기준; 옵션 10/15/30/60). Binary scale 0.1 cm, missing `-32768`, 0cm=0. AWS `/api/aws/min/pack`에 `SD_*` 없음.
 
 **오늘(KST) pack**은 `main_AWS`가 TA·강수·바람·풍향·습도·이슬점 **전 변수를 기본 5분 scheduler + 수집 완료 후 5–15초 debounce**로 갱신한다. 기동 시에도 1회 즉시 warm한다. API는 기본적으로 manifest만 반환하며 요청 경로에서 rebuild하지 않는다. 준비 전/갱신 지연은 `404 PACK_NOT_WARMED`/`PACK_STALE`, 정상 partial은 `complete:false`, `to`=최신 원천 분, Cache-Control `no-store`. 운영 설정: `AWS_TODAY_PACK_REFRESH`, `AWS_TODAY_PACK_INTERVAL`, `AWS_TODAY_PACK_DEBOUNCE_MS`. 강수 상세: `docs/rainfall-consumer-today-pack-guide.md`.
 

@@ -49,6 +49,17 @@ GET {base}/datasets/aws/ws_ins/1m/20260812/ws_ins.i16le
 # 레거시: from&to=YYYYMMDDHHMM 도 허용. variable=FULL 은 400
 ```
 
+## 적설 (SD)
+
+```text
+GET {base}/api/sd/stations
+GET {base}/api/sd/pack?date=20251204&variable=SD_TOT
+GET {base}/api/sd/pack?date=20251204&variable=SD_TOT,SD_24H
+GET {base}/api/sd/pack?date=20251204&variable=SD_24H&intervalMinutes=60
+GET {base}/datasets/sd/sd_tot/60m/20251204/sd_tot-v88f506f0.i16le
+GET {base}/datasets/sd/sd_24h/60m/20251204/sd_24h-v6f0a2069.i16le
+```
+
 ## IR105 JSON
 
 ```text

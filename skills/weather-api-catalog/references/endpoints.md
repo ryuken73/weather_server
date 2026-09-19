@@ -74,6 +74,29 @@ Pack binary: `out_data/aws/pack/` → `/datasets/aws/...` (env `AWS_PACK_DIR`).
 - Binary URL도 동일 캐시 정책 (전용 route, ETag=sha256)
 - `400` (`FULL`·미지원 변수·date 누락) / `404` (원자료 전무) / `500`
 
+## 적설 (SD)
+
+파일: `in_data/sd/{yyyy-MM-dd}/SD_{YYYYMMDDHHMM}.json` (`main_SD.js` / `fetch_snow.js`).  
+코드표: `kma_fetch/config/sd_stn_code_YYYYMMDD.json`.  
+Pack: `out_data/sd/pack/` → `/datasets/sd/...`.  
+상세: `docs/snow-producer-pack-requirements.md`, probe `docs/snow-hub-probe-202512.md`.
+
+### `GET /api/sd/stations`
+
+- 응답: `{ source, generatedAt, codeFile, stationCount, stations[] }`
+- `stations[]`: `STN_ID`, `STN_NAME`, `LAT`, `LON`, `HT`, `LAW_ID`, `LAW_ADDR_SIDO`, `LAW_ADDR_GUGUN`, `addrSource`
+- Header: `Cache-Control: public, max-age=3600`
+
+### `GET /api/sd/pack?date=&variable=SD_TOT`
+
+- `date=YYYYMMDD` 필수. 기본 interval **60**분 (`intervalMinutes=10|15|30|60`)
+- `variable` 기본 `SD_TOT`. 지원 `SD_TOT`, `SD_24H`
+- `SD_TOT`: instantaneous. `SD_24H`: rolling 1440분
+- Binary: Int16 LE, scale 0.1 cm, missing `-32768`, **0cm=0**, FRAME_MAJOR
+- 디스크: `{sd_tot|sd_24h}/60m/{day}/{slug}-v{sha8}.i16le`
+- 복수 변수 → `{ variables, items: [manifest...] }`
+- AWS 1분 pack과 별축 (지점망·주기 상이)
+
 ### `GET /api/aws/min/exact?timestamp_kor=`
 
 - 1분 exact 단건 (debug/parity). enrich 포함

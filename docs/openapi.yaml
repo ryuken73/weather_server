@@ -25,6 +25,8 @@ tags:
     description: KIM TXT 기반 500hPa 지위고도 dataset pointer / 목록 / manifest
   - name: aws
     description: AWS_MIN station JSON (`in_data/aws`, main_AWS 산출)
+  - name: sd
+    description: 적설 지점 JSON/pack (`in_data/sd`, main_SD 산출). AWS 1분 pack과 별축
   - name: ir105-json
     description: GK2A IR105 JSON (DB 또는 filesystem)
   - name: image
@@ -251,6 +253,114 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AwsStationsResponse'
+        '500':
+          description: 서버 내부 오류
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorWithDetails'
+
+  /api/sd/stations:
+    get:
+      tags: [sd]
+      summary: 적설 지점 코드표 (stn_snow)
+      description: |
+        `kma_fetch/config/sd_stn_code_YYYYMMDD.json` (최신)을 반환한다.
+        Hub `stn_snow.php` + AWS STN 조인/`LAW_ID`→시도·구군.
+        관측 JSON에는 `LAW_ADDR_*`를 넣지 않으며 stations/pack lookup용.
+        Probe: `docs/snow-hub-probe-202512.md`.
+      operationId: getSdStations
+      responses:
+        '200':
+          description: snow station catalog
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                example: 'public, max-age=3600'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SdStationsResponse'
+        '404':
+          description: 코드표 미생성
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: 서버 내부 오류
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorWithDetails'
+
+  /api/sd/pack:
+    get:
+      tags: [sd]
+      summary: 적설 day pack manifest (SD_TOT / SD_24H)
+      description: |
+        KST **하루** 적설 timeline의 변수별 Int16 LE pack manifest.
+        AWS 1분 pack과 **별축** (지점망·주기 상이). 기본 interval **60분** (Probe 실측 기준).
+        `variable` 기본 `SD_TOT`. 지원: `SD_TOT`, `SD_24H`.
+        `SD_TOT`: 적설 상태 (`accumulation.type=instantaneous`).
+        `SD_24H`: 24시간 신적설 rolling (`type=rolling`, `windowMinutes=1440`).
+        Binary: FRAME_MAJOR_STATION_MINOR, scale 0.1 cm, missing -32768, **0.0cm=0**.
+        URL 예: `/datasets/sd/sd_tot/60m/{day}/sd_tot-v{sha8}.i16le`.
+        Producer: `docs/snow-producer-pack-requirements.md`.
+      operationId: getSdPack
+      parameters:
+        - name: date
+          in: query
+          required: true
+          schema:
+            type: string
+            pattern: '^(\d{8}|\d{4}-\d{2}-\d{2})$'
+          example: '20251204'
+          description: KST 일자
+        - name: variable
+          in: query
+          required: false
+          schema:
+            type: string
+            default: SD_TOT
+            example: SD_TOT,SD_24H
+          description: |
+            기본 SD_TOT. 지원 `SD_TOT,SD_24H`. comma 복수 시 `{variables, items[]}`.
+        - name: intervalMinutes
+          in: query
+          required: false
+          schema:
+            type: integer
+            enum: [10, 15, 30, 60]
+            default: 60
+          description: pack frame 간격 (기본 60)
+        - name: force
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: ['0', '1', 'true', 'false']
+          description: cache 무시 재생성
+      responses:
+        '200':
+          description: pack manifest (단수) 또는 items 배열
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SdPackManifest'
+        '400':
+          description: date 누락·미지원 변수·interval
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: 원자료 없음 / 지점 코드표 없음
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '500':
           description: 서버 내부 오류
           content:
@@ -1062,6 +1172,128 @@ components:
                 type: string
                 nullable: true
       required: [stationCount, stations, codeFile]
+
+    SdStationsResponse:
+      type: object
+      description: 적설 지점 코드표 (stn_snow + AWS/LAW 주소)
+      properties:
+        source:
+          type: string
+          nullable: true
+        generatedAt:
+          type: string
+          format: date-time
+          nullable: true
+        schemaVersion:
+          type: integer
+          nullable: true
+        codeFile:
+          type: string
+          example: sd_stn_code_20251202.json
+        stationCount:
+          type: integer
+        stations:
+          type: array
+          items:
+            type: object
+            properties:
+              STN_ID:
+                type: integer
+              STN_NAME:
+                type: string
+                nullable: true
+              LAT:
+                type: number
+              LON:
+                type: number
+              HT:
+                type: number
+                nullable: true
+              LAW_ID:
+                type: string
+                nullable: true
+              LAW_ADDR_SIDO:
+                type: string
+                nullable: true
+              LAW_ADDR_GUGUN:
+                type: string
+                nullable: true
+              addrSource:
+                type: string
+                nullable: true
+                description: aws_join | law_code | null
+      required: [stationCount, stations, codeFile]
+
+    SdPackManifest:
+      type: object
+      description: |
+        적설 변수별 day pack manifest (binary는 data.url).
+        schemaVersion 1. intervalMinutes 기본 60.
+      properties:
+        schemaVersion:
+          type: integer
+          example: 1
+        contractRevision:
+          type: integer
+          example: 1
+        datasetId:
+          type: string
+          example: sd-sd_tot-60m-20251204-v88f506f0
+        source:
+          type: string
+          example: KMA_APIHUB_kma_snow1.php
+        variable:
+          type: string
+          enum: [SD_TOT, SD_24H]
+        sourceField:
+          type: string
+        unit:
+          type: string
+          example: cm
+        intervalMinutes:
+          type: integer
+          example: 60
+        date:
+          type: string
+          example: '20251204'
+        accumulation:
+          type: object
+          properties:
+            type:
+              type: string
+              enum: [instantaneous, rolling]
+            windowMinutes:
+              type: integer
+          additionalProperties: true
+        layout:
+          type: string
+          example: FRAME_MAJOR_STATION_MINOR
+        data:
+          type: object
+          properties:
+            encoding:
+              type: string
+              example: int16le
+            scale:
+              type: number
+              example: 0.1
+            missingValue:
+              type: integer
+              example: -32768
+            url:
+              type: string
+              example: /datasets/sd/sd_tot/30m/20251202/sd_tot-v88f506f0.i16le
+            sha256:
+              type: string
+            byteLength:
+              type: integer
+          additionalProperties: true
+        stations:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+      additionalProperties: true
 
     AwsHourlyStatPackManifest:
       type: object

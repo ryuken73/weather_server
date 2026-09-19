@@ -47,6 +47,23 @@ const {
   parseHourlyStatVariable,
   parseDayYmd: parseHourlyStatDayYmd
 } = require('./kma_fetch/utils/aws_hourly_stat');
+const {
+  loadSdStationCatalog,
+  getSdStationsPayload
+} = require('./kma_fetch/utils/sd_stn_catalog');
+const {
+  deriveSdJsonDir,
+  deriveSdPackDir,
+  getOrBuildSdVariablePack,
+  parseSdPackVariables,
+  parseDayYmd: parseSdDayYmd,
+  loadCachedManifest: loadSdCachedManifest,
+  PACK_SLUG_TO_VARIABLE: SD_PACK_SLUG_TO_VARIABLE,
+  SUPPORTED_SD_PACK_VARIABLES,
+  DEFAULT_INTERVAL_MINUTES: SD_DEFAULT_INTERVAL,
+  sdPackManifestCacheHeaders,
+  isSdPackImmutableCacheable
+} = require('./kma_fetch/utils/sd_pack');
 
 require('dotenv').config(); // .env 파일 로드
 
@@ -78,8 +95,16 @@ const awsJsonDir = deriveAwsJsonDir(__dirname);
 const awsPackDir = deriveAwsPackDir(__dirname);
 const awsHourlyStatJsonDir = deriveAwsHourlyStatJsonDir(__dirname);
 const awsHourlyStatPackDir = deriveAwsHourlyStatPackDir(__dirname);
+const sdJsonDir = deriveSdJsonDir(__dirname);
+const sdPackDir = deriveSdPackDir(__dirname);
 const snapAwsTimestamp = findNearestTimestamp(AWS_INTERVAL_MINUTES);
 const awsStnCatalog = loadStationCatalog();
+let sdStnCatalog = null;
+try {
+  sdStnCatalog = loadSdStationCatalog();
+} catch (err) {
+  console.warn(`SD STN CODE: unavailable (${err.message})`);
+}
 console.log(`MODE: ${mode}`);
 console.log(`DATA DIR: ${rootDir}`);
 console.log(`KIM TEXT DATASET DIR: ${kimTextDatasetDir}`);
@@ -88,6 +113,11 @@ console.log(`AWS PACK DIR: ${awsPackDir}`);
 console.log(`AWS HOURLY STAT JSON DIR: ${awsHourlyStatJsonDir}`);
 console.log(`AWS HOURLY STAT PACK DIR: ${awsHourlyStatPackDir}`);
 console.log(`AWS STN CODE: ${awsStnCatalog.codeFile} (${awsStnCatalog.stationCount} stations)`);
+console.log(`SD JSON DIR: ${sdJsonDir}`);
+console.log(`SD PACK DIR: ${sdPackDir}`);
+if (sdStnCatalog) {
+  console.log(`SD STN CODE: ${sdStnCatalog.codeFile} (${sdStnCatalog.stationCount} stations)`);
+}
 
 // 데이터베이스 연결 설정
 const dbConfig = {
@@ -300,6 +330,66 @@ const convertKSTToGMTString = (dateString) => {
       !/\.i16le$/i.test(pathName) &&
       !/^\/[^/]+\/1m\/\d{8}\/qc-v[a-f0-9]+\.json$/i.test(pathName)
   });
+
+  /**
+   * Snow pack binary: /datasets/sd/{slug}/{Nm}/{day}/{file}
+   */
+  fastify.get('/datasets/sd/:slug/:interval/:day/:file', async (request, reply) => {
+    const slug = String(request.params.slug || '').toLowerCase();
+    const interval = String(request.params.interval || '');
+    const day = String(request.params.day || '');
+    const file = String(request.params.file || '');
+    const variable = SD_PACK_SLUG_TO_VARIABLE[slug];
+    if (!variable) {
+      return reply.code(400).send({
+        error: `Unsupported snow pack slug: ${slug}. Supported: ${SUPPORTED_SD_PACK_VARIABLES.join(', ')}`
+      });
+    }
+    if (!/^\d+m$/.test(interval)) {
+      return reply.code(400).send({ error: 'Invalid interval. Expected e.g. 30m' });
+    }
+    if (!/^\d{8}$/.test(day)) {
+      return reply.code(400).send({ error: 'Invalid day. Expected YYYYMMDD' });
+    }
+    const intervalMinutes = Number(interval.replace(/m$/i, ''));
+    const isHashedBinary = new RegExp(`^${slug}-v[a-f0-9]{8}\\.i16le$`, 'i').test(file);
+    if (!isHashedBinary) {
+      return reply.code(404).send({ error: 'Snow pack asset not found', slug, day, file });
+    }
+    const assetPath = path.join(sdPackDir, slug, interval, day, file);
+    try {
+      const cached = loadSdCachedManifest(variable, day, sdPackDir, intervalMinutes);
+      const immutable = cached && isSdPackImmutableCacheable(cached);
+      const binary = await fs.readFile(assetPath);
+      if (immutable) {
+        reply.header('Cache-Control', 'public, max-age=31536000, immutable');
+      } else {
+        reply.header('Cache-Control', 'no-store');
+      }
+      let etag = cached && cached.data && cached.data.sha256
+        ? `"${cached.data.sha256}"`
+        : `"${crypto.createHash('sha256').update(binary).digest('hex')}"`;
+      reply.header('ETag', etag);
+      if (immutable && request.headers['if-none-match'] === etag) {
+        return reply.code(304).send();
+      }
+      reply.type('application/octet-stream');
+      return reply.send(binary);
+    } catch (err) {
+      if (err.code === 'ENOENT') {
+        return reply.code(404).send({ error: 'Snow pack asset not found', slug, day, file });
+      }
+      fastify.log.error(err);
+      return reply.code(500).send({ error: 'Internal server error', details: err.message });
+    }
+  });
+
+  fastify.register(require('@fastify/static'), {
+    root: sdPackDir,
+    prefix: '/datasets/sd/',
+    decorateReply: false,
+    allowedPath: (pathName) => !/\.i16le$/i.test(pathName)
+  });
   fastify.register(require('@fastify/static'), {
     root: kimTextDatasetDir,
     prefix: '/datasets/',
@@ -356,6 +446,94 @@ const convertKSTToGMTString = (dateString) => {
       reply.header('Cache-Control', 'public, max-age=3600');
       return payload;
     } catch (err) {
+      fastify.log.error(err);
+      return reply.code(500).send({ error: 'Internal server error', details: err.message });
+    }
+  });
+
+  /**
+   * Snow station catalog (stn_snow + AWS join / LAW_ID).
+   */
+  fastify.get('/api/sd/stations', async (request, reply) => {
+    try {
+      const catalog = sdStnCatalog || loadSdStationCatalog();
+      sdStnCatalog = catalog;
+      const payload = getSdStationsPayload(catalog);
+      reply.header('Cache-Control', 'public, max-age=3600');
+      return payload;
+    } catch (err) {
+      if (err.code === 'NO_SD_STN_CODE') {
+        return reply.code(404).send({ error: 'Snow station catalog not built yet', code: err.code });
+      }
+      fastify.log.error(err);
+      return reply.code(500).send({ error: 'Internal server error', details: err.message });
+    }
+  });
+
+  /**
+   * Snow day pack manifest (SD_TOT / SD_24H).
+   * GET /api/sd/pack?date=YYYYMMDD&variable=SD_TOT,SD_24H&intervalMinutes=60
+   */
+  fastify.get('/api/sd/pack', async (request, reply) => {
+    const { date, variable, intervalMinutes: intervalRaw } = request.query;
+    if (!date) {
+      return reply.code(400).send({ error: 'date query parameter is required (YYYYMMDD)' });
+    }
+    let dayKey;
+    try {
+      dayKey = parseSdDayYmd(date);
+    } catch (err) {
+      return reply.code(400).send({ error: err.message });
+    }
+    let variables;
+    try {
+      variables = parseSdPackVariables(variable);
+    } catch (err) {
+      return reply.code(400).send({ error: err.message, code: err.code });
+    }
+    const intervalMinutes = intervalRaw
+      ? Number(intervalRaw)
+      : SD_DEFAULT_INTERVAL;
+    if (![10, 15, 30, 60].includes(intervalMinutes)) {
+      return reply.code(400).send({ error: 'intervalMinutes must be 10, 15, 30, or 60' });
+    }
+    try {
+      const force = request.query.force === '1' || request.query.force === 'true';
+      const catalog = sdStnCatalog || loadSdStationCatalog();
+      sdStnCatalog = catalog;
+      const items = [];
+      for (const v of variables) {
+        const result = await getOrBuildSdVariablePack(sdJsonDir, sdPackDir, dayKey, v, {
+          catalog,
+          force,
+          intervalMinutes
+        });
+        if (!result.ok) {
+          if (result.code === 'NO_SD_DATA') {
+            return reply.code(404).send({
+              error: result.message,
+              code: result.code,
+              date: dayKey,
+              variable: v
+            });
+          }
+          return reply.code(500).send({
+            error: result.message,
+            code: result.code,
+            date: dayKey,
+            variable: v
+          });
+        }
+        items.push(result.manifest);
+      }
+      const headers = sdPackManifestCacheHeaders(items[0]);
+      for (const [k, val] of Object.entries(headers)) reply.header(k, val);
+      if (items.length === 1) return items[0];
+      return { variables: items.map((m) => m.variable), items };
+    } catch (err) {
+      if (err.code === 'NO_SD_STN_CODE') {
+        return reply.code(404).send({ error: 'Snow station catalog not built yet', code: err.code });
+      }
       fastify.log.error(err);
       return reply.code(500).send({ error: 'Internal server error', details: err.message });
     }

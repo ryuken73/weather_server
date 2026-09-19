@@ -6,7 +6,7 @@
 | --- | --- | --- | --- |
 | `timestamp_kor` | `YYYYMMDDHHMM` | KST | `/{type}/.../image`, `/api/aws/min`, 일부 IR105 |
 | `from` / `to` | `YYYYMMDDHHMM` | KST | `/api/aws/min/range`, pack 레거시 |
-| `date` | `YYYYMMDD` 또는 `YYYY-MM-DD` | KST | `/api/aws/min/pack` (권장) |
+| `date` | `YYYYMMDD` 또는 `YYYY-MM-DD` | KST | `/api/aws/min/pack`, `/api/sd/pack` |
 | `timestamp_utc` | `YYYYMMDDHHMM` | UTC | `/ir105/.../fs` |
 | `tmfc` | `YYYYMMDDHH` | UTC | HGT500 dataset id / list filter |
 | ISO-8601 | e.g. `2026-07-28T00:00:00Z` | UTC | HGT500 `from`/`to`, manifest `validTime` |
@@ -49,6 +49,15 @@
 - 일최고·임계·홀수 분 peak는 **pack / exact**를 쓴다. 2분 min/range만으로는 복원 불가
 - pack `variable=FULL` 없음. 기본 `TA`, 이후 comma 복수
 - pack binary URL timezone도 KST timeline (`intervalMinutes: 1` in manifest)
+
+## 적설 (SD)
+
+| Endpoint | 간격 | snap |
+| --- | --- | --- |
+| `GET /api/sd/pack` | 기본 60분 (`intervalMinutes` 10/15/30/60) | `date=YYYYMMDD` → 당일 슬롯 (기본 24 frame) |
+
+- 파일: `sd/YYYY-MM-DD/SD_{YYYYMMDDHHMM}.json`
+- pack slug interval: `60m` 등 (`/datasets/sd/sd_tot/60m/{day}/…`)
 
 ## HGT500
 
