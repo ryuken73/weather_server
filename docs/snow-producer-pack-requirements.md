@@ -26,10 +26,10 @@ Consumer/OpenAPI 상세: `docs/openapi.yaml`, `skills/weather-api-catalog`.
 | 항목 | 계약 |
 |------|------|
 | 변수 | `SD_TOT` (instantaneous), `SD_24H` (rolling 1440분) |
-| Binary | Int16 LE, FRAME_MAJOR_STATION_MINOR, scale `0.1` cm, missing `-32768`, **0cm=0** |
+| Binary | Int16 LE (`data.dtype=int16`, `data.endianness=little`), `data.order=FRAME_MAJOR_STATION_MINOR`, scale `0.1` cm, missing `-32768`, **0cm=0** |
 | 경로 | `out_data/sd/pack/{sd_tot\|sd_24h}/{Nm}/{day}/{slug}-v{sha8}.i16le` |
 | 기본 interval | **60**분 (하루 24프레임) |
-| HTTP | `GET /api/sd/pack?date=YYYYMMDD&variable=SD_TOT,SD_24H` |
+| HTTP | `GET /api/sd/pack?date=YYYYMMDD&variable=SD_TOT,SD_24H` (단수=manifest, 복수=`{variables,items[]}`) |
 | Static | `/datasets/sd/...` |
 | Warm | `kma_fetch/warm_sd_packs.js` / `main_SD` lookback 후 today warm |
 

@@ -92,9 +92,9 @@ Pack: `out_data/sd/pack/` → `/datasets/sd/...`.
 - `date=YYYYMMDD` 필수. 기본 interval **60**분 (`intervalMinutes=10|15|30|60`)
 - `variable` 기본 `SD_TOT`. 지원 `SD_TOT`, `SD_24H`
 - `SD_TOT`: instantaneous. `SD_24H`: rolling 1440분
-- Binary: Int16 LE, scale 0.1 cm, missing `-32768`, **0cm=0**, FRAME_MAJOR
+- 단수 → SdPackManifest. 복수 `variable=SD_TOT,SD_24H` → `{ variables, items: [manifest...] }`
+- Binary (`data.*`): `dtype=int16`, `endianness=little`, `order=FRAME_MAJOR_STATION_MINOR`, scale 0.1 cm, missing `-32768`, **0cm=0**
 - 디스크: `{sd_tot|sd_24h}/60m/{day}/{slug}-v{sha8}.i16le`
-- 복수 변수 → `{ variables, items: [manifest...] }`
 - AWS 1분 pack과 별축 (지점망·주기 상이)
 
 ### `GET /api/aws/min/exact?timestamp_kor=`

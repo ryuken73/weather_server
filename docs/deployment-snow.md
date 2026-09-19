@@ -135,4 +135,40 @@ git checkout <배포_이전_커밋_해시>
 # 3. API 서버 재기동
 pm2 reload weather_api
 ```
-*(기존 AWS, RDR, KIM 등 타 수집 프로세스 및 엔드포인트에는 영향을 주지 않음)*
+---
+
+## 6. 영향 범위 · 비영향 (구름/바람 daily 포함)
+
+이번 적설 추가는 **additive**다. 기존 라우트·수집 프로세스를 수정하지 않았다.
+
+### 비영향 (코드 경로 분리)
+
+| 영역 | 프로세스 / 경로 | 이유 |
+|------|-----------------|------|
+| 구름 IR105 PNG | `kma_fetch` `main.js` → parse_netcdf `watcher_image` → `ROOT_DIR` → `/ir105-mono|color/.../image` | `server.js` image 라우트·`ROOT_DIR`·GK2A watcher **미변경** |
+| 바람 GFS | parse_netcdf `gfs_fetch_save` / `gfs_wind` → `out_data/gfs` → `/gfs-*` `/gfs-wind_*` | GFS는 weather_api에 fetch 없음. 서빙 경로 미변경 |
+| 레이더 HSP PNG | `kma_fetch_rdr` + parse_netcdf RDR watcher | 미변경 |
+| AWS 1분 pack | `kma_fetch_aws` · `/api/aws/*` · `/datasets/aws/` | 별 라우트·별 디렉터리. `SD_*`를 AWS pack에 넣지 않음 |
+| HGT500 | `kma_fetch_hgt_txt` · `/api/hgt500/*` · `/datasets/kim-glob-hgt500-*` | `/datasets/sd/` prefix를 **그 앞**에 등록(기존 `/datasets/aws/`와 동일 패턴). kim dataset URL 충돌 없음 |
+| 디스크 | `in_data/sd`, `out_data/sd/pack` | `in_data/gk2a|rdr|aws|gfs|kim` 와 **형제 디렉터리**. 덮어쓰기 없음 |
+
+### 공유 자원에서만 조심할 것
+
+| 항목 | 영향 | 완화 |
+|------|------|------|
+| **`pm2 reload weather_api`** | Fastify 재기동 순간 **구름/바람 image API 포함 전 HTTP가 짧게 끊길 수 있음** (기존 AWS pack 배포와 동일) | 방송 피크·스튜디오 생성 중이 아닐 때 reload. reload 후 `/ir105-color/.../image`, `/gfs-wind_10m/.../image` 1회 smoke |
+| **`API_KEY` (apihub)** | `kma_fetch_sd`가 같은 키로 Hub 호출 | 부하 미미: 관측 **시간당 2회**(tot+24h) + 지점 **일 1회**. GK2A(수분)와 비교하면 무시 수준 |
+| **Node 프로세스 CPU** | `/api/sd/pack`이 miss 시 on-request build 가능 | 운영은 warm CLI / `main_SD`가 미리 생성. 첫 배포 후 12/04 warm까지 끝내면 요청 경로 재빌드 거의 없음 |
+| **PM2 등록** | `kma_fetch_sd`는 **신규 프로세스** | 기존 `kma_fetch` / `gfs_*` / `watcher_image*` 이름·script 불변. `pm2 update` 불필요 |
+
+### 배포 후 권장 smoke (적설 + 회귀)
+
+```bash
+# 적설
+curl -s http://localhost:3010/api/sd/stations | grep -o '"stationCount":[0-9]*'
+curl -s "http://localhost:3010/api/sd/pack?date=20251204&variable=SD_TOT" | grep -o '"frameCount":[0-9]*'
+
+# 구름·바람 회귀 (타임스탬프는 당일 존재하는 최근 파일로 교체)
+curl -sI "http://localhost:3010/ir105-color/fd/1/image?timestamp_kor=$(date +%Y%m%d)1200" | head -n 1
+curl -sI "http://localhost:3010/gfs-wind_10m/fd/1/image?timestamp_kor=$(date +%Y%m%d)1200" | head -n 1
+```

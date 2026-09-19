@@ -305,8 +305,10 @@ paths:
         `variable` 기본 `SD_TOT`. 지원: `SD_TOT`, `SD_24H`.
         `SD_TOT`: 적설 상태 (`accumulation.type=instantaneous`).
         `SD_24H`: 24시간 신적설 rolling (`type=rolling`, `windowMinutes=1440`).
-        Binary: FRAME_MAJOR_STATION_MINOR, scale 0.1 cm, missing -32768, **0.0cm=0**.
+        Binary: `data.order=FRAME_MAJOR_STATION_MINOR`, `data.dtype=int16`, `data.endianness=little`,
+        scale 0.1 cm, missing -32768, **0.0cm=0**.
         URL 예: `/datasets/sd/sd_tot/60m/{day}/sd_tot-v{sha8}.i16le`.
+        단수 `variable` → SdPackManifest. 복수 → `{ variables, items: [SdPackManifest...] }`.
         Producer: `docs/snow-producer-pack-requirements.md`.
       operationId: getSdPack
       parameters:
@@ -344,11 +346,15 @@ paths:
           description: cache 무시 재생성
       responses:
         '200':
-          description: pack manifest (단수) 또는 items 배열
+          description: |
+            단수 변수 → SdPackManifest.
+            복수 변수(`variable=SD_TOT,SD_24H`) → SdPackMultiResponse `{ variables, items }`.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SdPackManifest'
+                oneOf:
+                  - $ref: '#/components/schemas/SdPackManifest'
+                  - $ref: '#/components/schemas/SdPackMultiResponse'
         '400':
           description: date 누락·미지원 변수·interval
           content:
@@ -1229,6 +1235,7 @@ components:
       description: |
         적설 변수별 day pack manifest (binary는 data.url).
         schemaVersion 1. intervalMinutes 기본 60.
+        Binary layout/encoding은 data.order / data.dtype / data.endianness (top-level layout·encoding 없음).
       properties:
         schemaVersion:
           type: integer
@@ -1238,7 +1245,7 @@ components:
           example: 1
         datasetId:
           type: string
-          example: sd-sd_tot-60m-20251204-v88f506f0
+          example: sd-sd_tot-20251204
         source:
           type: string
           example: KMA_APIHUB_kma_snow1.php
@@ -1250,12 +1257,31 @@ components:
         unit:
           type: string
           example: cm
+        timezone:
+          type: string
+          example: Asia/Seoul
         intervalMinutes:
           type: integer
           example: 60
-        date:
+        from:
           type: string
-          example: '20251204'
+          example: '202512040000'
+        to:
+          type: string
+          example: '202512042300'
+        frameCount:
+          type: integer
+          example: 24
+        stationCount:
+          type: integer
+          example: 674
+        complete:
+          type: boolean
+        dataComplete:
+          type: boolean
+        stationOrder:
+          type: string
+          example: STN_ID_ASC
         accumulation:
           type: object
           properties:
@@ -1265,35 +1291,65 @@ components:
             windowMinutes:
               type: integer
           additionalProperties: true
-        layout:
-          type: string
-          example: FRAME_MAJOR_STATION_MINOR
         data:
           type: object
+          description: |
+            Binary descriptor. order=FRAME_MAJOR_STATION_MINOR, dtype=int16, endianness=little.
+            physicalCm = (raw === missingValue) ? null : raw * scale.
           properties:
-            encoding:
+            url:
               type: string
-              example: int16le
+              example: /datasets/sd/sd_tot/60m/20251204/sd_tot-v88f506f0.i16le
+            dtype:
+              type: string
+              example: int16
+            endianness:
+              type: string
+              example: little
+            order:
+              type: string
+              example: FRAME_MAJOR_STATION_MINOR
             scale:
               type: number
               example: 0.1
+            offset:
+              type: number
+              example: 0
             missingValue:
               type: integer
               example: -32768
-            url:
-              type: string
-              example: /datasets/sd/sd_tot/30m/20251202/sd_tot-v88f506f0.i16le
-            sha256:
-              type: string
             byteLength:
               type: integer
+              example: 32352
+            sha256:
+              type: string
+          required: [url, dtype, endianness, order, scale, missingValue, byteLength, sha256]
           additionalProperties: true
         stations:
           type: array
           items:
             type: object
             additionalProperties: true
+      required: [schemaVersion, variable, intervalMinutes, frameCount, stationCount, stations, data]
       additionalProperties: true
+
+    SdPackMultiResponse:
+      type: object
+      description: |
+        `variable`에 콤마로 복수 변수를 넘긴 경우의 응답.
+        binary는 변수별 파일이며 items[].data.url을 각각 받는다.
+      properties:
+        variables:
+          type: array
+          items:
+            type: string
+            enum: [SD_TOT, SD_24H]
+          example: [SD_TOT, SD_24H]
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/SdPackManifest'
+      required: [variables, items]
 
     AwsHourlyStatPackManifest:
       type: object

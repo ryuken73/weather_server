@@ -108,8 +108,9 @@ Client 복호화: [`docs/kim_hgt500_frontend_api_spec.md`](docs/kim_hgt500_front
 
 - `SD_TOT`: instantaneous (현재 적설 cm)
 - `SD_24H`: rolling 1440m (24시간 신적설 cm)
-- Binary: Int16 LE, scale `0.1` cm, 결측 `-32768`, **0.0cm = 0**
+- Binary: `data.dtype=int16` / `endianness=little` / `order=FRAME_MAJOR_STATION_MINOR`, scale `0.1` cm, 결측 `-32768`, **0.0cm = 0**
 - 기본 간격: `60m` (하루 24프레임)
+- 복수 변수: `{ variables, items: [manifest...] }`
 - 운영 배포: [`docs/deployment-snow.md`](docs/deployment-snow.md)
 - 상세 스펙: [`docs/snow-producer-pack-requirements.md`](docs/snow-producer-pack-requirements.md)
 - 원천 파일: `in_data/sd/{yyyy-MM-dd}/SD_{yyyyMMddHHmm}.json` (`main_SD.js` 수집)
