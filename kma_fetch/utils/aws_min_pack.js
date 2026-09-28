@@ -12,6 +12,7 @@ const {
   latestAwsMinTimestampForDay
 } = require('./aws_min_json');
 const { loadStationCatalog } = require('./aws_stn_catalog');
+const { computeApparentTempScaled10 } = require('./aws_apparent_temp');
 const {
   PRODUCTION_AWS_PACK_DIR,
   isProductionNodeEnv,
@@ -312,6 +313,19 @@ const PACK_VARIABLES = Object.freeze({
      */
     validRange: { min: -49.9, max: TD_VALID_RANGE_MAX_C, inclusive: true },
     encode: encodeDewpointToI16
+  },
+  AT: {
+    jsonField: null,
+    slug: 'at',
+    unit: 'degC',
+    scale: 0.1,
+    source: 'derived:TA+HM+WS',
+    sourceField: 'derived:apparent_temp',
+    family: 'apparent_temp',
+    derive: 'apparentTemperature',
+    /** Summer: TA+HM. Winter: TA+WS (WS≤1.3 → AT=TA). No TA temporal QC. */
+    validRange: { min: -49.9, max: TA_PHYSICAL_VALID_MAX_C, inclusive: true },
+    encode: encodeTaToI16
   }
 });
 
@@ -347,7 +361,13 @@ const TODAY_PACK_REGISTRY = Object.freeze([
   { variable: 'WD_INS', sourceFields: ['WD_INS'], dependencies: [], refreshToday: true },
   { variable: 'WD', sourceFields: ['WD'], dependencies: [], refreshToday: true },
   { variable: 'HM', sourceFields: ['HM'], dependencies: [], refreshToday: true },
-  { variable: 'TD', sourceFields: ['TD'], dependencies: [], refreshToday: true }
+  { variable: 'TD', sourceFields: ['TD'], dependencies: [], refreshToday: true },
+  {
+    variable: 'AT',
+    sourceFields: ['TA', 'HM', 'WS'],
+    dependencies: [],
+    refreshToday: true
+  }
 ]);
 
 const TODAY_PACK_REGISTRY_BY_VARIABLE = Object.freeze(
@@ -3033,6 +3053,32 @@ async function buildAwsVariablePack(awsJsonDir, fromKor, toKor, variable, option
         int16[idx] = encodeRainToI16(scaled);
       }
     }
+  } else if (spec.derive === 'apparentTemperature') {
+    const month = Number(from.slice(4, 6));
+    for (let fi = 0; fi < frameCount; fi++) {
+      const byId = frames[fi];
+      if (!byId) continue;
+      for (let si = 0; si < stationCount; si++) {
+        const row = byId.get(stationIds[si]);
+        if (!row) continue;
+        const taRaw = readJsonFieldRaw(row, 'TA');
+        const hmRaw = readJsonFieldRaw(row, 'HM');
+        const wsRaw = readJsonFieldRaw(row, 'WS');
+        if (taRaw != null && taRaw !== '') jsonPresentCount += 1;
+        const scaled = computeApparentTempScaled10({
+          taScaled: taRaw,
+          hmScaled: hmRaw,
+          wsScaled: wsRaw,
+          month
+        });
+        if (scaled == null) continue;
+        if (scaled > 32767 || scaled < -32767) {
+          overflowCount += 1;
+          continue;
+        }
+        int16[fi * stationCount + si] = encodeTaToI16(scaled);
+      }
+    }
   } else {
     for (let fi = 0; fi < frameCount; fi++) {
       const byId = frames[fi];
@@ -3194,9 +3240,13 @@ async function buildAwsVariablePack(awsJsonDir, fromKor, toKor, variable, option
     );
   }
   if (jsonPresentCount === 0 && spec.derive !== 'rolling24hFromDayCounters') {
-    warnings.push(
-      `JSON field ${fieldLabel} is missing for the whole day (likely DB-only source without Hub fill)`
-    );
+    if (spec.derive === 'apparentTemperature') {
+      warnings.push('AT source fields (TA|HM|WS) missing for the whole day');
+    } else {
+      warnings.push(
+        `JSON field ${fieldLabel} is missing for the whole day (likely DB-only source without Hub fill)`
+      );
+    }
   }
   if (jsonPresentCount === 0 && spec.derive === 'rolling24hFromDayCounters') {
     warnings.push('RN_DAY source (RN_DAY|legacy RN_24HR) missing for the whole day');

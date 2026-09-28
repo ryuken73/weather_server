@@ -382,10 +382,11 @@ paths:
         KST **하루** 1분 timeline의 변수별 Int16 LE pack manifest.
         권장 query: `date=YYYYMMDD` (또는 YYYY-MM-DD) → 서버가 `0000–2359`로 펼친다.
         레거시: `from`/`to` (YYYYMMDDHHMM)도 허용.
-        `variable` 기본 `TA`. 지원: `TA, RN_15M, RN_60M, RN_12HR, RN_24HR, RN_DAY, WS_INS, WS, WD_INS, WD, HM, TD`. `FULL` 없음.
+        `variable` 기본 `TA`. 지원: `TA, RN_15M, RN_60M, RN_12HR, RN_24HR, RN_DAY, WS_INS, WS, WD_INS, WD, HM, TD, AT`. `FULL` 없음.
         `RN_1HR`는 `RN_60M` 별칭이라 pack 불가. `RN_6HR`/`RN_48HR`/`RN_YN` 제외.
         `RN_24HR`은 RN-DAY 시계열에서 파생한 **rolling 24시간** (`accumulation.type=rolling`, slug `rn_24hr_rolling`).
         `RN_DAY`는 KST 당일 00시부터 누적 (`accumulation.type=day`).
+        `AT`는 체감온도 파생 (`sourceField=derived:apparent_temp`, slug `at`). 5–9월 TA+HM, 10–4월 TA+WS(≤1.3m/s면 AT=TA). TA temporal QC 없음. 상세 `docs/aws-apparent-temp-pack.md`.
         단일 변수는 기존과 같이 해당 manifest. 복수는 `{ variables, items: [manifest...] }` (binary는 섞지 않음).
         Binary는 변수별 파일 (`data.url`, 예: `/datasets/aws/ta/1m/{day}/ta.i16le`, `/datasets/aws/rn_24hr_rolling/1m/{day}/rn_24hr_rolling.i16le`).
         layout: FRAME_MAJOR_STATION_MINOR, scale 0.1, missing -32768.
@@ -437,8 +438,9 @@ paths:
             default: TA
             example: TA,RN_60M,WS_INS
           description: |
-            기본 TA. 지원 `TA,RN_15M,RN_60M,RN_12HR,RN_24HR,RN_DAY,WS_INS,WS,WD_INS,WD,HM,TD`.
+            기본 TA. 지원 `TA,RN_15M,RN_60M,RN_12HR,RN_24HR,RN_DAY,WS_INS,WS,WD_INS,WD,HM,TD,AT`.
             comma 복수 시 변수별 manifest 배열. `FULL`·`RN_1HR`·미지원은 400.
+            `AT`=체감온도 파생(`derived:apparent_temp`, 5–9월 HM / 10–4월 WS). 상세 `docs/aws-apparent-temp-pack.md`.
         - name: force
           in: query
           required: false
@@ -1417,7 +1419,7 @@ components:
           example: KMA_AWS_MIN
         variable:
           type: string
-          enum: [TA, RN_15M, RN_60M, RN_12HR, RN_24HR, RN_DAY, WS_INS, WS, WD_INS, WD, HM, TD]
+          enum: [TA, RN_15M, RN_60M, RN_12HR, RN_24HR, RN_DAY, WS_INS, WS, WD_INS, WD, HM, TD, AT]
           example: TA
         sourceField:
           type: string

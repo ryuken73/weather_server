@@ -49,7 +49,8 @@ Pack binary: `out_data/aws/pack/` → `/datasets/aws/...` (env `AWS_PACK_DIR`).
 - **권장**: `date=YYYYMMDD` (또는 `YYYY-MM-DD`) → 서버가 KST `0000–2359` 하루로 펼침
 - 레거시: `from`/`to` (YYYYMMDDHHMM)도 허용
 - 1분 exact, 최대 1440 frame
-- `variable` 기본 `TA`. 지원 `TA, RN_15M, RN_60M, RN_12HR, RN_24HR, RN_DAY, WS_INS, WS, WD_INS, WD, HM, TD`. `FULL` 없음. `RN_1HR`는 `RN_60M` 별칭
+- `variable` 기본 `TA`. 지원 `TA, RN_15M, RN_60M, RN_12HR, RN_24HR, RN_DAY, WS_INS, WS, WD_INS, WD, HM, TD, AT`. `FULL` 없음. `RN_1HR`는 `RN_60M` 별칭
+- `AT`: 체감온도 파생 (`sourceField=derived:apparent_temp`). 5–9월 TA+HM, 10–4월 TA+WS(≤1.3m/s면 AT=TA). slug `at`. 상세 `docs/aws-apparent-temp-pack.md`
 - `RN_24HR`: rolling 24h (`accumulation.type=rolling`, `windowMinutes=1440`, binary slug `rn_24hr_rolling`)
 - `RN_DAY`: KST day accumulation (`accumulation.type=day`, slug `rn_day`)
 - **금지**: legacy `/datasets/aws/rn_24hr/...` (구 day-total immutable). rolling은 **`rn_24hr_rolling`만**

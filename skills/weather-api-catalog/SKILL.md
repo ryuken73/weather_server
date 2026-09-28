@@ -1,6 +1,6 @@
 ---
 name: weather-api-catalog
-description: weather_api 서버가 노출하는 HTTP API 카탈로그(producer). Use when calling or documenting /api/hgt500, /api/aws/min, /api/aws/min/pack, /api/aws/stations, /api/sd/stations, /api/sd/pack, /datasets, /ir105, /{type}/{area}/{step}/image, GFS wind, AWS_MIN JSON, IR105 image, OpenAPI, Swagger /docs, Postman/Apidog import, or weather_api base URL contracts.
+description: weather_api 서버가 노출하는 HTTP API 카탈로그(producer). Use when calling or documenting /api/hgt500, /api/aws/min, /api/aws/min/pack, /api/aws/stations, AWS pack AT 체감온도, /api/sd/stations, /api/sd/pack, /datasets, /ir105, /{type}/{area}/{step}/image, GFS wind, AWS_MIN JSON, IR105 image, OpenAPI, Swagger /docs, Postman/Apidog import, or weather_api base URL contracts.
 ---
 
 # weather_api Catalog (Producer)
@@ -60,6 +60,7 @@ description: weather_api 서버가 노출하는 HTTP API 카탈로그(producer).
 | 하루 기온 재생, 일최고/최저, 임계 돌파 (1분) | `GET /api/aws/min/pack?date={YYYYMMDD}&variable=TA` 후 `data.url` binary |
 | 하루 강수 누적 (15분/60분/12시간/24시간 rolling / 당일) | `GET /api/aws/min/pack?date={YYYYMMDD}&variable=RN_60M` (또는 `RN_15M`,`RN_12HR`,`RN_24HR`,`RN_DAY`) |
 | 하루 순간풍속 | `variable=WS_INS` (`WS`/`WD`/`WD_INS`/`HM`/`TD` 동일) |
+| 하루 체감온도 | `variable=AT` (파생: 5–9월 TA+HM, 10–4월 TA+WS; Hub/JSON에 AT 필드 없음). slug `at`. `docs/aws-apparent-temp-pack.md` |
 | 여러 변수 하루 timeline | 같은 pack, `variable=TA,RN_60M,WS_INS` → `{variables, items[]}` (binary는 변수별). `FULL` 없음 |
 | 임의 시각 구간, 전 변수 표/JSON, 2분 호환 | `GET /api/aws/min/range?from=&to=` (max 12h) |
 | 한 시각 전 지점 JSON | `GET /api/aws/min?timestamp_kor=` (기본 2분 snap) |
@@ -78,12 +79,12 @@ description: weather_api 서버가 노출하는 HTTP API 카탈로그(producer).
 
 기본 `intervalMinutes=60` (Probe 실측 기준; 옵션 10/15/30/60). Binary: `data.dtype=int16`, `data.endianness=little`, `data.order=FRAME_MAJOR_STATION_MINOR`, scale 0.1 cm, missing `-32768`, 0cm=0. AWS `/api/aws/min/pack`에 `SD_*` 없음. 복수 변수는 `{variables, items[]}`.
 
-**오늘(KST) pack**은 `main_AWS`가 TA·강수·바람·풍향·습도·이슬점 **전 변수를 기본 5분 scheduler + 수집 완료 후 5–15초 debounce**로 갱신한다. 기동 시에도 1회 즉시 warm한다. API는 기본적으로 manifest만 반환하며 요청 경로에서 rebuild하지 않는다. 준비 전/갱신 지연은 `404 PACK_NOT_WARMED`/`PACK_STALE`, 정상 partial은 `complete:false`, `to`=최신 원천 분, Cache-Control `no-store`. 운영 설정: `AWS_TODAY_PACK_REFRESH`, `AWS_TODAY_PACK_INTERVAL`, `AWS_TODAY_PACK_DEBOUNCE_MS`. 강수 상세: `docs/rainfall-consumer-today-pack-guide.md`.
+**오늘(KST) pack**은 `main_AWS`가 TA·강수·바람·풍향·습도·이슬점·체감온도(AT) **전 변수를 기본 5분 scheduler + 수집 완료 후 5–15초 debounce**로 갱신한다. 기동 시에도 1회 즉시 warm한다. API는 기본적으로 manifest만 반환하며 요청 경로에서 rebuild하지 않는다. 준비 전/갱신 지연은 `404 PACK_NOT_WARMED`/`PACK_STALE`, 정상 partial은 `complete:false`, `to`=최신 원천 분, Cache-Control `no-store`. 운영 설정: `AWS_TODAY_PACK_REFRESH`, `AWS_TODAY_PACK_INTERVAL`, `AWS_TODAY_PACK_DEBOUNCE_MS`. 강수 상세: `docs/rainfall-consumer-today-pack-guide.md`.
 
 Pack binary 계약 (consumer):
 
 - 결측은 모두 Int16 `-32768`. TA: `null`/`-999`/Hub ≤ -50℃/temporal QC. 강수: `null`/음수/Hub ≤ -50mm. **0 mm는 0**. 풍향 0–360(무풍 360). 통계에서 sentinel 제외
-- Temporal QC는 **TA pack만**. 강수·바람·습도·이슬점 pack에는 적용하지 않음. `/exact`·디스크 JSON은 원천 그대로
+- Temporal QC는 **TA pack만**. 강수·바람·습도·이슬점·AT pack에는 적용하지 않음. `/exact`·디스크 JSON은 원천 그대로
 - 과거 `complete:true`는 timestamp 파일 완결. 값 coverage는 `coverage.status` (`ok|degraded|empty`) / `dataComplete`. 전부 결측 pack을 정상으로 보지 말 것
 - `schemaVersion: 4` / `contractRevision: 8`
 - **강수 변수 구분 (필수)**

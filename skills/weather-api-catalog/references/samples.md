@@ -35,6 +35,8 @@ GET {base}/api/aws/min/pack?date=20260812&variable=TA,RN_60M,WS_INS
 GET {base}/api/aws/min/pack?date=20260812&variable=RN_60M
 GET {base}/api/aws/min/pack?date=20260817&variable=RN_24HR
 GET {base}/api/aws/min/pack?date=20260817&variable=RN_DAY
+GET {base}/api/aws/min/pack?date=20251204&variable=AT
+GET {base}/datasets/aws/at/1m/20251204/at-vXXXXXXXX.i16le
 GET {base}/datasets/aws/ta/1m/20260812/ta.i16le
 GET {base}/datasets/aws/rn_60m/1m/20260812/rn_60m.i16le
 GET {base}/datasets/aws/rn_24hr_rolling/1m/20260817/rn_24hr_rolling.i16le

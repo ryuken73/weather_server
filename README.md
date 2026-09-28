@@ -74,7 +74,7 @@ HTTP와 수집은 **별 프로세스**입니다. Pack QC/계약 배포 시 **`se
 | Static `/datasets/aws/...` | pack binary · RN/TA qc-v sidecar |
 
 **Pack 변수** (`FULL` 없음):  
-`TA`, `RN_15M`, `RN_60M`, `RN_12HR`, `RN_24HR`(rolling → slug `rn_24hr_rolling`), `RN_DAY`(당일 누적), `WS`/`WS_INS`, `WD`/`WD_INS`, `HM`, `TD`
+`TA`, `RN_15M`, `RN_60M`, `RN_12HR`, `RN_24HR`(rolling → slug `rn_24hr_rolling`), `RN_DAY`(당일 누적), `WS`/`WS_INS`, `WD`/`WD_INS`, `HM`, `TD`, `AT`(체감온도 파생)
 
 | 구분 | 의미 |
 | --- | --- |
