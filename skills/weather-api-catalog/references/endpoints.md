@@ -31,6 +31,15 @@ Query (모두 optional): `tmfc`, `from`, `to`, `intervalMinutes`, `downsampleFac
 - `manifest.json`, `dataPng`, `metadataJson`, `previewPng`, `anomalyPng`
 - 상세 client flow: `docs/kim_hgt500_frontend_api_spec.md`
 
+## HGT850
+
+HGT500과 동일 계약. 차이만:
+
+- `GET /api/hgt850/latest` · `/api/hgt850/datasets` · `/api/hgt850/datasets/{datasetId}/manifest`
+- `datasetId` = `kim-glob-hgt850-{tmfc}`
+- packing encoding 기본 `800–1800` m
+- 상세: `docs/kim_hgt850_frontend_api_spec.md`
+
 ## AWS_MIN JSON
 
 파일 원천: `in_data/aws/{yyyy-MM-dd}/AWS_MIN_{YYYYMMDDHHMM}.json` (`main_AWS.js` 산출, **1분** 보존).  

@@ -59,9 +59,9 @@
 - 파일: `sd/YYYY-MM-DD/SD_{YYYYMMDDHHMM}.json`
 - pack slug interval: `60m` 등 (`/datasets/sd/sd_tot/60m/{day}/…`)
 
-## HGT500
+## HGT500 / HGT850
 
-- `datasetId` = `kim-glob-hgt500-{tmfc}` (`tmfc` = UTC `YYYYMMDDHH`)
+- `datasetId` = `kim-glob-hgt500-{tmfc}` 또는 `kim-glob-hgt850-{tmfc}` (`tmfc` = UTC `YYYYMMDDHH`)
 - list의 `from`/`to`는 dataset `validTimeStart..validTimeEnd`와 inclusive overlap
 - frame `validTime`은 manifest/metadata의 ISO UTC
 - 기본 output interval: 10분 (dataset마다 `outputFrameIntervalMinutes` 확인)

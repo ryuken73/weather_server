@@ -1,6 +1,6 @@
 ---
 name: weather-api-catalog
-description: weather_api 서버가 노출하는 HTTP API 카탈로그(producer). Use when calling or documenting /api/hgt500, /api/aws/min, /api/aws/min/pack, /api/aws/stations, AWS pack AT 체감온도, /api/sd/stations, /api/sd/pack, /datasets, /ir105, /{type}/{area}/{step}/image, GFS wind, AWS_MIN JSON, IR105 image, OpenAPI, Swagger /docs, Postman/Apidog import, or weather_api base URL contracts.
+description: weather_api 서버가 노출하는 HTTP API 카탈로그(producer). Use when calling or documenting /api/hgt500, /api/hgt850, /api/aws/min, /api/aws/min/pack, /api/aws/stations, AWS pack AT 체감온도, /api/sd/stations, /api/sd/pack, /datasets, /ir105, /{type}/{area}/{step}/image, GFS wind, AWS_MIN JSON, IR105 image, OpenAPI, Swagger /docs, Postman/Apidog import, or weather_api base URL contracts.
 ---
 
 # weather_api Catalog (Producer)
@@ -34,6 +34,7 @@ description: weather_api 서버가 노출하는 HTTP API 카탈로그(producer).
 상세는 `references/endpoints.md`.
 
 - **HGT500**: `GET /api/hgt500/latest`, `GET /api/hgt500/datasets`, `GET /api/hgt500/datasets/{id}/manifest` (302), static `/datasets/{id}/**`
+- **HGT850**: `GET /api/hgt850/latest|datasets|…/manifest` — HGT500과 동일 shape (`kim-glob-hgt850-*`, encoding 800–1800 m). `docs/kim_hgt850_frontend_api_spec.md`
 - **AWS**: `GET /api/aws/stations`, `/api/aws/min`, `/api/aws/min/range` (2분·임의 구간 JSON), `/api/aws/min/pack` (1분 변수별 binary, 기본 TA), `/api/aws/min/exact`, `/api/aws/stat/hourly/pack` (Hub 시간통계 RN, 실험)
 - **적설(SD)**: `GET /api/sd/stations`, `GET /api/sd/pack` (60분 기본, `SD_TOT`/`SD_24H` Int16). AWS 1분 pack과 **별축**. Producer: `docs/snow-producer-pack-requirements.md`
 - **IR105 JSON** (레거시·정리 필요): `GET /ir105/{area}/{step}`, `/batch`, `/fs` — 시각화 주력은 아래 PNG
@@ -47,8 +48,8 @@ description: weather_api 서버가 노출하는 HTTP API 카탈로그(producer).
 1. HTTP path·query·응답 shape → `references/endpoints.md` 또는 `docs/openapi.yaml`
 2. timestamp rounding → `references/timestamps.md`
 3. 샘플 URL / Postman·Apidog → `references/samples.md`
-4. HGT500 클라이언트 플로우·manifest frame schema → `docs/kim_hgt500_frontend_api_spec.md`
-5. packed PNG 복호화·렌더링 → `skills/kim-hgt500-png-pipeline`
+4. HGT500/HGT850 클라이언트 플로우·manifest → `docs/kim_hgt500_frontend_api_spec.md` / `docs/kim_hgt850_frontend_api_spec.md`
+5. packed PNG 복호화·렌더링 → `skills/kim-hgt500-png-pipeline` (level 500/850)
 6. AWS_MIN 파일 채우기·과거 분 확보 → `skills/aws-min-json-pipeline`
 7. 구름/RDR/GFS PNG 생성·parse_netcdf·IR105 JSON debt → `skills/weather-image-pipeline`
 

@@ -6,6 +6,7 @@
 
 ```ts
 const latest = await fetch(`${apiBaseUrl}/api/hgt500/latest`).then((r) => r.json());
+// HGT850: 동일 shape — GET /api/hgt850/latest → kim-glob-hgt850-{tmfc}
 const manifest = await fetch(new URL(latest.manifestUrl, apiBaseUrl)).then((r) => r.json());
 const datasetBase = new URL(`/datasets/${manifest.datasetId}/`, apiBaseUrl);
 ```
@@ -115,7 +116,8 @@ const lon180 = lon > 180 ? lon - 360 : lon;
 
 ## 오류 처리
 
-- `/api/hgt500/latest`가 404면 아직 dataset이 없는 상태다.
+- `/api/hgt500/latest`(또는 `/api/hgt850/latest`)가 404면 아직 해당 level dataset이 없는 상태다.
+- HGT850 API/ID/encoding 차이만: `docs/kim_hgt850_frontend_api_spec.md`
 - manifest fetch가 404면 latest pointer와 static asset 사이 일시 불일치일 수 있으므로 짧게 재시도한다.
 - frame asset이 누락되면 해당 dataset을 실패 처리하고 latest를 다시 조회한다.
 - `schemaVersion !== 1`이면 호환성 검사를 수행한다.

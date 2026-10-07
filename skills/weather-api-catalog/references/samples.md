@@ -15,6 +15,16 @@ GET {base}/api/hgt500/datasets/kim-glob-hgt500-2026070100/manifest
 GET {base}/datasets/kim-glob-hgt500-2026070100/manifest.json
 ```
 
+## HGT850
+
+```text
+GET {base}/api/hgt850/latest
+GET {base}/api/hgt850/datasets?from=2026-07-28T00:00:00Z&to=2026-08-02T00:00:00Z
+GET {base}/api/hgt850/datasets?tmfc=2026072800
+GET {base}/api/hgt850/datasets/kim-glob-hgt850-2026070100/manifest
+GET {base}/datasets/kim-glob-hgt850-2026070100/manifest.json
+```
+
 ## AWS
 
 ```text

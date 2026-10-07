@@ -26,6 +26,8 @@ const env = {
   KIM_TEXT_CYCLE_HOURS: process.env.KIM_TEXT_CYCLE_HOURS || '0,6,12,18',
   KIM_TEXT_CANDIDATE_COUNT: process.env.KIM_TEXT_CANDIDATE_COUNT || '1',
   KIM_TEXT_DELAY_HOURS: process.env.KIM_TEXT_DELAY_HOURS || '12',
+  /** Comma-separated pressure levels for global HGT TXT (e.g. 500,850) */
+  KIM_TEXT_LEVELS: process.env.KIM_TEXT_LEVELS || '500,850',
   TIMEZONE: process.env.TIMEZONE || 'Asia/Seoul',
   LOG_LEVEL: process.env.LOG_LEVEL || 'info',
   MSSQL_HOST: process.env.MSSQL_HOST,

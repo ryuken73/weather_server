@@ -9,7 +9,10 @@ const {addHours, format, parse} = require('date-fns');
 const { Pool } = require('pg');
 const server_util = require('./server_util');
 const { deriveKimTextDirs } = require('./kma_fetch/utils/kim_text_paths');
-const { listHgt500Datasets } = require('./kma_fetch/utils/hgt500_dataset_list');
+const {
+  listHgt500Datasets,
+  listHgt850Datasets
+} = require('./kma_fetch/utils/hgt500_dataset_list');
 const {
   AWS_INTERVAL_MINUTES,
   deriveAwsJsonDir,
@@ -91,6 +94,7 @@ const { outputDir: kimTextOutputDir } = deriveKimTextDirs(process.env.BASE_DIR |
 const kimTextOutDir = resolveLocalPath(kimTextOutputDir);
 const kimTextDatasetDir = path.join(kimTextOutDir, 'datasets');
 const kimTextLatestPath = path.join(kimTextOutDir, 'latest', 'hgt500.json');
+const kimTextLatestHgt850Path = path.join(kimTextOutDir, 'latest', 'hgt850.json');
 const awsJsonDir = deriveAwsJsonDir(__dirname);
 const awsPackDir = deriveAwsPackDir(__dirname);
 const awsHourlyStatJsonDir = deriveAwsHourlyStatJsonDir(__dirname);
@@ -431,6 +435,46 @@ const convertKSTToGMTString = (dateString) => {
   fastify.get('/api/hgt500/datasets/:datasetId/manifest', async (request, reply) => {
     const { datasetId } = request.params;
     if (!/^kim-glob-hgt500-\d{10}$/.test(datasetId)) {
+      return reply.code(400).send({ error: 'Invalid datasetId' });
+    }
+    return reply.redirect(`/datasets/${datasetId}/manifest.json`);
+  });
+
+  fastify.get('/api/hgt850/latest', async (request, reply) => {
+    try {
+      const data = await fs.readFile(kimTextLatestHgt850Path, 'utf8');
+      reply.header('Content-Type', 'application/json');
+      return data;
+    } catch (err) {
+      if (err.code === 'ENOENT') {
+        return reply.code(404).send({ error: 'No KIM HGT850 dataset is available' });
+      }
+      fastify.log.error(err);
+      return reply.code(500).send({ error: 'Internal server error', details: err.message });
+    }
+  });
+
+  /**
+   * List available KIM HGT850 datasets under /datasets.
+   * Query shape matches /api/hgt500/datasets.
+   */
+  fastify.get('/api/hgt850/datasets', async (request, reply) => {
+    try {
+      const result = await listHgt850Datasets(kimTextDatasetDir, request.query || {});
+      reply.header('Cache-Control', 'no-store');
+      return result;
+    } catch (err) {
+      if (err.code === 'BAD_QUERY') {
+        return reply.code(400).send({ error: err.message });
+      }
+      fastify.log.error(err);
+      return reply.code(500).send({ error: 'Internal server error', details: err.message });
+    }
+  });
+
+  fastify.get('/api/hgt850/datasets/:datasetId/manifest', async (request, reply) => {
+    const { datasetId } = request.params;
+    if (!/^kim-glob-hgt850-\d{10}$/.test(datasetId)) {
       return reply.code(400).send({ error: 'Invalid datasetId' });
     }
     return reply.redirect(`/datasets/${datasetId}/manifest.json`);

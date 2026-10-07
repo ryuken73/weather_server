@@ -5,7 +5,7 @@
 | 프로세스 | 역할 |
 | --- | --- |
 | `main_AWS.js` | AWS 1분 JSON 수집 + today/어제 pack warm + **hourly RN(`awsh`) 주기 fetch/warm** |
-| `main_KIM.js` / `main_KIM_TXT.js` | KIM HGT500 관련 수집·변환 트리거 |
+| `main_KIM.js` / `main_KIM_TXT.js` | KIM HGT500/HGT850 TXT 수집·변환 (`KIM_TEXT_LEVELS`, PM2 `kma_fetch_hgt_txt`) |
 | `main_RDR.js` | 레이더 등 |
 | `warm_aws_min_packs.js` | 일/구간 pack 사전 생성 |
 | `backfill_aws_min.js` | 과거 JSON gap 채우기 |

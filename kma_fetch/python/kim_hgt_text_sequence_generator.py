@@ -8,17 +8,27 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
+from kim_hgt_converter.contracts import LEVEL_PROFILES
 from kim_hgt_converter.converter import convert_text_sequence
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Convert KIM API TXT HGT500 frames into a packed PNG sequence.")
+    parser = argparse.ArgumentParser(
+        description="Convert KIM API TXT HGT frames into a packed PNG sequence."
+    )
     parser.add_argument("--input-dir", required=True, help="Directory containing downloaded KIM TXT files.")
     parser.add_argument("--output-dir", required=True, help="Directory for generated dataset assets.")
     parser.add_argument("--tmfc", required=True, help="Analysis time in YYYYMMDDHH format.")
     parser.add_argument("--max-hours", type=int, default=72, help="Maximum forecast hour to include.")
     parser.add_argument("--interval", type=int, default=10, help="Output frame interval in minutes.")
     parser.add_argument("--downsample", type=int, default=3, help="Mean downsample factor.")
+    parser.add_argument(
+        "--level",
+        type=int,
+        default=500,
+        choices=sorted(LEVEL_PROFILES.keys()),
+        help="Pressure level in hPa (500 or 850).",
+    )
     return parser
 
 
@@ -33,6 +43,7 @@ def main() -> int:
         max_hours=int(args.max_hours),
         interval_minutes=int(args.interval),
         downsample_factor=int(args.downsample),
+        level_hpa=int(args.level),
     )
     print(f"manifest_json={result.manifest_json}")
     print(f"frame_count={result.frame_count}")

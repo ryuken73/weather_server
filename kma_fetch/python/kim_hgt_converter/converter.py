@@ -14,8 +14,6 @@ import numpy as np
 
 from kim_hgt_converter.anomaly import DEFAULT_ANOMALY_METADATA
 from kim_hgt_converter.anomaly import compute_local_anomaly
-from kim_hgt_converter.contracts import ANOMALY_VALUE_MAX
-from kim_hgt_converter.contracts import ANOMALY_VALUE_MIN
 from kim_hgt_converter.contracts import DOMAIN
 from kim_hgt_converter.contracts import INTERPOLATION
 from kim_hgt_converter.contracts import OUTPUT_FRAME_INTERVAL_MINUTES
@@ -23,8 +21,10 @@ from kim_hgt_converter.contracts import SCHEMA_VERSION
 from kim_hgt_converter.contracts import SOURCE_FORECAST_INTERVAL_MINUTES
 from kim_hgt_converter.contracts import TARGET_UNIT
 from kim_hgt_converter.contracts import TARGET_VARIABLE
+from kim_hgt_converter.contracts import dataset_id_for
+from kim_hgt_converter.contracts import get_level_profile
 from kim_hgt_converter.kim_text import TextExtractedFrame
-from kim_hgt_converter.kim_text import extract_hgt500_text
+from kim_hgt_converter.kim_text import extract_hgt_text
 from kim_hgt_converter.metadata import build_metadata
 from kim_hgt_converter.metadata import output_stem
 from kim_hgt_converter.metadata import write_json
@@ -51,16 +51,28 @@ class SequenceConversionResult:
     anomaly_pngs: tuple[Path, ...]
 
 
-def convert_single_text(input_path: Path, output_dir: Path, downsample_factor: int = 1) -> ConversionResult:
-    frame = extract_hgt500_text(input_path, downsample_factor=downsample_factor)
-    stem = _frame_output_stem(frame, frame.info.valid_time)
+def convert_single_text(
+    input_path: Path,
+    output_dir: Path,
+    downsample_factor: int = 1,
+    *,
+    level_hpa: float | int = 500,
+) -> ConversionResult:
+    profile = get_level_profile(level_hpa)
+    frame = extract_hgt_text(input_path, level_hpa=level_hpa, downsample_factor=downsample_factor)
+    stem = _frame_output_stem(frame, frame.info.valid_time, level_hpa=level_hpa)
 
     data_png = output_dir / f"{stem}.png"
     metadata_json = output_dir / f"{stem}.json"
     preview_png = output_dir / f"{stem}_preview.png"
     anomaly_png = output_dir / f"{stem}_anomaly.png"
 
-    stats = save_packed_png(frame.values, data_png)
+    value_min = float(profile["value_min"])
+    value_max = float(profile["value_max"])
+    anomaly_min = float(profile["anomaly_value_min"])
+    anomaly_max = float(profile["anomaly_value_max"])
+
+    stats = save_packed_png(frame.values, data_png, value_min=value_min, value_max=value_max)
     anomaly_values = compute_local_anomaly(
         frame.values,
         lon_resolution=frame.info.lon_resolution,
@@ -69,10 +81,10 @@ def convert_single_text(input_path: Path, output_dir: Path, downsample_factor: i
     anomaly_stats = save_packed_png(
         anomaly_values,
         anomaly_png,
-        value_min=ANOMALY_VALUE_MIN,
-        value_max=ANOMALY_VALUE_MAX,
+        value_min=anomaly_min,
+        value_max=anomaly_max,
     )
-    save_preview_png(frame.values, preview_png)
+    save_preview_png(frame.values, preview_png, value_min=value_min, value_max=value_max)
 
     metadata = build_metadata(
         frame.info,
@@ -82,6 +94,7 @@ def convert_single_text(input_path: Path, output_dir: Path, downsample_factor: i
         anomaly_png=anomaly_png.name,
         anomaly_stats=anomaly_stats,
         anomaly_reference=_anomaly_reference_payload(),
+        level_hpa=level_hpa,
     )
     _apply_text_metadata(metadata, frame)
     write_json(metadata_json, metadata)
@@ -101,11 +114,16 @@ def convert_text_sequence(
     max_hours: int = 72,
     interval_minutes: int = OUTPUT_FRAME_INTERVAL_MINUTES,
     downsample_factor: int = 3,
+    *,
+    level_hpa: float | int = 500,
 ) -> SequenceConversionResult:
     if interval_minutes <= 0:
         raise ValueError("interval_minutes must be greater than zero")
 
-    source_frames = _find_text_source_frames(input_dir, tmfc, max_hours, downsample_factor)
+    profile = get_level_profile(level_hpa)
+    source_frames = _find_text_source_frames(
+        input_dir, tmfc, max_hours, downsample_factor, level_hpa=level_hpa
+    )
     if not source_frames:
         raise ValueError(f"no source TXT files found for tmfc={tmfc} in {input_dir}")
 
@@ -148,6 +166,8 @@ def convert_text_sequence(
                     anomaly_pngs=anomaly_pngs,
                     frame_means=frame_means,
                     interval_minutes=interval_minutes,
+                    level_hpa=level_hpa,
+                    profile=profile,
                 )
                 sequence_min = min(sequence_min, float(stats.frame_min))
                 sequence_max = max(sequence_max, float(stats.frame_max))
@@ -166,13 +186,15 @@ def convert_text_sequence(
                 anomaly_pngs=anomaly_pngs,
                 frame_means=frame_means,
                 interval_minutes=interval_minutes,
+                level_hpa=level_hpa,
+                profile=profile,
             )
             sequence_min = min(sequence_min, float(stats.frame_min))
             sequence_max = max(sequence_max, float(stats.frame_max))
 
     manifest = {
         "schemaVersion": SCHEMA_VERSION,
-        "datasetId": f"kim-glob-hgt500-{tmfc}",
+        "datasetId": dataset_id_for(tmfc, level_hpa),
         "variable": TARGET_VARIABLE,
         "unit": TARGET_UNIT,
         "domain": DOMAIN,
@@ -191,6 +213,7 @@ def convert_text_sequence(
         "source": {
             "format": "kim-api-text",
             "downsampleFactor": downsample_factor,
+            "levelHpa": float(profile["level_hpa"]),
         },
         "frames": frame_entries,
     }
@@ -212,12 +235,14 @@ def _find_text_source_frames(
     tmfc: str,
     max_hours: int,
     downsample_factor: int,
+    *,
+    level_hpa: float | int,
 ) -> list[TextExtractedFrame]:
     expected_analysis = _tmfc_to_iso(tmfc)
     selected: list[tuple[int, TextExtractedFrame]] = []
 
     for path in sorted(input_dir.glob("*.txt")):
-        frame = extract_hgt500_text(path, downsample_factor=downsample_factor)
+        frame = extract_hgt_text(path, level_hpa=level_hpa, downsample_factor=downsample_factor)
         forecast_hour = frame.info.forecast_hour
 
         if frame.info.analysis_time != expected_analysis:
@@ -257,19 +282,26 @@ def _write_sequence_frame(
     anomaly_pngs: list[Path],
     frame_means: list[float],
     interval_minutes: int,
+    level_hpa: float | int,
+    profile: dict[str, Any],
 ) -> tuple[int, PackingStats]:
     info = replace(
         current.info,
         valid_time=valid_time,
         forecast_hour=forecast_hour,
     )
-    stem = _frame_output_stem(current, valid_time)
+    stem = _frame_output_stem(current, valid_time, level_hpa=level_hpa)
     data_png = output_dir / f"{stem}.png"
     metadata_json = output_dir / f"{stem}.json"
     preview_png = output_dir / f"{stem}_preview.png"
     anomaly_png = output_dir / f"{stem}_anomaly.png"
 
-    stats = save_packed_png(values, data_png)
+    value_min = float(profile["value_min"])
+    value_max = float(profile["value_max"])
+    anomaly_min = float(profile["anomaly_value_min"])
+    anomaly_max = float(profile["anomaly_value_max"])
+
+    stats = save_packed_png(values, data_png, value_min=value_min, value_max=value_max)
     anomaly_values = compute_local_anomaly(
         values,
         lon_resolution=info.lon_resolution,
@@ -278,10 +310,10 @@ def _write_sequence_frame(
     anomaly_stats = save_packed_png(
         anomaly_values,
         anomaly_png,
-        value_min=ANOMALY_VALUE_MIN,
-        value_max=ANOMALY_VALUE_MAX,
+        value_min=anomaly_min,
+        value_max=anomaly_max,
     )
-    save_preview_png(values, preview_png)
+    save_preview_png(values, preview_png, value_min=value_min, value_max=value_max)
 
     metadata = build_metadata(
         info,
@@ -296,6 +328,7 @@ def _write_sequence_frame(
             "outputFrameIntervalMinutes": interval_minutes,
             "interpolation": INTERPOLATION,
         },
+        level_hpa=level_hpa,
     )
     _apply_text_metadata(metadata, current)
     write_json(metadata_json, metadata)
@@ -320,11 +353,11 @@ def _write_sequence_frame(
     return output_index + 1, stats
 
 
-def _frame_output_stem(frame: TextExtractedFrame, valid_time: str) -> str:
+def _frame_output_stem(frame: TextExtractedFrame, valid_time: str, *, level_hpa: float | int) -> str:
     source_file = frame.source.source_file
     if source_file:
-        return output_stem(Path(source_file), valid_time)
-    return output_stem(frame.info.input_file, valid_time)
+        return output_stem(Path(source_file), valid_time, level_hpa=level_hpa)
+    return output_stem(frame.info.input_file, valid_time, level_hpa=level_hpa)
 
 
 def _apply_text_metadata(metadata: dict[str, Any], frame: TextExtractedFrame) -> None:

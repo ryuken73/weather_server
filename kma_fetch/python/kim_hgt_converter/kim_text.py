@@ -11,11 +11,11 @@ from pathlib import Path
 
 import numpy as np
 
-from kim_hgt_converter.contracts import EXPECTED_LEVEL_INDEX
 from kim_hgt_converter.contracts import TARGET_LEVEL_HPA
 from kim_hgt_converter.contracts import TARGET_STANDARD_NAME
 from kim_hgt_converter.contracts import TARGET_UNIT
 from kim_hgt_converter.contracts import TARGET_VARIABLE
+from kim_hgt_converter.contracts import get_level_profile
 from kim_hgt_converter.dataset import DatasetInfo
 from kim_hgt_converter.dataset import parse_kim_filename
 
@@ -56,13 +56,23 @@ class _ParsedKimText:
     width: int
     height: int
     values: np.ndarray
+    level: float
 
 
-def extract_hgt500_text(input_path: Path, downsample_factor: int = 1) -> TextExtractedFrame:
+def extract_hgt_text(
+    input_path: Path,
+    *,
+    level_hpa: float | int = TARGET_LEVEL_HPA,
+    downsample_factor: int = 1,
+) -> TextExtractedFrame:
     if downsample_factor <= 0:
         raise ValueError("downsample_factor must be greater than zero")
 
-    parsed = _parse_kim_text(input_path)
+    profile = get_level_profile(level_hpa)
+    expected_level = float(profile["level_hpa"])
+    expected_index = int(profile["expected_level_index"])
+
+    parsed = _parse_kim_text(input_path, expected_level=expected_level)
     values = parsed.values
 
     if downsample_factor > 1:
@@ -76,6 +86,8 @@ def extract_hgt500_text(input_path: Path, downsample_factor: int = 1) -> TextExt
     lat_resolution = source_lat_resolution * downsample_factor
     source_file_name = Path(parsed.source_file).name if parsed.source_file else input_path.name
     filename_info = parse_kim_filename(source_file_name)
+    if filename_info["forecast_hour"] is None:
+        filename_info = parse_kim_filename(input_path.name)
     analysis_time = filename_info["analysis_time"]
     forecast_hour = filename_info["forecast_hour"]
     valid_time = _valid_time_from_analysis(analysis_time, forecast_hour)
@@ -86,8 +98,8 @@ def extract_hgt500_text(input_path: Path, downsample_factor: int = 1) -> TextExt
         standard_name=TARGET_STANDARD_NAME,
         unit=TARGET_UNIT,
         dims=("time", "levs", "lats", "lons"),
-        level_index=EXPECTED_LEVEL_INDEX,
-        level_value=TARGET_LEVEL_HPA,
+        level_index=expected_index,
+        level_value=expected_level,
         expected_level_index_matches=True,
         width=int(values.shape[1]),
         height=int(values.shape[0]),
@@ -116,7 +128,12 @@ def extract_hgt500_text(input_path: Path, downsample_factor: int = 1) -> TextExt
     )
 
 
-def _parse_kim_text(input_path: Path) -> _ParsedKimText:
+def extract_hgt500_text(input_path: Path, downsample_factor: int = 1) -> TextExtractedFrame:
+    """Backward-compatible alias for 500 hPa extraction."""
+    return extract_hgt_text(input_path, level_hpa=500, downsample_factor=downsample_factor)
+
+
+def _parse_kim_text(input_path: Path, *, expected_level: float) -> _ParsedKimText:
     source_file: str | None = None
     variable: str | None = None
     unit: str | None = None
@@ -212,8 +229,8 @@ def _parse_kim_text(input_path: Path) -> _ParsedKimText:
     if unit != TARGET_UNIT:
         raise ValueError(f"expected unit '{TARGET_UNIT}', got '{unit}'")
 
-    if level is None or not np.isclose(level, TARGET_LEVEL_HPA, atol=0.001):
-        raise ValueError(f"expected level {TARGET_LEVEL_HPA:g}hPa, got {level}")
+    if level is None or not np.isclose(level, expected_level, atol=0.001):
+        raise ValueError(f"expected level {expected_level:g}hPa, got {level}")
 
     if width is None or height is None or values is None:
         raise ValueError("KIM text grid metadata was not found")
@@ -226,6 +243,7 @@ def _parse_kim_text(input_path: Path) -> _ParsedKimText:
         width=width,
         height=height,
         values=values,
+        level=float(level),
     )
 
 

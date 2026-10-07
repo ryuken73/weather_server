@@ -2,12 +2,12 @@
 
 ## 전체 그림
 
-KIM HGT500 PNG 파이프라인은 `hgt` 500hPa 값을 forecast source frame 사이에서 선형 보간하고, 각 output frame을 RGB PNG에 16-bit 정수로 packing한다.
+KIM HGT PNG 파이프라인은 `hgt` 압력면 값을 forecast source frame 사이에서 선형 보간하고, 각 output frame을 RGB PNG에 16-bit 정수로 packing한다. TXT/Global은 **500hPa와 850hPa**를 `LEVEL_PROFILES` / `--level`로 공유한다.
 
 두 계열이 있다.
 
-- NC/EAsia: `kma_fetch/python/kim_hgt_png_generator.py`
-- TXT/Global: `kma_fetch/python/kim_hgt_text_sequence_generator.py`와 `kim_hgt_converter/*`
+- NC/EAsia: `kma_fetch/python/kim_hgt_png_generator.py` (500 전용 legacy)
+- TXT/Global: `kma_fetch/python/kim_hgt_text_sequence_generator.py`와 `kim_hgt_converter/*` (`--level 500|850`)
 
 ## NC/EAsia 변환
 
@@ -39,20 +39,33 @@ NC/EAsia 스크립트는 metadata/manifest를 만들지 않는 legacy 경로다.
 Entry point:
 
 ```bash
+# HGT500
 python kma_fetch/python/kim_hgt_text_sequence_generator.py \
   --input-dir /data/node_project/weather_data/in_data/kim/hgt500_txt/2026070100 \
   --output-dir /data/node_project/weather_data/out_data/kim/datasets/kim-glob-hgt500-2026070100 \
   --tmfc 2026070100 \
   --max-hours 72 \
   --interval 10 \
-  --downsample 3
+  --downsample 3 \
+  --level 500
+
+# HGT850 (동일 CLI, level/경로/datasetId만 다름)
+python kma_fetch/python/kim_hgt_text_sequence_generator.py \
+  --input-dir /data/node_project/weather_data/in_data/kim/hgt850_txt/2026070100 \
+  --output-dir /data/node_project/weather_data/out_data/kim/datasets/kim-glob-hgt850-2026070100 \
+  --tmfc 2026070100 \
+  --max-hours 72 \
+  --interval 10 \
+  --downsample 3 \
+  --level 850
 ```
 
 동작:
 
 - `kim_hgt_text_sequence_generator.py`는 `kim_hgt_converter.converter.convert_text_sequence()`의 얇은 CLI wrapper다.
 - `input_dir/*.txt`를 파싱하고, `# fname:` 안의 원본 KIM filename에서 `ftNNN`과 `tmfc`를 읽는다.
-- TXT grid metadata에서 `variable=hgt`, `unit=m`, `level=500`, `i=width`, `j=height`를 검증한다.
+- TXT grid metadata에서 `variable=hgt`, `unit=m`, `level`(= `--level`), `i=width`, `j=height`를 검증한다.
+- Watcher(`main_KIM_TXT`)는 `KIM_TEXT_LEVELS` 기본 `500,850`로 두 레벨을 순회한다.
 - `downsample > 1`이면 mean pooling으로 grid를 줄인다. source width/height와 downsample factor는 metadata에 남긴다.
 - source frame의 analysis time이 요청 `tmfc`와 다르면 제외한다.
 - source forecast interval은 3시간이고, 기본 output interval은 10분이다.
@@ -71,10 +84,11 @@ value = A * (1 - ratio) + B * ratio
 
 ## PNG packing
 
-수치 범위:
+수치 범위 (`contracts.LEVEL_PROFILES`):
 
-- HGT 기본: `4500.0..6500.0 m`
-- anomaly 기본: `-512.0..512.0 m`
+- HGT500: `4500.0..6500.0 m`
+- HGT850: `800.0..1800.0 m`
+- anomaly (공통): `-512.0..512.0 m`
 
 Encoding:
 

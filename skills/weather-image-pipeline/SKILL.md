@@ -17,7 +17,7 @@ HTTP 계약은 `weather-api-catalog`. 수집·pack은 `aws-min-json-pipeline` / 
 | --- | --- |
 | GK2A / RDR / AWS **원천 수신** | weather_api `kma_fetch` (`main.js`, `main_RDR.js`, `main_AWS.js`) → `in_data/` |
 | AWS 1분 pack / QC | weather_api (`aws_min_pack`, warm) — **이미지 아님** |
-| KIM global TXT HGT500 packed PNG | weather_api (`main_KIM_TXT` + python) |
+| KIM global TXT HGT500/HGT850 packed PNG | weather_api (`main_KIM_TXT` + python `--level`) |
 | KIM EAsia 레거시 `/kim-*/image` | weather_api `main_KIM.js` + `kma_fetch/python/kim_*_png_generator.py` |
 | GK2A / RDR / AWS 강수 **시각화 PNG** | **parse_netcdf** folder watchers |
 | GFS GRIB fetch + TMP/RH/WIND PNG + wind JSON | **parse_netcdf** (NOAA 직접; weather_api에 fetch 없음) |
@@ -51,7 +51,7 @@ RDR 상세: parse_netcdf `skills/weather-rdr-bin-png/`
 | AWS 강수(레거시 이미지) | `/aws-RN_15M|60M/.../image` | `watcher_image_aws` (pack과 **병행**) |
 | AWS 수치 | `/api/aws/min/pack` | weather_api only |
 | GFS | `/gfs-0p25_*` (`_merc.png`), `/gfs_equ-*` (`.png`), `/gfs-wind_*` (JSON) | parse_netcdf GFS |
-| HGT500 | `/api/hgt500/*` | weather_api (레거시 `/kim-hgt500/image`는 EAsia) |
+| HGT500 / HGT850 | `/api/hgt500/*`, `/api/hgt850/*` | weather_api (레거시 `/kim-hgt500/image`는 EAsia) |
 
 ## 개발 도구
 

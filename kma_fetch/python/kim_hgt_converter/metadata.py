@@ -11,9 +11,7 @@ from typing import Any
 
 from kim_hgt_converter.contracts import ANOMALY_VALUE_MAX
 from kim_hgt_converter.contracts import ANOMALY_VALUE_MIN
-from kim_hgt_converter.contracts import ASSET_TYPE
 from kim_hgt_converter.contracts import DOMAIN
-from kim_hgt_converter.contracts import EXPECTED_LEVEL_INDEX
 from kim_hgt_converter.contracts import OUTPUT_FRAME_INTERVAL_MINUTES
 from kim_hgt_converter.contracts import PACKING
 from kim_hgt_converter.contracts import PNG_MODE
@@ -22,18 +20,19 @@ from kim_hgt_converter.contracts import SOURCE_FORECAST_INTERVAL_MINUTES
 from kim_hgt_converter.contracts import TARGET_STANDARD_NAME
 from kim_hgt_converter.contracts import TARGET_UNIT
 from kim_hgt_converter.contracts import TARGET_VARIABLE
-from kim_hgt_converter.contracts import VALUE_MAX
-from kim_hgt_converter.contracts import VALUE_MIN
+from kim_hgt_converter.contracts import get_level_profile
 from kim_hgt_converter.dataset import DatasetInfo
 from kim_hgt_converter.packing import PackingStats
 
 
-def output_stem(input_path: Path, valid_time: str) -> str:
+def output_stem(input_path: Path, valid_time: str, *, level_hpa: float | int = 500) -> str:
+    profile = get_level_profile(level_hpa)
+    slug = str(profile["slug"])
     prefix = re.sub(r"\.ft\d{3}\.\d{10}\.nc$", "", input_path.name)
     if prefix == input_path.name:
         prefix = input_path.stem
     timestamp = _compact_timestamp(valid_time)
-    return f"{prefix}_hgt500_{timestamp}"
+    return f"{prefix}_{slug}_{timestamp}"
 
 
 def build_metadata(
@@ -45,10 +44,20 @@ def build_metadata(
     anomaly_stats: PackingStats | None = None,
     anomaly_reference: dict[str, Any] | None = None,
     sequence_policy: dict[str, Any] | None = None,
+    *,
+    level_hpa: float | int | None = None,
 ) -> dict[str, Any]:
+    profile = get_level_profile(level_hpa if level_hpa is not None else info.level_value)
+    asset_type = str(profile["asset_type"])
+    value_min = float(profile["value_min"])
+    value_max = float(profile["value_max"])
+    anomaly_min = float(profile.get("anomaly_value_min", ANOMALY_VALUE_MIN))
+    anomaly_max = float(profile.get("anomaly_value_max", ANOMALY_VALUE_MAX))
+    expected_index = int(profile["expected_level_index"])
+
     payload = {
         "schemaVersion": SCHEMA_VERSION,
-        "assetType": ASSET_TYPE,
+        "assetType": asset_type,
         "source": {
             "model": "KIM",
             "domain": DOMAIN,
@@ -63,7 +72,7 @@ def build_metadata(
             "levelIndex": info.level_index,
             "levelValue": info.level_value,
             "levelUnit": "hPa",
-            "expectedLevelIndex": EXPECTED_LEVEL_INDEX,
+            "expectedLevelIndex": expected_index,
             "expectedLevelIndexMatches": info.expected_level_index_matches,
         },
         "grid": {
@@ -87,8 +96,8 @@ def build_metadata(
             "format": "png",
             "mode": PNG_MODE,
             "packing": PACKING,
-            "valueMin": VALUE_MIN,
-            "valueMax": VALUE_MAX,
+            "valueMin": value_min,
+            "valueMax": value_max,
             "r": "high_byte",
             "g": "low_byte",
             "b": "unused",
@@ -127,8 +136,8 @@ def build_metadata(
                 "format": "png",
                 "mode": PNG_MODE,
                 "packing": PACKING,
-                "valueMin": ANOMALY_VALUE_MIN,
-                "valueMax": ANOMALY_VALUE_MAX,
+                "valueMin": anomaly_min,
+                "valueMax": anomaly_max,
                 "r": "high_byte",
                 "g": "low_byte",
                 "b": "unused",

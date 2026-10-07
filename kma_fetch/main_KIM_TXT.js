@@ -17,12 +17,30 @@ const {
   KIM_TEXT_FORECAST_HOURS,
   KIM_TEXT_CYCLE_HOURS,
   KIM_TEXT_CANDIDATE_COUNT,
-  KIM_TEXT_DELAY_HOURS
+  KIM_TEXT_DELAY_HOURS,
+  KIM_TEXT_LEVELS
 } = require('./config/env');
 
 const { inputDir: kimTextInputDir, outputDir: kimTextOutputDir } = deriveKimTextDirs(BASE_DIR);
 const KIM_TEXT_GRID_HEADER_RE = /^#.*=\s*hgt\s*,\s*unit\s*=\s*m\s*,\s*level\s*=\s*[-+0-9.eE]+\s*,\s*i\s*=\s*\d+\s*,\s*j\s*=\s*\d+\s*,\s*map\s*=/i;
 const KIM_TEXT_ERROR_RE = /^#\s*ERROR\b|file is not exist/i;
+
+const LEVEL_PROFILES = Object.freeze({
+  500: {
+    level: 500,
+    slug: 'hgt500',
+    datasetPrefix: 'kim-glob-hgt500',
+    inputSubdir: 'hgt500_txt',
+    latestPointer: 'hgt500.json'
+  },
+  850: {
+    level: 850,
+    slug: 'hgt850',
+    datasetPrefix: 'kim-glob-hgt850',
+    inputSubdir: 'hgt850_txt',
+    latestPointer: 'hgt850.json'
+  }
+});
 
 function parseNumber(value, fallback) {
   const parsed = parseInt(value, 10);
@@ -46,20 +64,37 @@ function parseCycleHours(value) {
   return hours.length > 0 ? hours : [0, 6, 12, 18];
 }
 
+function parseLevels(value) {
+  const levels = String(value || '500')
+    .split(',')
+    .map(item => parseInt(item.trim(), 10))
+    .filter(item => LEVEL_PROFILES[item]);
+  return levels.length > 0 ? [...new Set(levels)] : [500];
+}
+
 function resolveFromKmaFetch(filePath) {
   return path.isAbsolute(filePath) ? filePath : path.join(__dirname, filePath);
 }
 
-function datasetIdFor(tmfc) {
-  return `kim-glob-hgt500-${tmfc}`;
+function levelProfile(level) {
+  const profile = LEVEL_PROFILES[level];
+  if (!profile) {
+    throw new Error(`Unsupported KIM HGT level=${level}`);
+  }
+  return profile;
+}
+
+function datasetIdFor(tmfc, level) {
+  return `${levelProfile(level).datasetPrefix}-${tmfc}`;
 }
 
 function tmfcToIso(tmfc) {
   return `${tmfc.slice(0, 4)}-${tmfc.slice(4, 6)}-${tmfc.slice(6, 8)}T${tmfc.slice(8, 10)}:00:00Z`;
 }
 
-function rawTextFileName(tmfc, forecastHour) {
-  return `kim_glob_prs_hgt500_ft${String(forecastHour).padStart(3, '0')}_${tmfc}.txt`;
+function rawTextFileName(tmfc, forecastHour, level) {
+  const slug = levelProfile(level).slug;
+  return `kim_glob_prs_${slug}_ft${String(forecastHour).padStart(3, '0')}_${tmfc}.txt`;
 }
 
 function formatTmfc(date) {
@@ -151,10 +186,10 @@ async function removeInvalidKimTextFile(filePath, reason) {
   await fs.rm(filePath, { force: true }).catch(() => {});
 }
 
-function generateKimTextPng(inputDir, outputDir, tmfc, maxHours, intervalMinutes, downsampleFactor) {
+function generateKimTextPng(inputDir, outputDir, tmfc, maxHours, intervalMinutes, downsampleFactor, level) {
   return new Promise((resolve, reject) => {
     const scriptPath = resolveFromKmaFetch(KIM_TEXT_PNG_GENERATOR);
-    console.log(`[KIM-TXT-PNG] Starting sequence generation for tmfc=${tmfc}`);
+    console.log(`[KIM-TXT-PNG] Starting sequence generation for tmfc=${tmfc} level=${level}`);
 
     const pythonProcess = spawn('python', [
       '-u',
@@ -164,7 +199,8 @@ function generateKimTextPng(inputDir, outputDir, tmfc, maxHours, intervalMinutes
       '--tmfc', tmfc,
       '--max-hours', String(maxHours),
       '--interval', String(intervalMinutes),
-      '--downsample', String(downsampleFactor)
+      '--downsample', String(downsampleFactor),
+      '--level', String(level)
     ], {
       env: {
         ...process.env
@@ -189,14 +225,15 @@ function generateKimTextPng(inputDir, outputDir, tmfc, maxHours, intervalMinutes
   });
 }
 
-async function updateLatestPointer(outputDir, tmfc) {
-  const datasetId = datasetIdFor(tmfc);
+async function updateLatestPointer(outputDir, tmfc, level) {
+  const profile = levelProfile(level);
+  const datasetId = datasetIdFor(tmfc, level);
   const manifestPath = path.join(outputDir, 'datasets', datasetId, 'manifest.json');
   const manifest = JSON.parse(await fs.readFile(manifestPath, 'utf8'));
   const frames = manifest.frames || [];
   const firstFrame = frames[0] || {};
   const lastFrame = frames[frames.length - 1] || {};
-  const latestPath = path.join(outputDir, 'latest', 'hgt500.json');
+  const latestPath = path.join(outputDir, 'latest', profile.latestPointer);
 
   await writeJsonAtomic(latestPath, {
     datasetId,
@@ -214,21 +251,22 @@ async function updateLatestPointer(outputDir, tmfc) {
   });
 }
 
-async function downloadAndGenerateKimText() {
-  const maxHours = parseNumber(KIM_TEXT_MAX_HOURS, 72);
-  const intervalMinutes = parseNumber(KIM_TEXT_INTERVAL_MINUTES, 10);
-  const downsampleFactor = parseNumber(KIM_TEXT_DOWNSAMPLE_FACTOR, 3);
-  const candidateCount = parseNumber(KIM_TEXT_CANDIDATE_COUNT, 1);
-  const delayHours = parseNumber(KIM_TEXT_DELAY_HOURS, 12);
-  const forecastHours = parseForecastHours(KIM_TEXT_FORECAST_HOURS, maxHours);
-  const cycleHours = parseCycleHours(KIM_TEXT_CYCLE_HOURS);
-  const timeCandidates = mkKimTextFetchCandidates(delayHours, candidateCount, cycleHours);
+async function downloadAndGenerateKimTextForLevel(level, shared) {
+  const {
+    maxHours,
+    intervalMinutes,
+    downsampleFactor,
+    forecastHours,
+    timeCandidates
+  } = shared;
+  const profile = levelProfile(level);
+  const tag = `KIM-TXT-${profile.slug}`;
 
-  console.log(`[KIM-TXT] Fetching candidates:`, timeCandidates);
+  console.log(`[${tag}] Fetching candidates:`, timeCandidates);
 
   for (const tmfc of timeCandidates) {
-    const inputDir = path.join(kimTextInputDir, 'hgt500_txt', tmfc);
-    const datasetId = datasetIdFor(tmfc);
+    const inputDir = path.join(kimTextInputDir, profile.inputSubdir, tmfc);
+    const datasetId = datasetIdFor(tmfc, level);
     const outputDir = path.join(kimTextOutputDir, 'datasets', datasetId);
     const manifestPath = path.join(outputDir, 'manifest.json');
 
@@ -236,7 +274,7 @@ async function downloadAndGenerateKimText() {
     let failedCount = 0;
 
     for (const forecastHour of forecastHours) {
-      const outputPath = path.join(inputDir, rawTextFileName(tmfc, forecastHour));
+      const outputPath = path.join(inputDir, rawTextFileName(tmfc, forecastHour, level));
       if (await hasNonEmptyFile(outputPath)) {
         const validation = await validateKimTextFile(outputPath);
         if (validation.valid) {
@@ -245,9 +283,12 @@ async function downloadAndGenerateKimText() {
         await removeInvalidKimTextFile(outputPath, validation.reason);
       }
 
-      const fetchUrl = api.mkUrl.kimText(API_ENDPOINT_KIM_TXT, tmfc, { hf: forecastHour });
+      const fetchUrl = api.mkUrl.kimText(API_ENDPOINT_KIM_TXT, tmfc, {
+        hf: forecastHour,
+        level
+      });
       try {
-        console.log(`[KIM-TXT] Downloading tmfc=${tmfc}, hf=${forecastHour}`);
+        console.log(`[${tag}] Downloading tmfc=${tmfc}, hf=${forecastHour}`);
         const result = await downloadStreamToFile(fetchUrl, outputPath, {
           timeoutMs: 10 * 60 * 1000
         });
@@ -261,26 +302,26 @@ async function downloadAndGenerateKimText() {
         }
       } catch (err) {
         failedCount++;
-        console.error(`[KIM-TXT] Failed tmfc=${tmfc}, hf=${forecastHour}:`, err.message);
+        console.error(`[${tag}] Failed tmfc=${tmfc}, hf=${forecastHour}:`, err.message);
       }
     }
 
     const missingFiles = [];
     for (const forecastHour of forecastHours) {
-      const outputPath = path.join(inputDir, rawTextFileName(tmfc, forecastHour));
+      const outputPath = path.join(inputDir, rawTextFileName(tmfc, forecastHour, level));
       if (!await hasValidKimTextFile(outputPath)) {
         missingFiles.push(forecastHour);
       }
     }
 
     if (missingFiles.length > 0) {
-      console.log(`[KIM-TXT] Skip generation for tmfc=${tmfc}. Missing hf: ${missingFiles.join(',')}`);
+      console.log(`[${tag}] Skip generation for tmfc=${tmfc}. Missing hf: ${missingFiles.join(',')}`);
       continue;
     }
 
     if (await hasNonEmptyFile(manifestPath) && downloadedCount === 0 && failedCount === 0) {
-      console.log(`[KIM-TXT] Dataset already exists for tmfc=${tmfc}`);
-      await updateLatestPointer(kimTextOutputDir, tmfc);
+      console.log(`[${tag}] Dataset already exists for tmfc=${tmfc}`);
+      await updateLatestPointer(kimTextOutputDir, tmfc, level);
       continue;
     }
 
@@ -291,18 +332,43 @@ async function downloadAndGenerateKimText() {
         tmfc,
         maxHours,
         intervalMinutes,
-        downsampleFactor
+        downsampleFactor,
+        level
       );
-      await updateLatestPointer(kimTextOutputDir, tmfc);
-      console.log(`[KIM-TXT] Dataset ready: ${datasetId}`);
+      await updateLatestPointer(kimTextOutputDir, tmfc, level);
+      console.log(`[${tag}] Dataset ready: ${datasetId}`);
     } catch (err) {
-      console.error(`[KIM-TXT] Generation failed for tmfc=${tmfc}:`, err.message);
+      console.error(`[${tag}] Generation failed for tmfc=${tmfc}:`, err.message);
     }
   }
 }
 
+async function downloadAndGenerateKimText() {
+  const maxHours = parseNumber(KIM_TEXT_MAX_HOURS, 72);
+  const intervalMinutes = parseNumber(KIM_TEXT_INTERVAL_MINUTES, 10);
+  const downsampleFactor = parseNumber(KIM_TEXT_DOWNSAMPLE_FACTOR, 3);
+  const candidateCount = parseNumber(KIM_TEXT_CANDIDATE_COUNT, 1);
+  const delayHours = parseNumber(KIM_TEXT_DELAY_HOURS, 12);
+  const forecastHours = parseForecastHours(KIM_TEXT_FORECAST_HOURS, maxHours);
+  const cycleHours = parseCycleHours(KIM_TEXT_CYCLE_HOURS);
+  const timeCandidates = mkKimTextFetchCandidates(delayHours, candidateCount, cycleHours);
+  const levels = parseLevels(KIM_TEXT_LEVELS);
+  const shared = {
+    maxHours,
+    intervalMinutes,
+    downsampleFactor,
+    forecastHours,
+    timeCandidates
+  };
+
+  console.log(`[KIM-TXT] levels=${levels.join(',')}`);
+  for (const level of levels) {
+    await downloadAndGenerateKimTextForLevel(level, shared);
+  }
+}
+
 schedule.scheduleTask(
-  'kim-text-hgt500',
+  'kim-text-hgt',
   'kim_text_custom',
   () => downloadAndGenerateKimText()
 );

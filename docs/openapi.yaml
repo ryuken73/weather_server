@@ -6,10 +6,11 @@ info:
 
     - Producer 카탈로그: `skills/weather-api-catalog`
     - HGT500 상세 클라이언트 플로우: `docs/kim_hgt500_frontend_api_spec.md`
-    - HGT500 packed PNG 변환/복호화: `skills/kim-hgt500-png-pipeline`
+    - HGT850 상세 클라이언트 플로우: `docs/kim_hgt850_frontend_api_spec.md`
+    - HGT packed PNG 변환/복호화: `skills/kim-hgt500-png-pipeline` (500/850 level 프로필)
     - 태풍/admin API는 이 서버에 없음 (별도 typhoon API 참고)
 
-    미구현(PRD only, 문서화하지 않음): `POST /api/hgt500/datasets`, `GET /api/hgt500/jobs/{jobId}`
+    미구현(PRD only, 문서화하지 않음): `POST /api/hgt500/datasets`, `GET /api/hgt500/jobs/{jobId}` (hgt850 동일)
   version: 1.0.0
   contact:
     name: weather_api
@@ -23,6 +24,8 @@ servers:
 tags:
   - name: hgt500
     description: KIM TXT 기반 500hPa 지위고도 dataset pointer / 목록 / manifest
+  - name: hgt850
+    description: KIM TXT 기반 850hPa 지위고도 dataset pointer / 목록 / manifest (HGT500과 동일 계약)
   - name: aws
     description: AWS_MIN station JSON (`in_data/aws`, main_AWS 산출)
   - name: sd
@@ -181,14 +184,151 @@ paths:
               example:
                 error: Invalid datasetId
 
+  /api/hgt850/latest:
+    get:
+      tags: [hgt850]
+      summary: 최신 KIM HGT850 dataset pointer
+      description: |
+        HGT500 `/api/hgt500/latest`와 동일 shape.
+        encoding 기본 범위는 800–1800 m (`docs/kim_hgt850_frontend_api_spec.md`).
+      operationId: getHgt850Latest
+      responses:
+        '200':
+          description: 최신 dataset pointer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Hgt850DatasetPointer'
+              example:
+                datasetId: kim-glob-hgt850-2026070100
+                tmfc: '2026070100'
+                status: succeeded
+                sourceFormat: kim-api-text
+                downsampleFactor: 3
+                analysisTime: '2026-07-01T00:00:00Z'
+                validTimeStart: '2026-07-01T00:00:00Z'
+                validTimeEnd: '2026-07-04T00:00:00Z'
+                sourceForecastIntervalMinutes: 180
+                outputFrameIntervalMinutes: 10
+                frameCount: 433
+                manifestUrl: /datasets/kim-glob-hgt850-2026070100/manifest.json
+        '404':
+          description: 생성된 dataset 없음
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: No KIM HGT850 dataset is available
+        '500':
+          description: 서버 내부 오류
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorWithDetails'
+
+  /api/hgt850/datasets:
+    get:
+      tags: [hgt850]
+      summary: KIM HGT850 dataset 목록
+      description: |
+        디스크의 성공 HGT850 dataset을 스캔한다. query/응답 shape는 `/api/hgt500/datasets`와 동일.
+        `datasetId`는 `kim-glob-hgt850-{tmfc}`.
+      operationId: listHgt850Datasets
+      parameters:
+        - name: tmfc
+          in: query
+          schema:
+            type: string
+            pattern: '^\d{10}$'
+          description: YYYYMMDDHH UTC
+          example: '2026072800'
+        - name: from
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: intervalMinutes
+          in: query
+          schema:
+            type: integer
+        - name: downsampleFactor
+          in: query
+          schema:
+            type: integer
+        - name: sourceFormat
+          in: query
+          schema:
+            type: string
+        - name: status
+          in: query
+          schema:
+            type: string
+            default: succeeded
+      responses:
+        '200':
+          description: 목록
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                example: no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Hgt850DatasetList'
+        '400':
+          description: query 형식 오류
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: 서버 내부 오류
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorWithDetails'
+
+  /api/hgt850/datasets/{datasetId}/manifest:
+    get:
+      tags: [hgt850]
+      summary: manifest로 redirect
+      description: |
+        `302 Location: /datasets/{datasetId}/manifest.json`
+      operationId: redirectHgt850Manifest
+      parameters:
+        - $ref: '#/components/parameters/Hgt850DatasetId'
+      responses:
+        '302':
+          description: static manifest URL로 redirect
+          headers:
+            Location:
+              schema:
+                type: string
+                example: /datasets/kim-glob-hgt850-2026070100/manifest.json
+        '400':
+          description: datasetId 형식 오류
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: Invalid datasetId
+
   /datasets/{datasetId}/manifest.json:
     get:
-      tags: [static, hgt500]
+      tags: [static, hgt500, hgt850]
       summary: Dataset manifest (static)
       description: |
         `@fastify/static` prefix `/datasets/`.
         Frame asset 경로는 manifest 기준 상대 경로.
-        상세 schema는 `docs/kim_hgt500_frontend_api_spec.md` 참고.
+        HGT500: `docs/kim_hgt500_frontend_api_spec.md`. HGT850: `docs/kim_hgt850_frontend_api_spec.md`.
       operationId: getHgt500ManifestStatic
       parameters:
         - $ref: '#/components/parameters/DatasetId'
@@ -204,7 +344,7 @@ paths:
 
   /datasets/{datasetId}/{assetName}:
     get:
-      tags: [static, hgt500]
+      tags: [static, hgt500, hgt850]
       summary: Dataset asset (static)
       description: |
         dataPng / metadataJson / previewPng / anomalyPng 등.
@@ -930,8 +1070,16 @@ components:
       required: true
       schema:
         type: string
-        pattern: '^kim-glob-hgt500-\d{10}$'
+        pattern: '^kim-glob-hgt(500|850)-\d{10}$'
       example: kim-glob-hgt500-2026070100
+    Hgt850DatasetId:
+      name: datasetId
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: '^kim-glob-hgt850-\d{10}$'
+      example: kim-glob-hgt850-2026070100
     Ir105Area:
       name: area
       in: path
@@ -1007,6 +1155,20 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/Hgt500DatasetPointer'
+      required: [items]
+
+    Hgt850DatasetPointer:
+      allOf:
+        - $ref: '#/components/schemas/Hgt500DatasetPointer'
+      description: HGT500 pointer와 동일 shape. datasetId는 kim-glob-hgt850-{tmfc}
+
+    Hgt850DatasetList:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Hgt850DatasetPointer'
       required: [items]
 
     Hgt500Manifest:

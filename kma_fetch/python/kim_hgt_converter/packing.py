@@ -76,15 +76,29 @@ def save_packed_png(
     return stats
 
 
-def make_preview_rgb(values: np.ndarray) -> np.ndarray:
-    finite_values = np.where(np.isfinite(values), values, VALUE_MIN)
-    normalized = np.clip((finite_values - VALUE_MIN) / (VALUE_MAX - VALUE_MIN), 0.0, 1.0)
+def make_preview_rgb(
+    values: np.ndarray,
+    value_min: float = VALUE_MIN,
+    value_max: float = VALUE_MAX,
+) -> np.ndarray:
+    finite_values = np.where(np.isfinite(values), values, value_min)
+    span = value_max - value_min
+    if span <= 0:
+        raise ValueError("value_max must be greater than value_min")
+    normalized = np.clip((finite_values - value_min) / span, 0.0, 1.0)
     return _rainbow(normalized)
 
 
-def save_preview_png(values: np.ndarray, output_path: Path) -> None:
+def save_preview_png(
+    values: np.ndarray,
+    output_path: Path,
+    value_min: float = VALUE_MIN,
+    value_max: float = VALUE_MAX,
+) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    Image.fromarray(make_preview_rgb(values), mode="RGB").save(output_path)
+    Image.fromarray(make_preview_rgb(values, value_min=value_min, value_max=value_max), mode="RGB").save(
+        output_path
+    )
 
 
 def _rainbow(t: np.ndarray) -> np.ndarray:

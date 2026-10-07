@@ -1,15 +1,32 @@
 const fs = require('fs/promises');
 const path = require('path');
 
-const DATASET_ID_RE = /^kim-glob-hgt500-(\d{10})$/;
+const DATASET_ID_RE_BY_LEVEL = Object.freeze({
+  500: /^kim-glob-hgt500-(\d{10})$/,
+  850: /^kim-glob-hgt850-(\d{10})$/
+});
+
+/** @deprecated use datasetIdReForLevel(500) */
+const DATASET_ID_RE = DATASET_ID_RE_BY_LEVEL[500];
+
+function datasetIdReForLevel(level = 500) {
+  const re = DATASET_ID_RE_BY_LEVEL[Number(level)];
+  if (!re) {
+    const err = new Error(`Unsupported HGT list level=${level}`);
+    err.code = 'BAD_QUERY';
+    throw err;
+  }
+  return re;
+}
 
 /**
- * Build list item from datasetId + manifest (same shape as /api/hgt500/latest fields).
+ * Build list item from datasetId + manifest (same shape as /api/hgt500|hgt850/latest fields).
  * @param {string} datasetId
  * @param {object} manifest
+ * @param {RegExp} [idRe]
  */
-function itemFromManifest(datasetId, manifest) {
-  const match = DATASET_ID_RE.exec(datasetId);
+function itemFromManifest(datasetId, manifest, idRe = DATASET_ID_RE) {
+  const match = idRe.exec(datasetId);
   const tmfc = match ? match[1] : null;
   const frames = Array.isArray(manifest.frames) ? manifest.frames : [];
   const firstFrame = frames[0] || {};
@@ -78,8 +95,11 @@ function rangesOverlap(aStart, aEnd, bStart, bEnd) {
  *   sourceFormat?: string,
  *   status?: string,
  * }} [query]
+ * @param {{ level?: number }} [options]
  */
-async function listHgt500Datasets(datasetDir, query = {}) {
+async function listHgtDatasets(datasetDir, query = {}, options = {}) {
+  const level = options.level == null ? 500 : Number(options.level);
+  const idRe = datasetIdReForLevel(level);
   const statusFilter = query.status == null || query.status === ''
     ? 'succeeded'
     : String(query.status);
@@ -125,7 +145,7 @@ async function listHgt500Datasets(datasetDir, query = {}) {
   const items = [];
   for (const ent of entries) {
     if (!ent.isDirectory()) continue;
-    const match = DATASET_ID_RE.exec(ent.name);
+    const match = idRe.exec(ent.name);
     if (!match) continue;
     if (tmfcFilter && match[1] !== tmfcFilter) continue;
 
@@ -140,7 +160,7 @@ async function listHgt500Datasets(datasetDir, query = {}) {
     if (!manifest || typeof manifest !== 'object') continue;
     if (manifest.schemaVersion != null && Number(manifest.schemaVersion) !== 1) continue;
 
-    const item = itemFromManifest(ent.name, manifest);
+    const item = itemFromManifest(ent.name, manifest, idRe);
     if (statusFilter !== 'all' && item.status !== statusFilter) continue;
     if (sourceFormatFilter && item.sourceFormat !== sourceFormatFilter) continue;
     if (
@@ -170,9 +190,21 @@ async function listHgt500Datasets(datasetDir, query = {}) {
   return { items };
 }
 
+async function listHgt500Datasets(datasetDir, query = {}) {
+  return listHgtDatasets(datasetDir, query, { level: 500 });
+}
+
+async function listHgt850Datasets(datasetDir, query = {}) {
+  return listHgtDatasets(datasetDir, query, { level: 850 });
+}
+
 module.exports = {
   DATASET_ID_RE,
+  DATASET_ID_RE_BY_LEVEL,
+  datasetIdReForLevel,
   itemFromManifest,
+  listHgtDatasets,
   listHgt500Datasets,
+  listHgt850Datasets,
   tmfcToIso,
 };

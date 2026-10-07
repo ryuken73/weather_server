@@ -33,7 +33,15 @@ class DatasetInfo:
 
 
 def parse_kim_filename(filename: str) -> dict[str, int | str | None]:
-    match = re.search(r"\.ft(?P<forecast>\d{3})\.(?P<analysis>\d{10})\.nc$", filename)
+    name = Path(filename).name
+    match = re.search(r"\.ft(?P<forecast>\d{3})\.(?P<analysis>\d{10})\.nc$", name)
+    if not match:
+        # API TXT downloads: kim_glob_prs_hgt500_ft000_2026070100.txt
+        match = re.search(
+            r"_ft(?P<forecast>\d{3})_(?P<analysis>\d{10})(?:\.txt)?$",
+            name,
+            flags=re.IGNORECASE,
+        )
     if not match:
         return {"forecast_hour": None, "analysis_time": None}
 
