@@ -7,10 +7,11 @@ info:
     - Producer 카탈로그: `skills/weather-api-catalog`
     - HGT500 상세 클라이언트 플로우: `docs/kim_hgt500_frontend_api_spec.md`
     - HGT850 상세 클라이언트 플로우: `docs/kim_hgt850_frontend_api_spec.md`
-    - HGT packed PNG 변환/복호화: `skills/kim-hgt500-png-pipeline` (500/850 level 프로필)
+    - TMP500 상세 클라이언트 플로우: `docs/kim_tmp500_frontend_api_spec.md`
+    - HGT/TMP packed PNG 변환/복호화: `skills/kim-hgt500-png-pipeline` (product profiles)
     - 태풍/admin API는 이 서버에 없음 (별도 typhoon API 참고)
 
-    미구현(PRD only, 문서화하지 않음): `POST /api/hgt500/datasets`, `GET /api/hgt500/jobs/{jobId}` (hgt850 동일)
+    미구현(PRD only, 문서화하지 않음): `POST /api/hgt500/datasets`, `GET /api/hgt500/jobs/{jobId}` (hgt850/tmp500 동일)
   version: 1.0.0
   contact:
     name: weather_api
@@ -26,6 +27,8 @@ tags:
     description: KIM TXT 기반 500hPa 지위고도 dataset pointer / 목록 / manifest
   - name: hgt850
     description: KIM TXT 기반 850hPa 지위고도 dataset pointer / 목록 / manifest (HGT500과 동일 계약)
+  - name: tmp500
+    description: KIM TXT 기반 500hPa 기온 dataset pointer / 목록 / manifest (HGT500과 동일 계약, packing °C)
   - name: aws
     description: AWS_MIN station JSON (`in_data/aws`, main_AWS 산출)
   - name: sd
@@ -321,9 +324,146 @@ paths:
               example:
                 error: Invalid datasetId
 
+  /api/tmp500/latest:
+    get:
+      tags: [tmp500]
+      summary: 최신 KIM TMP500 dataset pointer
+      description: |
+        HGT500 `/api/hgt500/latest`와 동일 shape.
+        packing은 °C, encoding −70…+5 (`docs/kim_tmp500_frontend_api_spec.md`).
+      operationId: getTmp500Latest
+      responses:
+        '200':
+          description: 최신 dataset pointer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Tmp500DatasetPointer'
+              example:
+                datasetId: kim-glob-tmp500-2026102912
+                tmfc: '2026102912'
+                status: succeeded
+                sourceFormat: kim-api-text
+                downsampleFactor: 3
+                analysisTime: '2026-10-29T12:00:00Z'
+                validTimeStart: '2026-10-29T12:00:00Z'
+                validTimeEnd: '2026-11-01T12:00:00Z'
+                sourceForecastIntervalMinutes: 180
+                outputFrameIntervalMinutes: 10
+                frameCount: 433
+                manifestUrl: /datasets/kim-glob-tmp500-2026102912/manifest.json
+        '404':
+          description: 생성된 dataset 없음
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: No KIM TMP500 dataset is available
+        '500':
+          description: 서버 내부 오류
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorWithDetails'
+
+  /api/tmp500/datasets:
+    get:
+      tags: [tmp500]
+      summary: KIM TMP500 dataset 목록
+      description: |
+        디스크의 성공 TMP500 dataset을 스캔한다. query/응답 shape는 `/api/hgt500/datasets`와 동일.
+        `datasetId`는 `kim-glob-tmp500-{tmfc}`.
+      operationId: listTmp500Datasets
+      parameters:
+        - name: tmfc
+          in: query
+          schema:
+            type: string
+            pattern: '^\d{10}$'
+          description: YYYYMMDDHH UTC
+          example: '2026102912'
+        - name: from
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: intervalMinutes
+          in: query
+          schema:
+            type: integer
+        - name: downsampleFactor
+          in: query
+          schema:
+            type: integer
+        - name: sourceFormat
+          in: query
+          schema:
+            type: string
+        - name: status
+          in: query
+          schema:
+            type: string
+            default: succeeded
+      responses:
+        '200':
+          description: 목록
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                example: no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Tmp500DatasetList'
+        '400':
+          description: query 형식 오류
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: 서버 내부 오류
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorWithDetails'
+
+  /api/tmp500/datasets/{datasetId}/manifest:
+    get:
+      tags: [tmp500]
+      summary: manifest로 redirect
+      description: |
+        `302 Location: /datasets/{datasetId}/manifest.json`
+      operationId: redirectTmp500Manifest
+      parameters:
+        - $ref: '#/components/parameters/Tmp500DatasetId'
+      responses:
+        '302':
+          description: static manifest URL로 redirect
+          headers:
+            Location:
+              schema:
+                type: string
+                example: /datasets/kim-glob-tmp500-2026102912/manifest.json
+        '400':
+          description: datasetId 형식 오류
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: Invalid datasetId
+
   /datasets/{datasetId}/manifest.json:
     get:
-      tags: [static, hgt500, hgt850]
+      tags: [static, hgt500, hgt850, tmp500]
       summary: Dataset manifest (static)
       description: |
         `@fastify/static` prefix `/datasets/`.
@@ -1080,6 +1220,14 @@ components:
         type: string
         pattern: '^kim-glob-hgt850-\d{10}$'
       example: kim-glob-hgt850-2026070100
+    Tmp500DatasetId:
+      name: datasetId
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: '^kim-glob-tmp500-\d{10}$'
+      example: kim-glob-tmp500-2026102912
     Ir105Area:
       name: area
       in: path
@@ -1169,6 +1317,20 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/Hgt850DatasetPointer'
+      required: [items]
+
+    Tmp500DatasetPointer:
+      allOf:
+        - $ref: '#/components/schemas/Hgt500DatasetPointer'
+      description: HGT500 pointer와 동일 shape. datasetId는 kim-glob-tmp500-{tmfc}
+
+    Tmp500DatasetList:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Tmp500DatasetPointer'
       required: [items]
 
     Hgt500Manifest:

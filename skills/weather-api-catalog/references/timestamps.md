@@ -61,7 +61,7 @@
 
 ## HGT500 / HGT850
 
-- `datasetId` = `kim-glob-hgt500-{tmfc}` 또는 `kim-glob-hgt850-{tmfc}` (`tmfc` = UTC `YYYYMMDDHH`)
+- `datasetId` = `kim-glob-hgt500-{tmfc}` / `kim-glob-hgt850-{tmfc}` / `kim-glob-tmp500-{tmfc}` (`tmfc` = UTC `YYYYMMDDHH`)
 - list의 `from`/`to`는 dataset `validTimeStart..validTimeEnd`와 inclusive overlap
 - frame `validTime`은 manifest/metadata의 ISO UTC
 - 기본 output interval: 10분 (dataset마다 `outputFrameIntervalMinutes` 확인)

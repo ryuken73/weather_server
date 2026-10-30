@@ -40,6 +40,15 @@ HGT500과 동일 계약. 차이만:
 - packing encoding 기본 `800–1800` m
 - 상세: `docs/kim_hgt850_frontend_api_spec.md`
 
+## TMP500
+
+HGT500과 동일 계약. 차이만:
+
+- `GET /api/tmp500/latest` · `/api/tmp500/datasets` · `/api/tmp500/datasets/{datasetId}/manifest`
+- `datasetId` = `kim-glob-tmp500-{tmfc}`
+- Hub `name=T`, packing °C (−70…+5), anomaly 없음
+- 상세: `docs/kim_tmp500_frontend_api_spec.md`
+
 ## AWS_MIN JSON
 
 파일 원천: `in_data/aws/{yyyy-MM-dd}/AWS_MIN_{YYYYMMDDHHMM}.json` (`main_AWS.js` 산출, **1분** 보존).  
