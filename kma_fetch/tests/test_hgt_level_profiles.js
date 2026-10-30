@@ -9,21 +9,27 @@ const os = require('os');
 const {
   DATASET_ID_RE,
   DATASET_ID_RE_BY_LEVEL,
+  DATASET_ID_RE_BY_PRODUCT,
   listHgt500Datasets,
-  listHgt850Datasets
+  listHgt850Datasets,
+  listTmp500Datasets
 } = require('../utils/hgt500_dataset_list');
 
 assert.ok(DATASET_ID_RE.test('kim-glob-hgt500-2026070100'));
 assert.ok(!DATASET_ID_RE.test('kim-glob-hgt850-2026070100'));
 assert.ok(DATASET_ID_RE_BY_LEVEL[850].test('kim-glob-hgt850-2026070100'));
 assert.ok(!DATASET_ID_RE_BY_LEVEL[850].test('kim-glob-hgt500-2026070100'));
+assert.ok(DATASET_ID_RE_BY_PRODUCT.tmp500.test('kim-glob-tmp500-2026102912'));
+assert.ok(!DATASET_ID_RE_BY_PRODUCT.tmp500.test('kim-glob-hgt500-2026102912'));
 
 async function main() {
   const tmp = await fsp.mkdtemp(path.join(os.tmpdir(), 'hgt-levels-'));
   const ds500 = path.join(tmp, 'kim-glob-hgt500-2026070100');
   const ds850 = path.join(tmp, 'kim-glob-hgt850-2026070100');
+  const dsTmp = path.join(tmp, 'kim-glob-tmp500-2026102912');
   await fsp.mkdir(ds500, { recursive: true });
   await fsp.mkdir(ds850, { recursive: true });
+  await fsp.mkdir(dsTmp, { recursive: true });
 
   const manifestBase = {
     schemaVersion: 1,
@@ -43,14 +49,28 @@ async function main() {
     path.join(ds850, 'manifest.json'),
     JSON.stringify({ ...manifestBase, datasetId: 'kim-glob-hgt850-2026070100' })
   );
+  await fsp.writeFile(
+    path.join(dsTmp, 'manifest.json'),
+    JSON.stringify({
+      ...manifestBase,
+      datasetId: 'kim-glob-tmp500-2026102912',
+      frames: [
+        { index: 0, validTime: '2026-10-29T12:00:00Z' },
+        { index: 1, validTime: '2026-10-29T12:10:00Z' }
+      ]
+    })
+  );
 
   const r500 = await listHgt500Datasets(tmp);
   const r850 = await listHgt850Datasets(tmp);
+  const rTmp = await listTmp500Datasets(tmp);
   assert.strictEqual(r500.items.length, 1);
   assert.strictEqual(r500.items[0].datasetId, 'kim-glob-hgt500-2026070100');
   assert.strictEqual(r850.items.length, 1);
   assert.strictEqual(r850.items[0].datasetId, 'kim-glob-hgt850-2026070100');
   assert.strictEqual(r850.items[0].manifestUrl, '/datasets/kim-glob-hgt850-2026070100/manifest.json');
+  assert.strictEqual(rTmp.items.length, 1);
+  assert.strictEqual(rTmp.items[0].datasetId, 'kim-glob-tmp500-2026102912');
 
   console.log('OK test_hgt_level_profiles');
 }

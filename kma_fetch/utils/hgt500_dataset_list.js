@@ -6,6 +6,12 @@ const DATASET_ID_RE_BY_LEVEL = Object.freeze({
   850: /^kim-glob-hgt850-(\d{10})$/
 });
 
+const DATASET_ID_RE_BY_PRODUCT = Object.freeze({
+  hgt500: DATASET_ID_RE_BY_LEVEL[500],
+  hgt850: DATASET_ID_RE_BY_LEVEL[850],
+  tmp500: /^kim-glob-tmp500-(\d{10})$/
+});
+
 /** @deprecated use datasetIdReForLevel(500) */
 const DATASET_ID_RE = DATASET_ID_RE_BY_LEVEL[500];
 
@@ -13,6 +19,16 @@ function datasetIdReForLevel(level = 500) {
   const re = DATASET_ID_RE_BY_LEVEL[Number(level)];
   if (!re) {
     const err = new Error(`Unsupported HGT list level=${level}`);
+    err.code = 'BAD_QUERY';
+    throw err;
+  }
+  return re;
+}
+
+function datasetIdReForProduct(product = 'hgt500') {
+  const re = DATASET_ID_RE_BY_PRODUCT[String(product)];
+  if (!re) {
+    const err = new Error(`Unsupported KIM list product=${product}`);
     err.code = 'BAD_QUERY';
     throw err;
   }
@@ -95,11 +111,12 @@ function rangesOverlap(aStart, aEnd, bStart, bEnd) {
  *   sourceFormat?: string,
  *   status?: string,
  * }} [query]
- * @param {{ level?: number }} [options]
+ * @param {{ level?: number, product?: string }} [options]
  */
 async function listHgtDatasets(datasetDir, query = {}, options = {}) {
-  const level = options.level == null ? 500 : Number(options.level);
-  const idRe = datasetIdReForLevel(level);
+  const idRe = options.product
+    ? datasetIdReForProduct(options.product)
+    : datasetIdReForLevel(options.level == null ? 500 : Number(options.level));
   const statusFilter = query.status == null || query.status === ''
     ? 'succeeded'
     : String(query.status);
@@ -198,13 +215,20 @@ async function listHgt850Datasets(datasetDir, query = {}) {
   return listHgtDatasets(datasetDir, query, { level: 850 });
 }
 
+async function listTmp500Datasets(datasetDir, query = {}) {
+  return listHgtDatasets(datasetDir, query, { product: 'tmp500' });
+}
+
 module.exports = {
   DATASET_ID_RE,
   DATASET_ID_RE_BY_LEVEL,
+  DATASET_ID_RE_BY_PRODUCT,
   datasetIdReForLevel,
+  datasetIdReForProduct,
   itemFromManifest,
   listHgtDatasets,
   listHgt500Datasets,
   listHgt850Datasets,
+  listTmp500Datasets,
   tmfcToIso,
 };

@@ -18,15 +18,20 @@ from kim_hgt_converter.contracts import PNG_MODE
 from kim_hgt_converter.contracts import SCHEMA_VERSION
 from kim_hgt_converter.contracts import SOURCE_FORECAST_INTERVAL_MINUTES
 from kim_hgt_converter.contracts import TARGET_STANDARD_NAME
-from kim_hgt_converter.contracts import TARGET_UNIT
 from kim_hgt_converter.contracts import TARGET_VARIABLE
-from kim_hgt_converter.contracts import get_level_profile
+from kim_hgt_converter.contracts import resolve_product
 from kim_hgt_converter.dataset import DatasetInfo
 from kim_hgt_converter.packing import PackingStats
 
 
-def output_stem(input_path: Path, valid_time: str, *, level_hpa: float | int = 500) -> str:
-    profile = get_level_profile(level_hpa)
+def output_stem(
+    input_path: Path,
+    valid_time: str,
+    *,
+    level_hpa: float | int | None = 500,
+    product: str | None = None,
+) -> str:
+    profile = resolve_product(product=product, level_hpa=level_hpa)
     slug = str(profile["slug"])
     prefix = re.sub(r"\.ft\d{3}\.\d{10}\.nc$", "", input_path.name)
     if prefix == input_path.name:
@@ -46,14 +51,19 @@ def build_metadata(
     sequence_policy: dict[str, Any] | None = None,
     *,
     level_hpa: float | int | None = None,
+    product: str | None = None,
 ) -> dict[str, Any]:
-    profile = get_level_profile(level_hpa if level_hpa is not None else info.level_value)
+    profile = resolve_product(
+        product=product,
+        level_hpa=level_hpa if level_hpa is not None else info.level_value,
+    )
     asset_type = str(profile["asset_type"])
     value_min = float(profile["value_min"])
     value_max = float(profile["value_max"])
     anomaly_min = float(profile.get("anomaly_value_min", ANOMALY_VALUE_MIN))
     anomaly_max = float(profile.get("anomaly_value_max", ANOMALY_VALUE_MAX))
     expected_index = int(profile["expected_level_index"])
+    variable_name = info.variable_name or str(profile.get("variable") or TARGET_VARIABLE)
 
     payload = {
         "schemaVersion": SCHEMA_VERSION,
@@ -65,9 +75,9 @@ def build_metadata(
             "referenceScript": "kma_fetch/python/kim_hgt_text_sequence_generator.py",
         },
         "variable": {
-            "name": TARGET_VARIABLE,
-            "standardName": info.standard_name or TARGET_STANDARD_NAME,
-            "unit": info.unit,
+            "name": variable_name,
+            "standardName": info.standard_name or str(profile.get("standard_name") or TARGET_STANDARD_NAME),
+            "unit": info.unit or str(profile.get("store_unit")),
             "dims": list(info.dims),
             "levelIndex": info.level_index,
             "levelValue": info.level_value,
@@ -128,7 +138,7 @@ def build_metadata(
     if anomaly_png and anomaly_stats:
         payload["assets"]["anomalyPng"] = anomaly_png
         payload["anomaly"] = {
-            "unit": TARGET_UNIT,
+            "unit": info.unit or str(profile.get("store_unit")),
             "reference": (anomaly_reference or {}).get("reference", "local-bilinear-offset-background"),
             "backgroundOffsetsDegrees": (anomaly_reference or {}).get("backgroundOffsetsDegrees", []),
             "smoothing": (anomaly_reference or {}).get("smoothing", "none"),

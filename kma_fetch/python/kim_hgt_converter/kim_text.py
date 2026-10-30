@@ -12,10 +12,8 @@ from pathlib import Path
 import numpy as np
 
 from kim_hgt_converter.contracts import TARGET_LEVEL_HPA
-from kim_hgt_converter.contracts import TARGET_STANDARD_NAME
-from kim_hgt_converter.contracts import TARGET_UNIT
-from kim_hgt_converter.contracts import TARGET_VARIABLE
-from kim_hgt_converter.contracts import get_level_profile
+from kim_hgt_converter.contracts import apply_store_transform
+from kim_hgt_converter.contracts import resolve_product
 from kim_hgt_converter.dataset import DatasetInfo
 from kim_hgt_converter.dataset import parse_kim_filename
 
@@ -57,23 +55,33 @@ class _ParsedKimText:
     height: int
     values: np.ndarray
     level: float
+    variable: str
+    unit: str
 
 
-def extract_hgt_text(
+def extract_kim_text(
     input_path: Path,
     *,
-    level_hpa: float | int = TARGET_LEVEL_HPA,
+    product: str | None = None,
+    level_hpa: float | int | None = None,
     downsample_factor: int = 1,
 ) -> TextExtractedFrame:
     if downsample_factor <= 0:
         raise ValueError("downsample_factor must be greater than zero")
 
-    profile = get_level_profile(level_hpa)
+    profile = resolve_product(product=product, level_hpa=level_hpa)
     expected_level = float(profile["level_hpa"])
     expected_index = int(profile["expected_level_index"])
+    expected_variable = str(profile["variable"])
+    expected_unit = str(profile["source_unit"])
 
-    parsed = _parse_kim_text(input_path, expected_level=expected_level)
-    values = parsed.values
+    parsed = _parse_kim_text(
+        input_path,
+        expected_level=expected_level,
+        expected_variable=expected_variable,
+        expected_unit=expected_unit,
+    )
+    values = apply_store_transform(parsed.values, profile)
 
     if downsample_factor > 1:
         values = _downsample_mean(values, downsample_factor)
@@ -94,9 +102,9 @@ def extract_hgt_text(
 
     info = DatasetInfo(
         input_file=input_path,
-        variable_name=TARGET_VARIABLE,
-        standard_name=TARGET_STANDARD_NAME,
-        unit=TARGET_UNIT,
+        variable_name=str(profile["variable"]),
+        standard_name=str(profile["standard_name"]),
+        unit=str(profile["store_unit"]),
         dims=("time", "levs", "lats", "lons"),
         level_index=expected_index,
         level_value=expected_level,
@@ -128,12 +136,32 @@ def extract_hgt_text(
     )
 
 
+def extract_hgt_text(
+    input_path: Path,
+    *,
+    level_hpa: float | int = TARGET_LEVEL_HPA,
+    downsample_factor: int = 1,
+) -> TextExtractedFrame:
+    """Backward-compatible HGT extractor (level 500/850)."""
+    return extract_kim_text(
+        input_path,
+        level_hpa=level_hpa,
+        downsample_factor=downsample_factor,
+    )
+
+
 def extract_hgt500_text(input_path: Path, downsample_factor: int = 1) -> TextExtractedFrame:
     """Backward-compatible alias for 500 hPa extraction."""
     return extract_hgt_text(input_path, level_hpa=500, downsample_factor=downsample_factor)
 
 
-def _parse_kim_text(input_path: Path, *, expected_level: float) -> _ParsedKimText:
+def _parse_kim_text(
+    input_path: Path,
+    *,
+    expected_level: float,
+    expected_variable: str,
+    expected_unit: str,
+) -> _ParsedKimText:
     source_file: str | None = None
     variable: str | None = None
     unit: str | None = None
@@ -223,11 +251,11 @@ def _parse_kim_text(input_path: Path, *, expected_level: float) -> _ParsedKimTex
 
     finalize_row()
 
-    if variable != TARGET_VARIABLE:
-        raise ValueError(f"expected variable '{TARGET_VARIABLE}', got '{variable}'")
+    if variable != expected_variable:
+        raise ValueError(f"expected variable '{expected_variable}', got '{variable}'")
 
-    if unit != TARGET_UNIT:
-        raise ValueError(f"expected unit '{TARGET_UNIT}', got '{unit}'")
+    if unit != expected_unit:
+        raise ValueError(f"expected unit '{expected_unit}', got '{unit}'")
 
     if level is None or not np.isclose(level, expected_level, atol=0.001):
         raise ValueError(f"expected level {expected_level:g}hPa, got {level}")
@@ -244,6 +272,8 @@ def _parse_kim_text(input_path: Path, *, expected_level: float) -> _ParsedKimTex
         height=height,
         values=values,
         level=float(level),
+        variable=str(variable),
+        unit=str(unit),
     )
 
 
@@ -251,7 +281,9 @@ def _downsample_mean(values: np.ndarray, factor: int) -> np.ndarray:
     height, width = values.shape
 
     if width % factor != 0 or height % factor != 0:
-        raise ValueError(f"grid shape {width}x{height} is not evenly divisible by downsample factor {factor}")
+        raise ValueError(
+            f"grid shape {width}x{height} is not evenly divisible by downsample factor {factor}"
+        )
 
     return values.reshape(height // factor, factor, width // factor, factor).mean(axis=(1, 3))
 

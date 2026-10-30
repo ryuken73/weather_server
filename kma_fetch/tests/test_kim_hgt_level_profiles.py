@@ -1,4 +1,4 @@
-"""Level profile / header validation smoke for KIM HGT converter.
+"""Product / level profile smoke for KIM TXT converter.
 
   python kma_fetch/tests/test_kim_hgt_level_profiles.py
 """
@@ -14,15 +14,17 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from kim_hgt_converter.contracts import LEVEL_PROFILES
+from kim_hgt_converter.contracts import PRODUCT_PROFILES
 from kim_hgt_converter.contracts import dataset_id_for
 from kim_hgt_converter.contracts import get_level_profile
+from kim_hgt_converter.contracts import get_product_profile
 from kim_hgt_converter.dataset import parse_kim_filename
 from kim_hgt_converter.kim_text import extract_hgt_text
+from kim_hgt_converter.kim_text import extract_kim_text
 from kim_hgt_converter.metadata import output_stem
 
 
-def _write_tiny_txt(path: Path, *, level: float, analysis: str, forecast: int) -> None:
-    # 2x2 grid — downsample factor 1 only
+def _write_tiny_hgt(path: Path, *, level: float, analysis: str, forecast: int) -> None:
     lines = [
         f"# fname: g576_v091_glob_prs.ft{forecast:03d}.{analysis}.nc",
         f"# = hgt , unit = m , level = {level:g} , i = 2 , j = 2 , map = F",
@@ -38,6 +40,20 @@ def _write_tiny_txt(path: Path, *, level: float, analysis: str, forecast: int) -
     path.write_text("\n".join(lines), encoding="utf-8")
 
 
+def _write_tiny_tmp(path: Path, *, analysis: str, forecast: int) -> None:
+    # Kelvin values → store as °C via value_offset -273.15
+    lines = [
+        f"# fname: g576_v091_glob_prs.ft{forecast:03d}.{analysis}.nc",
+        "# = T , unit = K , level = 500 , i = 2 , j = 2 , map = F",
+        "# j = 1",
+        "241.15 243.15",
+        "# j = 2",
+        "239.15 245.15",
+        "",
+    ]
+    path.write_text("\n".join(lines), encoding="utf-8")
+
+
 class LevelProfileTests(unittest.TestCase):
     def test_profiles(self):
         p500 = get_level_profile(500)
@@ -49,6 +65,18 @@ class LevelProfileTests(unittest.TestCase):
         self.assertEqual(dataset_id_for("2026070100", 850), "kim-glob-hgt850-2026070100")
         self.assertEqual(sorted(LEVEL_PROFILES.keys()), [500, 850])
 
+    def test_tmp500_product(self):
+        p = get_product_profile("tmp500")
+        self.assertEqual(p["hub_name"], "T")
+        self.assertEqual(p["source_unit"], "K")
+        self.assertEqual(p["store_unit"], "Cel")
+        self.assertEqual(p["value_offset"], -273.15)
+        self.assertEqual(p["value_min"], -70.0)
+        self.assertEqual(p["value_max"], 5.0)
+        self.assertFalse(p["anomaly_enabled"])
+        self.assertEqual(dataset_id_for("2026102912", product="tmp500"), "kim-glob-tmp500-2026102912")
+        self.assertIn("tmp500", PRODUCT_PROFILES)
+
     def test_parse_txt_filename(self):
         info = parse_kim_filename("kim_glob_prs_hgt850_ft003_2026070100.txt")
         self.assertEqual(info["forecast_hour"], 3)
@@ -59,8 +87,8 @@ class LevelProfileTests(unittest.TestCase):
             root = Path(tmp)
             f500 = root / "a.txt"
             f850 = root / "b.txt"
-            _write_tiny_txt(f500, level=500.0, analysis="2026070100", forecast=0)
-            _write_tiny_txt(f850, level=850.0, analysis="2026070100", forecast=0)
+            _write_tiny_hgt(f500, level=500.0, analysis="2026070100", forecast=0)
+            _write_tiny_hgt(f850, level=850.0, analysis="2026070100", forecast=0)
 
             ok500 = extract_hgt_text(f500, level_hpa=500)
             self.assertEqual(ok500.info.level_value, 500.0)
@@ -75,6 +103,18 @@ class LevelProfileTests(unittest.TestCase):
 
             stem = output_stem(Path("x.ft000.2026070100.nc"), "2026-07-01T00:00:00Z", level_hpa=850)
             self.assertIn("_hgt850_", stem)
+
+    def test_extract_tmp500_kelvin_to_celsius(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "t.txt"
+            _write_tiny_tmp(path, analysis="2026102912", forecast=0)
+            frame = extract_kim_text(path, product="tmp500")
+            self.assertEqual(frame.info.unit, "Cel")
+            self.assertEqual(frame.info.variable_name, "T")
+            # mean Kelvin 242.15 → °C -31.0
+            self.assertAlmostEqual(float(frame.values.mean()), -31.0, places=2)
+            stem = output_stem(Path("x.ft000.2026102912.nc"), "2026-10-29T12:00:00Z", product="tmp500")
+            self.assertIn("_tmp500_", stem)
 
 
 if __name__ == "__main__":
